@@ -1,2 +1,2 @@
 @echo off
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\deepseek-harness\start-dafeiyu.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-dafeiyu.ps1"
