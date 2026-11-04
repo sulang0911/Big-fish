@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
 import http from 'node:http';
+import { searchDouyin } from './browser-douyin.js';
 
 export function getBrowserPath() {
     const candidates = [
@@ -20,7 +21,11 @@ export function getBrowserPath() {
 function downloadFile(url, dest) {
     return new Promise((resolve, reject) => {
         const client = url.startsWith('https') ? https : http;
-        const req = client.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Referer': 'https://www.douyin.com/'
+        };
+        const req = client.get(url, { headers }, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                 return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
             }
@@ -36,7 +41,7 @@ function downloadFile(url, dest) {
             });
         });
         req.on('error', reject);
-        req.setTimeout(10000, () => {
+        req.setTimeout(12000, () => {
             req.destroy();
             reject(new Error('Download timeout'));
         });
@@ -44,10 +49,42 @@ function downloadFile(url, dest) {
 }
 
 export async function searchDouyinMeme(keyword = '傲娇') {
-    const exePath = getBrowserPath();
     const memesDir = 'D:\\deepseek-harness\\memes';
     await fs.promises.mkdir(memesDir, { recursive: true });
 
+    // 1. 优先调用真实抖音搜索 (方案 1)
+    try {
+        const searchKw = keyword.includes('表情包') ? keyword : `${keyword} 表情包`;
+        const dyRes = await searchDouyin(searchKw);
+        if (dyRes.success && Array.isArray(dyRes.items) && dyRes.items.length > 0) {
+            const validCovers = dyRes.items.filter(it => it.coverUrl && it.coverUrl.startsWith('http'));
+            if (validCovers.length > 0) {
+                const picked = validCovers[Math.floor(Math.random() * Math.min(validCovers.length, 4))];
+                const safeKw = keyword.replace(/[\\/:*?"<>|]/g, '_');
+                const filename = `douyin_${safeKw}_${Date.now()}.jpg`;
+                const savePath = path.join(memesDir, filename);
+
+                const buf = await downloadFile(picked.coverUrl, savePath);
+                return {
+                    success: true,
+                    filePath: savePath,
+                    filename,
+                    url: picked.coverUrl,
+                    base64: buf.toString('base64'),
+                    pageScreenshotBase64: dyRes.pageScreenshotBase64,
+                    source: 'douyin_real',
+                    videoTitle: picked.title,
+                    videoAuthor: picked.author,
+                    videoUrl: picked.url
+                };
+            }
+        }
+    } catch (dyErr) {
+        console.warn('[dsh-onebot] 真实抖音表情包搜索异常，启动兜底引擎:', dyErr.message);
+    }
+
+    // 2. 兜底方案：使用聚合无头搜索
+    const exePath = getBrowserPath();
     const browser = await puppeteer.launch({
         executablePath: exePath,
         headless: 'new',

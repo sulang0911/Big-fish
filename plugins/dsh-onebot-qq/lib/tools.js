@@ -11,7 +11,7 @@ import { fileToBase64, isUrl } from './media.js';
 import { splitChatId } from './chat.js';
 import { parseMessage, cqUnescape } from './cq.js';
 import { searchDouyinMeme } from './browser-meme.js';
-import { browseDouyinFeed } from './browser-douyin.js';
+import { browseDouyinFeed, searchDouyin } from './browser-douyin.js';
 function padWavSilence(wavBuf, padMs = 250) {
     if (wavBuf.length < 44 || wavBuf.toString('ascii', 0, 4) !== 'RIFF') return wavBuf;
     const byteRate = wavBuf.readUInt32LE(28);
@@ -318,7 +318,7 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_search_douyin_meme',
-        description: '使用本地无头浏览器（Headless Chrome）在抖音上实时搜索并爬取指定情绪或主题的最新表情包/梗图。下载后自动永久存入大肥鱼本地表情包库（D:\\deepseek-harness\\memes），并立即发送到当前 QQ 聊天。当老大让你去抖音搜表情包、或者你想用最新网络热梗斗图时调用。',
+        description: '在抖音上实时搜索并爬取指定情绪或主题的最新表情包/梗图（采用真实抖音打字搜索防反爬方案）。下载后自动存入大肥鱼本地表情包库，并立即发送表情包图片到当前 QQ 聊天。当 include_page_screenshot 为 true 时，会把真实抖音搜索页面网页截图一并发送给老大看。当老大让你去抖音搜表情包、或者你想用最新网络热梗斗图时调用。',
         parameters: {
             keyword: {
                 type: 'string',
@@ -327,7 +327,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             },
             include_page_screenshot: {
                 type: 'boolean',
-                description: '当老大要求看搜索页面、或者你想把浏览器的搜索结果网页截图给老大看时设为 true，会同时把完整搜索网页截图发过去',
+                description: '当老大要求看搜索页面、或者你想把真实抖音搜索结果网页截图发给老大看时设为 true，会同时把完整搜索网页截图发过去',
             },
             chat_id: {
                 type: 'string',
@@ -351,6 +351,53 @@ export function registerTools(ctx, bridge, connection, limits) {
             }
             const messageId = await bridge.sendSegments(chatId, segments);
             return { sent: true, keyword: a.keyword, filename: crawlRes.filename, hasPageScreenshot: !!crawlRes.pageScreenshotBase64, messageId: messageId ?? null };
+        },
+    }));
+    register(defineTool({
+        name: 'qq_search_douyin',
+        description: '在抖音真正使用搜索框搜索关键词（方案1拟人化打字防反爬技术）。能够直接获取真实的抖音搜索结果视频标题、作者、抖音链接、点赞量，并且能够直接把真实的抖音搜索结果页面网页全屏截图发送到 QQ 聊天中给老大看！当老大要求在抖音搜索某个主题/视频/图文/表情包、或者要求看抖音搜索页面截图时调用。',
+        parameters: {
+            keyword: {
+                type: 'string',
+                required: true,
+                description: '在抖音搜索的关键词（如："大肥鱼"、"大肥鱼表情包"、"猫咪"、"修驴蹄"等）',
+            },
+            send_screenshot: {
+                type: 'boolean',
+                description: '是否直接将真实抖音搜索页面的网页截图发送到 QQ 会话中给老大看，默认为 true',
+            },
+            chat_id: {
+                type: 'string',
+                description: '目标会话；省略时默认当前会话',
+            },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => true,
+        execute: async (args, exec) => {
+            const chatId = resolveChat(bridge, exec, args.chat_id);
+            const res = await searchDouyin(args.keyword);
+            if (!res.success) {
+                return { success: false, message: `在抖音搜索 "${args.keyword}" 失败: ${res.error || '未知原因'}` };
+            }
+            let messageId = null;
+            if (args.send_screenshot !== false && res.pageScreenshotBase64) {
+                messageId = await bridge.sendSegments(chatId, [
+                    { type: 'image', data: { file: `base64://${res.pageScreenshotBase64}` } },
+                ]);
+            }
+            return {
+                success: true,
+                keyword: args.keyword,
+                resultsCount: res.items.length,
+                results: res.items.map(it => ({
+                    title: it.title,
+                    author: it.author,
+                    url: it.url,
+                    diggCount: it.diggCount
+                })),
+                screenshotSent: !!messageId,
+                messageId: messageId ?? null
+            };
         },
     }));
     register(defineTool({
