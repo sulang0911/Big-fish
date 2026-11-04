@@ -10,6 +10,7 @@
  */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { IdleDouyinScheduler } from './idle-douyin.js';
 // R1 部署加固：peer 依赖解析失败/关键模块缺失时必须显眼报错并 fail-loud，
 // 不能静默不挂载。静态 import 会在本模块任何代码运行之前就以晦涩的
 // ERR_MODULE_NOT_FOUND 失败（宿主侧表现为插件被静默跳过），因此运行时
@@ -329,9 +330,6 @@ export function apply(ctx, config) {
         model: config.sttModel,
         timeoutMs: config.sttTimeoutMs,
     });
-    connection.onMessage = (event) => {
-        void bridge.handleInbound(event);
-    };
     connection.onMeta = (event) => {
         logMetaEvent(connection.selfId, event, config.logLevel);
     };
@@ -423,6 +421,12 @@ export function apply(ctx, config) {
         configSnapshot: () => redactSnapshot(config),
         log,
     });
+    const targetChat = policy.adminUsers?.length > 0 ? `private:${policy.adminUsers[0]}` : 'private:2536218596';
+    const douyinScheduler = new IdleDouyinScheduler(bridge, { targetChat });
+    connection.onMessage = (event) => {
+        douyinScheduler.notifyUserActivity();
+        void bridge.handleInbound(event);
+    };
     // W3/T4 (P3): connection faults mint QQ-CONN-… references through the
     // bridge (registry + trace + structured log); the transport appends the
     // returned reference to its own log line, so host logs and qq-trace.jsonl
@@ -433,8 +437,10 @@ export function apply(ctx, config) {
         bridge.start();
         connection.start();
         injectChannel?.start();
+        douyinScheduler.start();
         // QQ 平台说明与 qq_* 工具现按会话 agent 注入（见 ChatBridge.installChannelScope）
         return async () => {
+            douyinScheduler.stop();
             await injectChannel?.stop();
             await bridge.stop();
             await connection.stop();
