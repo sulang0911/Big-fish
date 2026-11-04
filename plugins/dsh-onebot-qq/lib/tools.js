@@ -447,16 +447,6 @@ export function registerTools(ctx, bridge, connection, limits) {
                 messageId: messageId ?? null
             };
         },
-                results: res.items.map(it => ({
-                    title: it.title,
-                    author: it.author,
-                    url: it.url,
-                    diggCount: it.diggCount
-                })),
-                screenshotSent: !!messageId,
-                messageId: messageId ?? null
-            };
-        },
     }));
     register(defineTool({
         name: 'qq_collect_douyin_memes',
