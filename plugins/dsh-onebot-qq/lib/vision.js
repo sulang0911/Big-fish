@@ -58,23 +58,20 @@ async function getVisionModel() {
 }
 
 /**
- * 使用本地 Ollama 视觉模型识别图片内容并返回中文画面描述
- * @param {string} imagePath 本地图片绝对路径
+ * 使用本地 Ollama 视觉模型识别 Base64 图片内容并返回中文画面描述
+ * @param {string} imageBase64 图片 base64 字符串
+ * @param {string} [customPrompt] 自定义提示词
  * @returns {Promise<string|null>} 画面文字描述或 null
  */
-export async function describeImage(imagePath) {
+export async function describeImageBase64(imageBase64, customPrompt) {
     try {
-        if (!fs.existsSync(imagePath)) return null;
-
+        if (!imageBase64) return null;
         const model = await getVisionModel();
         if (!model) return null;
 
-        const imageBuf = await fs.promises.readFile(imagePath);
-        const imageBase64 = imageBuf.toString('base64');
-
-        const prompt = model.includes('minicpm-v')
-            ? '这是一张聊天中收到的图片。请用中文简明生动地描述画面核心内容、人物/二次元角色（如大肥鱼/鲸鱼娘/猫咪/人物等）、姿态动作、神情表情以及图中的关键文字（1~2句话，适合聊天交流）：'
-            : '请用中文简短描述这张图片的内容、角色、动作表情以及文字（1~2句话）：';
+        const prompt = customPrompt || (model.includes('minicpm-v')
+            ? '请用中文简明生动地描述画面核心内容、人物/二次元角色（如大肥鱼/鲸鱼娘/人物等）、姿态动作、神情表情以及图中的关键文字（1~2句话）：'
+            : '请用中文简短描述这张图片的内容、角色、动作表情以及文字（1~2句话）：');
 
         const payload = JSON.stringify({
             model,
@@ -101,7 +98,6 @@ export async function describeImage(imagePath) {
                     try {
                         const parsed = JSON.parse(data);
                         let text = (parsed.response || '').trim();
-                        // 去除多余的 Markdown 标记或前缀
                         text = text.replace(/^["'“”]|["'“”]$/g, '').replace(/\n+/g, ' ').slice(0, 300);
                         if (text.length > 3) {
                             console.log(`[dsh-onebot] 视觉模型(${model})识别结果: ${text}`);
@@ -124,6 +120,23 @@ export async function describeImage(imagePath) {
         });
     } catch (e) {
         console.warn('[dsh-onebot] 视觉识别异常:', e.message);
+        return null;
+    }
+}
+
+/**
+ * 使用本地 Ollama 视觉模型识别图片内容并返回中文画面描述
+ * @param {string} imagePath 本地图片绝对路径
+ * @param {string} [customPrompt] 自定义提示词
+ * @returns {Promise<string|null>} 画面文字描述或 null
+ */
+export async function describeImage(imagePath, customPrompt) {
+    try {
+        if (!fs.existsSync(imagePath)) return null;
+        const imageBuf = await fs.promises.readFile(imagePath);
+        return await describeImageBase64(imageBuf.toString('base64'), customPrompt);
+    } catch (e) {
+        console.warn('[dsh-onebot] 视觉识别读取图片异常:', e.message);
         return null;
     }
 }

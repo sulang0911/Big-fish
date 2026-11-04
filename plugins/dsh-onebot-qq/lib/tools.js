@@ -13,6 +13,7 @@ import { splitChatId } from './chat.js';
 import { parseMessage, cqUnescape } from './cq.js';
 import { searchDouyinMeme } from './browser-meme.js';
 import { browseDouyinFeed, searchDouyin } from './browser-douyin.js';
+import { describeImage, describeImageBase64 } from './vision.js';
 function padWavSilence(wavBuf, padMs = 250) {
     if (wavBuf.length < 44 || wavBuf.toString('ascii', 0, 4) !== 'RIFF') return wavBuf;
     const byteRate = wavBuf.readUInt32LE(28);
@@ -258,7 +259,18 @@ export function registerTools(ctx, bridge, connection, limits) {
                 description: '目标会话；省略时默认当前会话',
             },
         },
-        output: sendOutput(),
+        output: {
+            schema: { type: 'json' },
+            render: (_args, value) => {
+                const v = value;
+                if (!v.sent) return [{ type: 'text', text: v.error || '发送表情包失败' }];
+                let text = `已发送大肥鱼表情包: ${v.meme || '随机表情'}`;
+                if (v.visualDescription) {
+                    text += `\n【表情包画面】: ${v.visualDescription}`;
+                }
+                return [{ type: 'text', text }];
+            },
+        },
         isConcurrencySafe: () => true,
         execute: async (args, exec) => {
             const a = args;
@@ -301,7 +313,11 @@ export function registerTools(ctx, bridge, connection, limits) {
                         const messageId = await bridge.sendSegments(chatId, [
                             { type: 'image', data: { file: `base64://${crawlRes.base64}` } },
                         ]);
-                        return { sent: true, meme: crawlRes.filename, fromDouyin: true, messageId: messageId ?? null };
+                        let visualDescription = '';
+                        try {
+                            visualDescription = await describeImageBase64(crawlRes.base64);
+                        } catch {}
+                        return { sent: true, meme: crawlRes.filename, fromDouyin: true, messageId: messageId ?? null, visualDescription };
                     }
                 } catch (e) {
                     return { sent: false, error: '本地无表情包且从抖音抓取失败: ' + e.message };
@@ -312,7 +328,11 @@ export function registerTools(ctx, bridge, connection, limits) {
             const messageId = await bridge.sendSegments(chatId, [
                 { type: 'image', data: { file: `base64://${b64}` } },
             ]);
-            return { sent: true, meme: path.basename(targetFile), messageId: messageId ?? null };
+            let visualDescription = '';
+            try {
+                visualDescription = await describeImageBase64(b64);
+            } catch {}
+            return { sent: true, meme: path.basename(targetFile), messageId: messageId ?? null, visualDescription };
         },
     }));
     register(defineTool({
@@ -333,7 +353,17 @@ export function registerTools(ctx, bridge, connection, limits) {
                 description: '目标会话；省略时默认当前会话',
             },
         },
-        output: sendOutput(),
+        output: {
+            schema: { type: 'json' },
+            render: (_args, value) => {
+                const v = value;
+                let text = `已在抖音搜到并发送表情包（关键词: "${_args.keyword}"）`;
+                if (v.visualDescription) {
+                    text += `\n【表情包画面内容】: ${v.visualDescription}`;
+                }
+                return [{ type: 'text', text }];
+            },
+        },
         isConcurrencySafe: () => true,
         execute: async (args, exec) => {
             const a = args;
@@ -349,7 +379,11 @@ export function registerTools(ctx, bridge, connection, limits) {
                 segments.push({ type: 'image', data: { file: `base64://${crawlRes.pageScreenshotBase64}` } });
             }
             const messageId = await bridge.sendSegments(chatId, segments);
-            return { sent: true, keyword: a.keyword, filename: crawlRes.filename, hasPageScreenshot: !!crawlRes.pageScreenshotBase64, messageId: messageId ?? null };
+            let visualDescription = '';
+            try {
+                visualDescription = await describeImageBase64(crawlRes.base64);
+            } catch {}
+            return { sent: true, keyword: a.keyword, filename: crawlRes.filename, hasPageScreenshot: !!crawlRes.pageScreenshotBase64, messageId: messageId ?? null, visualDescription };
         },
     }));
     register(defineTool({
@@ -374,7 +408,21 @@ export function registerTools(ctx, bridge, connection, limits) {
                 description: '目标会话；省略时默认当前会话',
             },
         },
-        output: sendOutput(),
+        output: {
+            schema: { type: 'json' },
+            render: (_args, value) => {
+                const v = value;
+                if (!v.success) return [{ type: 'text', text: v.message || '搜索抖音失败' }];
+                let text = `抖音搜索 "${_args.keyword}" 完成，找到 ${v.resultsCount} 个结果，保存了 ${v.savedCount} 张表情包`;
+                if (v.items && v.items.length > 0) {
+                    text += '\n【前几条搜索结果】:\n' + v.items.slice(0, 3).map((it, idx) => `${idx + 1}. 《${it.title}》（作者: ${it.author}）`).join('\n');
+                }
+                if (v.screenshotSent) {
+                    text += '\n（完整抖音搜索结果页面截图已发送至 QQ 聊天）';
+                }
+                return [{ type: 'text', text }];
+            },
+        },
         isConcurrencySafe: () => true,
         execute: async (args, exec) => {
             const chatId = resolveChat(bridge, exec, args.chat_id);
@@ -394,6 +442,11 @@ export function registerTools(ctx, bridge, connection, limits) {
                 resultsCount: res.items.length,
                 savedCount: res.savedCount || 0,
                 savedFiles: res.savedFiles || [],
+                items: res.items || [],
+                screenshotSent: !!messageId,
+                messageId: messageId ?? null
+            };
+        },
                 results: res.items.map(it => ({
                     title: it.title,
                     author: it.author,
@@ -479,7 +532,7 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_browse_douyin_video',
-        description: '在后台启动无头浏览器真正刷一下抖音短视频（翻看2~4条推荐短视频），并抓取当前正在播放的真实短视频标题、作者、抖音链接和画面截图。当老大问你在干嘛、让你去刷抖音、或者你想跟老大分享你刚才看到的抖音视频时调用。',
+        description: '在后台启动无头浏览器真正刷一下抖音短视频（翻看2~4条推荐短视频），并抓取正在播放的真实短视频标题、作者、抖音链接、画面截图，并自动用本地视觉大模型识别出当前截图画面的生动内容回传给你。当老大问你在干嘛、让你去刷抖音、或者你想跟老大分享你刚才看到的抖音视频时调用。',
         parameters: {
             send_screenshot: {
                 type: 'boolean',
@@ -490,7 +543,21 @@ export function registerTools(ctx, bridge, connection, limits) {
                 description: '目标会话；省略时默认当前会话',
             },
         },
-        output: sendOutput(),
+        output: {
+            schema: { type: 'json' },
+            render: (_args, value) => {
+                const v = value;
+                if (!v.success) return [{ type: 'text', text: v.message || '刚才翻了翻抖音，没抓到清晰视频信息' }];
+                let text = `刷到短视频: 《${v.title || '无标题'}》（作者: ${v.author}，链接: ${v.url}）`;
+                if (v.visualDescription) {
+                    text += `\n【画面视觉识别内容】: ${v.visualDescription}`;
+                }
+                if (v.screenshotSent) {
+                    text += '\n（当前视频截图已发送至 QQ 聊天）';
+                }
+                return [{ type: 'text', text }];
+            },
+        },
         isConcurrencySafe: () => true,
         execute: async (args, exec) => {
             const chatId = resolveChat(bridge, exec, args.chat_id);
@@ -504,13 +571,23 @@ export function registerTools(ctx, bridge, connection, limits) {
                     { type: 'image', data: { file: `base64://${video.screenshotBase64}` } },
                 ]);
             }
+            let visualDescription = '';
+            if (video.screenshotBase64) {
+                try {
+                    visualDescription = await describeImageBase64(
+                        video.screenshotBase64,
+                        '这是从抖音短视频截取的一帧画面。请用中文简明生动地描述画面内容、人物/角色动作神情以及图中的关键文字或字幕（1~2句话，适合聊天交流）：'
+                    );
+                } catch {}
+            }
             return {
                 success: true,
                 title: video.title,
                 author: video.author,
                 url: video.url,
                 screenshotSent: !!messageId,
-                messageId: messageId ?? null
+                messageId: messageId ?? null,
+                visualDescription
             };
         },
     }));
