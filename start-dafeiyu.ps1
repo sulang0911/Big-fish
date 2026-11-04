@@ -47,23 +47,22 @@ if (-not $conn3001) {
 $conn9880 = Get-NetTCPConnection -LocalPort 9880 -State Listen -ErrorAction SilentlyContinue
 if (-not $conn9880) {
     $sovitsCandidates = @(
-        $env:GPT_SOVITS_HOME,
-        "D:\ollama\GPT-SoVITS-v2pro\GPT-SoVITS-v2pro-20250604",
-        "C:\ollama\GPT-SoVITS-v2pro\GPT-SoVITS-v2pro-20250604",
-        (Join-Path $BaseDir "GPT-SoVITS"),
-        (Join-Path $BaseDir "..\GPT-SoVITS")
-    ) | Where-Object { $_ -and (Test-Path $_) }
+        @(
+            $env:GPT_SOVITS_HOME,
+            "D:\ollama\GPT-SoVITS-v2pro\GPT-SoVITS-v2pro-20250604",
+            "C:\ollama\GPT-SoVITS-v2pro\GPT-SoVITS-v2pro-20250604",
+            "D:\ollama\GPT-SoVITS",
+            (Join-Path $BaseDir "GPT-SoVITS"),
+            (Join-Path $BaseDir "..\GPT-SoVITS")
+        ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "runtime\python.exe")) }
+    )
     
-    if ($sovitsCandidates) {
+    if ($sovitsCandidates.Count -gt 0) {
         $sovitsDir = $sovitsCandidates[0]
         $pythonExe = Join-Path $sovitsDir "runtime\python.exe"
-        if (Test-Path $pythonExe) {
-            Write-Host "[2/3] 正在启动 GPT-SoVITS 语音服务 (无弹窗静默模式)..." -ForegroundColor Yellow
-            Start-Process -FilePath $pythonExe -ArgumentList @("api_v2.py", "-a", "127.0.0.1", "-p", "9880", "-c", "GPT_SoVITS/configs/tts_infer.yaml") -WorkingDirectory $sovitsDir -WindowStyle Hidden
-            Start-Sleep -Seconds 3
-        } else {
-            Write-Host "[2/3] 警告: 未在 $sovitsDir 找到 runtime\python.exe，语音服务跳过。" -ForegroundColor Red
-        }
+        Write-Host "[2/3] 正在启动 GPT-SoVITS 语音服务 (无弹窗静默模式)..." -ForegroundColor Yellow
+        Start-Process -FilePath $pythonExe -ArgumentList @("api_v2.py", "-a", "127.0.0.1", "-p", "9880", "-c", "GPT_SoVITS/configs/tts_infer.yaml") -WorkingDirectory $sovitsDir -WindowStyle Hidden
+        Start-Sleep -Seconds 3
     } else {
         Write-Host "[2/3] 提示: 未检测到本地 GPT-SoVITS 目录，若需要语音请参考 README 下载放置。" -ForegroundColor DarkYellow
     }
