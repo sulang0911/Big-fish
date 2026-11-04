@@ -1,8 +1,9 @@
-import puppeteer from 'puppeteer-core';
-import { existsSync, mkdirSync } from 'node:fs';
+const puppeteer = require('puppeteer-core');
+const fs = require('fs');
+const path = require('path');
 
 const profileDir = 'C:\\Users\\25362\\.dsh\\chrome-douyin-profile';
-if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true });
+if (!fs.existsSync(profileDir)) fs.mkdirSync(profileDir, { recursive: true });
 
 const chromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
@@ -13,67 +14,69 @@ console.log('登录成功后，此窗口会自动保存登录态并关闭。');
 console.log('====================================================');
 
 (async () => {
-    const browser = await puppeteer.launch({
-        executablePath: chromePath,
-        headless: false,
-        userDataDir: profileDir,
-        defaultViewport: null,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled',
-            '--start-maximized'
-        ]
-    });
+    try {
+        const browser = await puppeteer.launch({
+            executablePath: chromePath,
+            headless: false,
+            userDataDir: profileDir,
+            defaultViewport: null,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--start-maximized'
+            ]
+        });
 
-    const pages = await browser.pages();
-    const page = pages[0] || (await browser.newPage());
+        const pages = await browser.pages();
+        const page = pages[0] || (await browser.newPage());
 
-    await page.goto('https://www.douyin.com/', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://www.douyin.com/', { waitUntil: 'domcontentloaded' });
 
-    let loggedIn = false;
-    const checkInterval = setInterval(async () => {
-        try {
-            if (browser.process()?.killed) {
-                clearInterval(checkInterval);
-                return;
-            }
-
-            const isLogin = await page.evaluate(() => {
-                const cookies = document.cookie || '';
-                // 检查登录态 cookie
-                if (cookies.includes('LOGIN_STATUS=1') || cookies.includes('passport_auth_status=1') || cookies.includes('sessionid=')) {
-                    return true;
+        let loggedIn = false;
+        const checkInterval = setInterval(async () => {
+            try {
+                if (browser.process()?.killed) {
+                    clearInterval(checkInterval);
+                    return;
                 }
-                // 检查头像或个人主页入口
-                const avatar = document.querySelector('header img, [data-e2e="user-info"], .avatar, .header-avatar');
-                const loginBtn = document.querySelector('button:has-text("登录"), .header-login-btn');
-                if (avatar && !loginBtn) return true;
-                return false;
-            });
 
-            if (isLogin) {
-                loggedIn = true;
-                clearInterval(checkInterval);
-                console.log('====================================================');
-                console.log('🎉 检测到抖音登录成功！登录态已成功保存至专属目录。');
-                console.log('大肥鱼已获得自主刷视频权限！窗口将在 3 秒后自动关闭...');
-                console.log('====================================================');
-                setTimeout(async () => {
-                    try { await browser.close(); } catch {}
-                    process.exit(0);
-                }, 3000);
+                const isLogin = await page.evaluate(() => {
+                    const cookies = document.cookie || '';
+                    if (cookies.includes('LOGIN_STATUS=1') || cookies.includes('passport_auth_status=1') || cookies.includes('sessionid=')) {
+                        return true;
+                    }
+                    const avatar = document.querySelector('header img, [data-e2e="user-info"], .avatar, .header-avatar');
+                    const loginBtn = document.querySelector('button:has-text("登录"), .header-login-btn');
+                    if (avatar && !loginBtn) return true;
+                    return false;
+                });
+
+                if (isLogin) {
+                    loggedIn = true;
+                    clearInterval(checkInterval);
+                    console.log('====================================================');
+                    console.log('🎉 检测到抖音登录成功！登录态已成功保存至专属目录。');
+                    console.log('大肥鱼已获得自主刷视频权限！窗口将在 3 秒后自动关闭...');
+                    console.log('====================================================');
+                    setTimeout(async () => {
+                        try { await browser.close(); } catch {}
+                        process.exit(0);
+                    }, 3000);
+                }
+            } catch {
+                // 页面跳转时忽略错误
             }
-        } catch {
-            // 页面可能在导航或关闭
-        }
-    }, 2000);
+        }, 2000);
 
-    browser.on('disconnected', () => {
-        clearInterval(checkInterval);
-        if (!loggedIn) {
-            console.log('浏览器窗口已关闭。如果已扫码成功，登录态也会自动保留。');
-        }
-        process.exit(0);
-    });
+        browser.on('disconnected', () => {
+            clearInterval(checkInterval);
+            if (!loggedIn) {
+                console.log('浏览器窗口已关闭。如果已扫码成功，登录态也会自动保留。');
+            }
+            process.exit(0);
+        });
+    } catch (err) {
+        console.error('启动失败:', err);
+    }
 })();
