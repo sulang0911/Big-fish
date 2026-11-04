@@ -99,10 +99,17 @@ export async function browseDouyinFeed(options = {}) {
                 }
             }
 
+            // 尝试提取具体短视频链接
+            let videoUrl = window.location.href;
+            const videoLinkEl = document.querySelector('a[href*="/video/"]');
+            if (videoLinkEl && videoLinkEl.href) {
+                videoUrl = videoLinkEl.href;
+            }
+
             return {
                 title: title.replace(/\n+/g, ' ').slice(0, 100),
                 author: author || '@抖音网友',
-                url: window.location.href
+                url: videoUrl
             };
         });
 

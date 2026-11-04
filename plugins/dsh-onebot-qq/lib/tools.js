@@ -11,6 +11,7 @@ import { fileToBase64, isUrl } from './media.js';
 import { splitChatId } from './chat.js';
 import { parseMessage, cqUnescape } from './cq.js';
 import { searchDouyinMeme } from './browser-meme.js';
+import { browseDouyinFeed } from './browser-douyin.js';
 function padWavSilence(wavBuf, padMs = 250) {
     if (wavBuf.length < 44 || wavBuf.toString('ascii', 0, 4) !== 'RIFF') return wavBuf;
     const byteRate = wavBuf.readUInt32LE(28);
@@ -367,6 +368,43 @@ export function registerTools(ctx, bridge, connection, limits) {
                 { type: 'face', data: { id: faceId } },
             ]);
             return { sent: true, faceId, messageId: messageId ?? null };
+        },
+    }));
+    register(defineTool({
+        name: 'qq_browse_douyin_video',
+        description: '在后台启动无头浏览器真正刷一下抖音短视频（翻看2~4条推荐短视频），并抓取当前正在播放的真实短视频标题、作者、抖音链接和画面截图。当老大问你在干嘛、让你去刷抖音、或者你想跟老大分享你刚才看到的抖音视频时调用。',
+        parameters: {
+            send_screenshot: {
+                type: 'boolean',
+                description: '是否直接将视频截图画面发送到 QQ 会话中，默认为 true',
+            },
+            chat_id: {
+                type: 'string',
+                description: '目标会话；省略时默认当前会话',
+            },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => true,
+        execute: async (args, exec) => {
+            const chatId = resolveChat(bridge, exec, args.chat_id);
+            const video = await browseDouyinFeed();
+            if (!video || !video.title) {
+                return { success: false, message: '刚才翻了翻抖音，没抓到清晰视频信息' };
+            }
+            let messageId = null;
+            if (args.send_screenshot !== false && video.screenshotBase64) {
+                messageId = await bridge.sendSegments(chatId, [
+                    { type: 'image', data: { file: `base64://${video.screenshotBase64}` } },
+                ]);
+            }
+            return {
+                success: true,
+                title: video.title,
+                author: video.author,
+                url: video.url,
+                screenshotSent: !!messageId,
+                messageId: messageId ?? null
+            };
         },
     }));
     register(defineTool({
