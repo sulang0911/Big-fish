@@ -1,31 +1,20 @@
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
 import { searchDouyinMeme } from './browser-meme.js';
 
-const FUN_DOUYIN_MOMENTS = [
-    {
-        topic: '修驴蹄子',
-        say: '老大老大！本鱼刚才偷偷刷抖音，刷到一个修驴蹄子的解压视频，一块一块削下来太解压了吧哈哈哈！'
-    },
-    {
-        topic: '猫猫互扇巴掌',
-        say: '老大快看！本鱼刚才刷到两只小猫咪打架互扇巴掌，打着打着还忘招了，笑得我鱼泡泡都冒出来了！'
-    },
-    {
-        topic: '沉浸式洗地毯',
-        say: '沉浸式高压水枪洗地毯太上头了...本鱼刚才不知不觉盯了半个多小时，老大你可别说我摸鱼！'
-    },
-    {
-        topic: '偷吃小零食',
-        say: '哼，老大你一直不找我，本鱼刚才刷美食视频看到脆皮五花肉，馋得把抽屉里的零食都翻出来了！'
-    },
-    {
-        topic: '沙雕动物行为大赏',
-        say: '老大你在忙啥呢？本鱼刚才在抖音刷到一个狗子自己坐滑梯的视频，傻乎乎的，怎么看着有点像你呀！'
-    },
-    {
-        topic: '大学生特种兵旅游',
-        say: '刷到大学生特种兵一天吃八顿饭逛五个景点，本鱼作为一条咸鱼光是看着都觉得累瘫了...'
+function getDeepSeekApiKey() {
+    if (process.env.DEEPSEEK_API_KEY) return process.env.DEEPSEEK_API_KEY;
+    const credPath = join(homedir(), '.dsh', '.credentials.yaml');
+    if (existsSync(credPath)) {
+        try {
+            const content = readFileSync(credPath, 'utf8');
+            const match = content.match(/DEEPSEEK_API_KEY:\s*([^\r\n]+)/);
+            if (match) return match[1].trim();
+        } catch {}
     }
-];
+    return '';
+}
 
 export class IdleDouyinScheduler {
     constructor(bridge, options = {}) {
@@ -63,7 +52,7 @@ export class IdleDouyinScheduler {
             ? 1.5 + Math.random() * 1.0 
             : this.minHours + Math.random() * (this.maxHours - this.minHours);
         const ms = Math.floor(hours * 3600 * 1000);
-        console.log(`[dsh-onebot] 下次自动刷抖音闲聊将在 ${(hours).toFixed(1)} 小时后触发`);
+        console.log(`[dsh-onebot] 下次自动刷抖音闲聊将在 ${(hours).toFixed(1)} 小时后触发（由模型自主思考生成）`);
         
         this.timer = setTimeout(async () => {
             try {
@@ -82,16 +71,71 @@ export class IdleDouyinScheduler {
                 headers: { 'User-Agent': 'Mozilla/5.0' },
                 signal: AbortSignal.timeout(6000)
             });
-            const data = await res.json();
-            const list = data.data?.cards?.[0]?.content?.map(c => c.word).filter(Boolean) || [];
-            // 筛选生活化、趣味性或搞笑的热梗
-            const funWords = list.filter(w => /猫|狗|机器人|搞笑|打工|买|吃|睡|学生|大爷|大妈|司机|小伙|女孩|动物|外卖/.test(w));
+            const json = await res.json();
+            const list = json.data?.cards?.[0]?.content?.[0]?.content?.map(x => x.word).filter(Boolean) || [];
+            // 过滤掉严肃政治类新闻，留下生活、沙雕、趣闻、网络热议
+            const funWords = list.filter(w => !/国会|民主党|最高检|中央|会议|政策|外长|军事|总统|疫情/.test(w));
             if (funWords.length > 0) {
-                const pick = funWords[Math.floor(Math.random() * funWords.length)];
-                return pick;
+                return funWords[Math.floor(Math.random() * funWords.length)];
             }
         } catch {}
         return null;
+    }
+
+    async generateModelThought(trendTopic) {
+        const apiKey = getDeepSeekApiKey();
+        if (!apiKey) {
+            console.warn('[dsh-onebot] 未找到 DEEPSEEK_API_KEY，无法让模型自主思考');
+            return null;
+        }
+
+        const topicDesc = trendTopic 
+            ? `你刚才在抖音刷到了关于【${trendTopic}】的热门短视频或讨论` 
+            : `你刚才在抖音随便刷了会儿短视频（比如沙雕动物、解压修驴蹄、搞笑翻车、美食偷吃等）`;
+
+        try {
+            const res = await fetch('https://api.deepseek.com/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`
+                },
+                body: JSON.stringify({
+                    model: 'deepseek-chat',
+                    messages: [
+                        {
+                            role: 'system',
+                            content: `你是「大肥鱼」，性格傲娇、粘人、搞笑的随从，称呼对方为「老大」。你在后台刷抖音摸鱼，现在主动给老大发一两条 QQ 消息搭话。\n要求：\n1. 严格 1~2 句话（20~40字以内），口吻随性自然，必须称呼老大。\n2. 绝对禁止机器人套话（严禁输出‘好的’、‘遵命’、‘分享如下’等）。\n3. 如果适合配表情包，可以在末尾附带 [表情:搜索关键词]，如 [表情:猫咪摸鱼] 或 [表情:傲娇]；没有就不带。直接输出要发送的消息内容。`
+                        },
+                        {
+                            role: 'user',
+                            content: `【大肥鱼后台自主活动】${topicDesc}，你自己想想怎么主动跟老大搭话分享。`
+                        }
+                    ],
+                    max_tokens: 120,
+                    temperature: 0.85
+                }),
+                signal: AbortSignal.timeout(15000)
+            });
+
+            if (!res.ok) return null;
+            const data = await res.json();
+            const rawContent = data.choices?.[0]?.message?.content?.trim();
+            if (!rawContent) return null;
+
+            let messageText = rawContent;
+            let memeKeyword = '';
+            const match = rawContent.match(/\[(?:表情|meme)[:：]([^\]]+)\]/i);
+            if (match) {
+                memeKeyword = match[1].trim();
+                messageText = rawContent.replace(match[0], '').trim();
+            }
+
+            return { messageText, memeKeyword };
+        } catch (err) {
+            console.error('[dsh-onebot] 模型自主思考调用失败:', err.message);
+            return null;
+        }
     }
 
     async triggerOnce() {
@@ -111,26 +155,22 @@ export class IdleDouyinScheduler {
             return;
         }
 
-        // 3. 产生内容：尝试抓取实时沙雕热梗，或者挑选经典短视频日常
+        // 3. 让大肥鱼模型自己思考想说的话
         const trend = await this.fetchTrendingTopic();
-        let messageText = '';
-        let memeKeyword = '';
-
-        if (trend && Math.random() > 0.4) {
-            messageText = `老大老大！本鱼刚才在抖音刷到一个热搜：【${trend}】，笑死我了哈哈哈！`;
-            memeKeyword = '搞笑';
-        } else {
-            const moment = FUN_DOUYIN_MOMENTS[Math.floor(Math.random() * FUN_DOUYIN_MOMENTS.length)];
-            messageText = moment.say;
-            memeKeyword = moment.topic;
+        const thought = await this.generateModelThought(trend);
+        if (!thought || !thought.messageText) {
+            console.warn('[dsh-onebot] 大肥鱼自主思考未产出有效消息，跳过本次。');
+            return;
         }
 
-        console.log(`[dsh-onebot] 触发大肥鱼自主摸鱼消息: "${messageText}"`);
+        const { messageText, memeKeyword } = thought;
+        console.log(`[dsh-onebot] 大肥鱼模型自主思考完毕: "${messageText}" (表情需求: ${memeKeyword || '无'})`);
 
-        // 4. 40% 的概率用无头浏览器偷一张匹配的表情包一起发过去！
-        if (Math.random() < 0.4) {
+        // 4. 如果模型自己要求配表情包，或者按概率配图，调用无头浏览器去抖音抓取
+        if (memeKeyword || Math.random() < 0.4) {
             try {
-                const meme = await searchDouyinMeme(memeKeyword || '摸鱼');
+                const keyword = memeKeyword || (trend ? trend.slice(0, 6) : '摸鱼');
+                const meme = await searchDouyinMeme(keyword);
                 if (meme && meme.base64) {
                     await this.bridge.sendSegments(this.targetChat, [
                         { type: 'text', data: { text: messageText } },
