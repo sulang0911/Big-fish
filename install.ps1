@@ -43,8 +43,18 @@ $pluginSrc = Join-Path $BaseDir "plugins\dsh-onebot-qq"
 $pluginDst = Join-Path $webModulesDir "dsh-onebot-qq"
 if (Test-Path $pluginSrc) {
     Copy-Item -Path $pluginSrc -Destination $webModulesDir -Recurse -Force
-    Write-Host "  ✓ 已挂载 dsh-onebot-qq 语音强化插件。" -ForegroundColor Green
+    Write-Host "  ✓ 已挂载 dsh-onebot-qq 语音与表情强化插件。" -ForegroundColor Green
 }
+
+# 同步无头浏览器依赖包
+$puppeteerPkgs = @("@puppeteer", "chromium-bidi", "devtools-protocol", "mitt", "puppeteer-core", "typed-query-selector", "webdriver-bidi-protocol", "ws")
+foreach ($p in $puppeteerPkgs) {
+    $src = Join-Path $BaseDir "node_modules\$p"
+    if (Test-Path $src) {
+        Copy-Item -Path $src -Destination (Join-Path $webModulesDir $p) -Recurse -Force
+    }
+}
+Write-Host "  ✓ 已同步无头浏览器 (Puppeteer) 自动化依赖。" -ForegroundColor Green
 
 $personaSrc = Join-Path $BaseDir "persona\personas.json"
 if (Test-Path $personaSrc) {

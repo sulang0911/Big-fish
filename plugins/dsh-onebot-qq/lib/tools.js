@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileToBase64, isUrl } from './media.js';
 import { splitChatId } from './chat.js';
 import { parseMessage, cqUnescape } from './cq.js';
+import { searchDouyinMeme } from './browser-meme.js';
 function padWavSilence(wavBuf, padMs = 250) {
     if (wavBuf.length < 44 || wavBuf.toString('ascii', 0, 4) !== 'RIFF') return wavBuf;
     const byteRate = wavBuf.readUInt32LE(28);
@@ -278,9 +279,6 @@ export function registerTools(ctx, bridge, connection, limits) {
                     } catch {}
                 }
             }
-            if (foundFiles.length === 0) {
-                return { sent: false, error: '本地表情包库暂无图片，请在 D:\\deepseek-harness\\memes 文件夹放入图片或 GIF 表情包后再试！' };
-            }
             let targetFile = null;
             if (typeof a.keyword === 'string' && a.keyword.trim() !== '') {
                 const kw = a.keyword.trim().toLowerCase();
@@ -289,8 +287,25 @@ export function registerTools(ctx, bridge, connection, limits) {
                     targetFile = matched[Math.floor(Math.random() * matched.length)];
                 }
             }
-            if (!targetFile) {
+            if (!targetFile && foundFiles.length > 0 && (!a.keyword || a.keyword.trim() === '')) {
                 targetFile = foundFiles[Math.floor(Math.random() * foundFiles.length)];
+            }
+            // 如果本地没有匹配，或者本地完全没有表情包，自发启动无头浏览器前往抖音搜索爬取！
+            if (!targetFile) {
+                try {
+                    const crawlRes = await searchDouyinMeme(a.keyword || '傲娇');
+                    if (crawlRes && crawlRes.base64) {
+                        const messageId = await bridge.sendSegments(chatId, [
+                            { type: 'image', data: { file: `base64://${crawlRes.base64}` } },
+                        ]);
+                        return { sent: true, meme: crawlRes.filename, fromDouyin: true, messageId: messageId ?? null };
+                    }
+                } catch (e) {
+                    if (foundFiles.length === 0) {
+                        return { sent: false, error: '本地无表情包且从抖音抓取失败: ' + e.message };
+                    }
+                    targetFile = foundFiles[Math.floor(Math.random() * foundFiles.length)];
+                }
             }
             const buf = await fs.promises.readFile(targetFile);
             const b64 = buf.toString('base64');
@@ -298,6 +313,35 @@ export function registerTools(ctx, bridge, connection, limits) {
                 { type: 'image', data: { file: `base64://${b64}` } },
             ]);
             return { sent: true, meme: path.basename(targetFile), messageId: messageId ?? null };
+        },
+    }));
+    register(defineTool({
+        name: 'qq_search_douyin_meme',
+        description: '使用本地无头浏览器（Headless Chrome）在抖音上实时搜索并爬取指定情绪或主题的最新表情包/梗图。下载后自动永久存入大肥鱼本地表情包库（D:\\deepseek-harness\\memes），并立即发送到当前 QQ 聊天。当老大让你去抖音搜表情包、或者你想用最新网络热梗斗图时调用。',
+        parameters: {
+            keyword: {
+                type: 'string',
+                required: true,
+                description: '在抖音搜索的表情包关键词（如："傲娇"、"可莉"、"猫猫 委屈"、"沙雕 摸鱼"、"修驴蹄"等）',
+            },
+            chat_id: {
+                type: 'string',
+                description: '目标会话；省略时默认当前会话',
+            },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => true,
+        execute: async (args, exec) => {
+            const a = args;
+            const chatId = resolveChat(bridge, exec, a.chat_id);
+            const crawlRes = await searchDouyinMeme(a.keyword);
+            if (!crawlRes || !crawlRes.base64) {
+                throw new Error(`在抖音未找到与 "${a.keyword}" 相关的表情包`);
+            }
+            const messageId = await bridge.sendSegments(chatId, [
+                { type: 'image', data: { file: `base64://${crawlRes.base64}` } },
+            ]);
+            return { sent: true, keyword: a.keyword, filename: crawlRes.filename, messageId: messageId ?? null };
         },
     }));
     register(defineTool({
