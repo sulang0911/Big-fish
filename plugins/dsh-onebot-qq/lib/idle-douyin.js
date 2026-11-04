@@ -21,8 +21,8 @@ export class IdleDouyinScheduler {
     constructor(bridge, options = {}) {
         this.bridge = bridge;
         this.enabled = options.enabled ?? true;
-        this.minHours = options.intervalMinHours ?? 2.5; // 默认最少 2.5 小时
-        this.maxHours = options.intervalMaxHours ?? 4.0; // 默认最多 4.0 小时
+        this.minHours = options.intervalMinHours ?? 1.0; // 默认最少 1.0 小时
+        this.maxHours = options.intervalMaxHours ?? 1.5; // 默认最多 1.5 小时
         this.startHour = options.activeStartHour ?? 9;   // 早上 9 点后才发
         this.endHour = options.activeEndHour ?? 23;     // 晚上 23 点后不发
         this.targetChat = options.targetChat || 'private:2536218596';
@@ -48,12 +48,12 @@ export class IdleDouyinScheduler {
 
     scheduleNext(isFirst = false) {
         if (this.timer) clearTimeout(this.timer);
-        // 首次启动等待 1.5 ~ 2.5 小时；后续等待 minHours ~ maxHours
+        // 首次启动等待 0.5 ~ 1.0 小时；后续等待 1.0 ~ 1.5 小时 (minHours ~ maxHours)
         const hours = isFirst 
-            ? 1.5 + Math.random() * 1.0 
+            ? 0.5 + Math.random() * 0.5 
             : this.minHours + Math.random() * (this.maxHours - this.minHours);
         const ms = Math.floor(hours * 3600 * 1000);
-        console.log(`[dsh-onebot] 下次自动刷抖音闲聊将在 ${(hours).toFixed(1)} 小时后触发（后台真刷视频+自主思考）`);
+        console.log(`[dsh-onebot] 下次检查刷抖音闲聊将在 ${(hours).toFixed(1)} 小时后触发（老大没找聊天时刷视频）`);
         
         this.timer = setTimeout(async () => {
             try {
@@ -154,12 +154,14 @@ export class IdleDouyinScheduler {
             return;
         }
 
-        // 2. 检查老大最近是否有对话（如果老大 40 分钟内聊过天，不突兀插话）
+        // 2. 检查老大最近是否有对话（如果老大 30 分钟内聊过天，不打断正常对话）
         const idleMins = (Date.now() - this.lastUserMessageTime) / 60000;
-        if (idleMins < 40) {
-            console.log(`[dsh-onebot] 老大 ${idleMins.toFixed(0)} 分钟前刚聊过天，等待下次闲暇再发。`);
+        if (idleMins < 30) {
+            console.log(`[dsh-onebot] 老大 ${idleMins.toFixed(0)} 分钟前刚聊过天，暂不主动插话，等待下次闲暇。`);
             return;
         }
+
+        console.log(`[dsh-onebot] 老大已有 ${idleMins.toFixed(0)} 分钟没找大肥鱼聊天，大肥鱼开始去后台刷短视频！`);
 
         // 3. 真实启动无头浏览器在后台摸鱼刷抖音
         let videoInfo = null;
