@@ -243,6 +243,89 @@ export function registerTools(ctx, bridge, connection, limits) {
         },
     }));
     register(defineTool({
+        name: 'qq_send_meme',
+        description: '向 QQ 发送一张大肥鱼专属表情包（图片或 GIF 动图）。当老大让你发表情包、或者你想用表情包表达傲娇、摸鱼、生气、开心、干饭、问号等情绪时调用。支持指定 keyword 关键词模糊匹配表情包文件名（如"傲娇"、"生气"、"摸鱼"等），未指定或无匹配则随机发送。',
+        parameters: {
+            keyword: {
+                type: 'string',
+                description: '表情包情绪或文件名关键词（如：傲娇、摸鱼、生气、开心、干饭、问号、害羞等），可选',
+            },
+            chat_id: {
+                type: 'string',
+                description: '目标会话；省略时默认当前会话',
+            },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => true,
+        execute: async (args, exec) => {
+            const a = args;
+            const chatId = resolveChat(bridge, exec, a.chat_id);
+            const memeDirs = [
+                'D:\\deepseek-harness\\memes',
+                path.join(process.cwd(), 'memes'),
+                'C:\\Users\\25362\\Documents\\deepseek-harness\\default-workspace\\memes'
+            ];
+            const foundFiles = [];
+            for (const dir of memeDirs) {
+                if (fs.existsSync(dir)) {
+                    try {
+                        const entries = await fs.promises.readdir(dir);
+                        for (const file of entries) {
+                            if (/\.(jpg|jpeg|png|gif|webp)$/i.test(file)) {
+                                foundFiles.push(path.join(dir, file));
+                            }
+                        }
+                    } catch {}
+                }
+            }
+            if (foundFiles.length === 0) {
+                return { sent: false, error: '本地表情包库暂无图片，请在 D:\\deepseek-harness\\memes 文件夹放入图片或 GIF 表情包后再试！' };
+            }
+            let targetFile = null;
+            if (typeof a.keyword === 'string' && a.keyword.trim() !== '') {
+                const kw = a.keyword.trim().toLowerCase();
+                const matched = foundFiles.filter(f => path.basename(f).toLowerCase().includes(kw));
+                if (matched.length > 0) {
+                    targetFile = matched[Math.floor(Math.random() * matched.length)];
+                }
+            }
+            if (!targetFile) {
+                targetFile = foundFiles[Math.floor(Math.random() * foundFiles.length)];
+            }
+            const buf = await fs.promises.readFile(targetFile);
+            const b64 = buf.toString('base64');
+            const messageId = await bridge.sendSegments(chatId, [
+                { type: 'image', data: { file: `base64://${b64}` } },
+            ]);
+            return { sent: true, meme: path.basename(targetFile), messageId: messageId ?? null };
+        },
+    }));
+    register(defineTool({
+        name: 'qq_send_face',
+        description: '向 QQ 会话发送一个 QQ 原生小黄脸表情（例如：傲娇翻白眼 id=38、害羞花痴 id=14、坏笑 id=23、发怒炸毛 id=66、笑哭 id=2、破防抱抱 id=146 等）。',
+        parameters: {
+            id: {
+                type: 'number',
+                required: true,
+                description: 'QQ 表情 ID。常用：38=傲娇白眼, 14=害羞花痴, 23=坏笑, 66=发怒炸毛, 2=笑哭, 74=庆祝, 146=抱抱',
+            },
+            chat_id: {
+                type: 'string',
+                description: '目标会话；省略时默认当前会话',
+            },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => true,
+        execute: async (args, exec) => {
+            const chatId = resolveChat(bridge, exec, args.chat_id);
+            const faceId = String(args.id);
+            const messageId = await bridge.sendSegments(chatId, [
+                { type: 'face', data: { id: faceId } },
+            ]);
+            return { sent: true, faceId, messageId: messageId ?? null };
+        },
+    }));
+    register(defineTool({
         name: 'qq_send_video',
         description: '向 QQ 会话发送一条视频消息（本地视频文件绝对路径）。',
         parameters: {

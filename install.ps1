@@ -1,4 +1,4 @@
-﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $BaseDir = $PSScriptRoot
 if (-not $BaseDir) { $BaseDir = "D:\deepseek-harness" }
 
@@ -101,7 +101,12 @@ $s3.WorkingDirectory = $BaseDir
 $s3.Description = "查看大肥鱼 QQ 小号登录二维码"
 $s3.Save()
 
-Write-Host "  ✓ 已在桌面创建「启动大肥鱼」「停止大肥鱼」「扫码登录大肥鱼QQ」快捷方式！" -ForegroundColor Green
+$s4 = $wsh.CreateShortcut((Join-Path $desktop "大肥鱼表情包目录.lnk"))
+$s4.TargetPath = Join-Path $BaseDir "memes"
+$s4.Description = "大肥鱼专属表情包与GIF存放文件夹"
+$s4.Save()
+
+Write-Host "  ✓ 已在桌面创建「启动大肥鱼」「停止大肥鱼」「扫码登录大肥鱼QQ」「大肥鱼表情包目录」快捷方式！" -ForegroundColor Green
 
 Write-Host "`n===================================================" -ForegroundColor Cyan
 Write-Host "          大肥鱼所有环境已安装配置完成！          " -ForegroundColor Cyan
