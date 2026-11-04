@@ -610,7 +610,35 @@ export class OneBotConnection {
                 }
                 return;
             }
-            // notice / request events are intentionally ignored (v1).
+            if (event.post_type === 'request') {
+                try {
+                    if (event.request_type === 'group' && event.sub_type === 'invite') {
+                        this.log('info', `[dsh-onebot] 收到群邀请: 群 ${event.group_id}, 邀请人: ${event.user_id}，正在自动同意加入...`);
+                        void this.call('set_group_add_request', {
+                            flag: String(event.flag),
+                            sub_type: 'invite',
+                            type: 'invite',
+                            approve: true
+                        }).then(() => {
+                            this.log('info', `[dsh-onebot] 成功同意加入群 ${event.group_id}`);
+                        }).catch(err => {
+                            this.log('warn', `[dsh-onebot] 同意群邀请失败: ${describeError(err)}`);
+                        });
+                    }
+                    else if (event.request_type === 'friend') {
+                        this.log('info', `[dsh-onebot] 收到好友申请: 来自 ${event.user_id}，自动同意`);
+                        void this.call('set_friend_add_request', {
+                            flag: String(event.flag),
+                            approve: true
+                        }).catch(() => {});
+                    }
+                }
+                catch (error) {
+                    this.log('error', 'request event handler failed: ' + describeError(error));
+                }
+                return;
+            }
+            // notice events are intentionally ignored (v1).
         }
     }
 }

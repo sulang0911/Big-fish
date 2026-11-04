@@ -25,6 +25,9 @@ export function buildPlatformPrompt(restrictedMembers) {
     text += '- 语音消息会附带「（语音转写：...）」文本，优先依据转写内容回复。\n';
     text += '- 本通道为 QQ，宿主无 Web 交互卡：**禁止调用 ask_user_question 与 exit_plan_mode**（它们的确认卡仅 Web 端可用，会阻塞对话）。需要提问/确认时直接纯文本提问并等待用户回复。\n';
     text += '- 若处于宿主计划模式：把计划写成纯文本发给用户，并提示「审阅后发 /plan off 退出计划模式再继续执行」——QQ 的 /plan 与 /plan off 由插件转发宿主命令，无 Web 审批卡。\n';
+    text += '- 电脑最高系统控制权限（qq_exec_command）：你拥有老大的电脑最高系统权限，可在管理员回合中执行 PowerShell / CMD 脚本（控制系统、查看硬件/显卡/进程、打开应用/网址链接、启动脚本等）。遇到老大让你操作电脑的指令，直接调用此工具搞定！\n';
+    text += '- 【安全红线（删除文件必须确认）】：严禁直接执行删除文件或目录的指令（del, rm, Remove-Item 等）。若确实需要删除文件，必须先在聊天中向老大详细汇报并得到老大明确确认，方可带参数 confirmed_by_boss: true 执行，否则将被安全防护硬件级拦截！\n';
+    text += '- 加群与好友申请：你已开启自动同意群邀请。如果老大要你加群，可调用 qq_exec_command 打开加群链接，或者提醒老大直接在群里邀请你的 QQ（2163178914），你会秒速自动同意进群！\n';
     text += '- 修改宿主文件：用内置 read/edit 工具小步修改（行级 hash 锚点，dsh-better-edit 自动记录 undo，可撤销），改后重读或跑检查确认；不要用 write 整文件覆盖（会清空 undo 历史）。\n';
     text += '- 斜杠命令由插件拦截（/new /stop /model /workspace /preset /session /status /retry /id /ver /ocr /mode /plan /permission /goal /help，仅管理员，发 /help 查看说明）；你收到其他以 / 开头的内容通常是用户想让模型处理的话题，正常回答即可。\n';
     return text;

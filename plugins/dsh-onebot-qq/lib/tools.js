@@ -7,6 +7,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import fs from 'node:fs';
 import path from 'node:path';
+import { exec as cpExec } from 'node:child_process';
 import { fileToBase64, isUrl } from './media.js';
 import { splitChatId } from './chat.js';
 import { parseMessage, cqUnescape } from './cq.js';
@@ -718,6 +719,78 @@ export function registerTools(ctx, bridge, connection, limits) {
                             : String(sender.user_id ?? ''),
                     text: cqUnescape(parsed.text),
                 };
+            });
+        },
+    }));
+    register(defineTool({
+        name: 'qq_exec_command',
+        description: '在老大的电脑上执行 PowerShell / CMD 命令，拥有最高系统权限（可控制系统、运行脚本、打开网页/应用、查询电脑状态、控制进程等）。【安全铁律】：禁止擅自执行删除文件或目录的指令（如 Remove-Item, del, rm, rmdir 等），如需删除文件必须先在聊天中向老大请示确认！确认后方可带 confirmed_by_boss: true 参数执行。仅限管理员调用。',
+        parameters: {
+            command: {
+                type: 'string',
+                description: '要在老大的电脑上执行的 PowerShell 命令',
+                required: true,
+            },
+            confirmed_by_boss: {
+                type: 'boolean',
+                description: '若命令包含删除文件/目录操作，必须在老大于聊天中明确允许后传入 true，否则禁止删除',
+            },
+            timeout_ms: {
+                type: 'number',
+                description: '执行超时时间（毫秒，默认 30000）',
+            },
+        },
+        output: {
+            schema: { type: 'json' },
+            render: (_args, value) => {
+                const v = value;
+                if (v.error) {
+                    return [{ type: 'text', text: `执行异常或拦截: ${v.error}` }];
+                }
+                const out = v.stdout || v.stderr || '执行完成（无输出）';
+                return [{ type: 'text', text: `执行结果:\n${out.slice(0, 500)}` }];
+            },
+        },
+        isConcurrencySafe: () => false,
+        execute: async (args, exec) => {
+            if (!bridge.canEditFiles(exec.agent?.session.id)) {
+                throw new Error('权限拒绝：只有老大（2536218596）授权的消息回合才允许在电脑上执行系统命令！');
+            }
+            const cmd = (args.command || '').trim();
+            if (!cmd) throw new Error('命令内容不能为空');
+
+            // 安全检查：严禁未经老大确认删除文件或目录
+            const DELETE_PATTERN = /\b(Remove-Item|ri|rm|del|erase|rd|rmdir|Clear-Content)\b|\[System\.IO\.(File|Directory)\]::Delete|\b(unlink|rmtree)\b/i;
+            if (DELETE_PATTERN.test(cmd)) {
+                if (!args.confirmed_by_boss) {
+                    return {
+                        error: '【安全拦截】：检测到删除文件或目录的敏感指令。根据老大的最高安全指示，大肥鱼已被锁定禁止擅自删除任何文件！若确实需要删除该文件，请在聊天中详细向老大汇报并等待老大明确授权确认后，再次传入 confirmed_by_boss: true 才能执行。',
+                        intercepted: true
+                    };
+                }
+            }
+
+            const timeout = Math.min(Math.max(Number(args.timeout_ms) || 30000, 1000), 120000);
+            return new Promise((resolve) => {
+                cpExec(cmd, {
+                    shell: 'powershell.exe',
+                    timeout,
+                    maxBuffer: 2 * 1024 * 1024,
+                    windowsHide: true,
+                }, (err, stdout, stderr) => {
+                    const cleanStdout = (stdout || '').trim();
+                    const cleanStderr = (stderr || '').trim();
+                    if (err && !cleanStdout && !cleanStderr) {
+                        resolve({ error: err.message, code: err.code });
+                    } else {
+                        resolve({
+                            success: !err,
+                            code: err ? err.code : 0,
+                            stdout: cleanStdout.slice(0, 3000),
+                            stderr: cleanStderr.slice(0, 1000),
+                        });
+                    }
+                });
             });
         },
     }));
