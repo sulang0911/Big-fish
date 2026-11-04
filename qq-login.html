@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>🐋 大肥鱼 QQ 专属账号登录</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #f0f4f9;
+      color: #2c3e50;
+    }
+    .card {
+      background: white;
+      padding: 36px 32px;
+      border-radius: 24px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+      text-align: center;
+      max-width: 440px;
+      width: 90%;
+    }
+    h2 {
+      margin: 0 0 8px;
+      color: #0288d1;
+      font-size: 22px;
+    }
+    p.desc {
+      color: #64748b;
+      font-size: 14px;
+      line-height: 1.6;
+      margin: 8px 0 16px;
+    }
+    .qr-container {
+      background: #fafafa;
+      border: 2px dashed #b3e5fc;
+      border-radius: 16px;
+      padding: 16px;
+      display: inline-block;
+      margin: 8px 0 16px;
+    }
+    img#qrcode {
+      width: 240px;
+      height: 240px;
+      display: block;
+      margin: 0 auto;
+    }
+    .notice {
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      padding: 12px 14px;
+      border-radius: 10px;
+      color: #065f46;
+      font-size: 13px;
+      text-align: left;
+      line-height: 1.6;
+      margin-top: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🐋 大肥鱼 QQ 账号扫码登录</h2>
+    <p class="desc">请使用手机登录<strong>大肥鱼的专属小号 QQ</strong>，然后使用<strong>「扫一扫」</strong>扫描下方二维码登录：</p>
+    
+    <div class="qr-container">
+      <img id="qrcode" src="NapCat/cache/qrcode.png" alt="登录二维码" />
+    </div>
+
+    <div class="notice">
+      ✅ <strong>版本架构已自动修复匹配</strong>！<br>
+      • 成功切换至 NapCat 完美兼容架构 <code>9.9.33-52230</code>；<br>
+      • 请用手机 QQ 扫描上方二维码授权登录；<br>
+      • 登录成功后小号将保持挂机，大号加它好友即可直接聊天！
+    </div>
+  </div>
+  <script>
+    // 自动刷新图片防缓存
+    setInterval(() => {
+      document.getElementById('qrcode').src = 'NapCat/cache/qrcode.png?t=' + Date.now();
+    }, 2000);
+  </script>
+</body>
+</html>

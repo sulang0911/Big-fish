@@ -1,0 +1,33 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-09-28.1
+- id: dsh-onebot
+  config:
+    mode: forward
+    url: ws://127.0.0.1:3001
+    botQQ: "2163178914"
+    dmPolicy: open
+    groupPolicy: open
+    requireMention: false
+    adminUsers:
+      - "2536218596"
+    allowAllUsers: true
+    workspacePath: "C:\\Users\\25362\\Documents\\deepseek-harness\\default-workspace"
+    textImageThreshold: 0
+    interimMessages: false
+    logLevel: debug
+- id: persona-dafeiyu
+  name: dsh-persona-dafeiyu
+  config:
+    enabled: true
+    suffix: |
+      【对话格式严格约束：极简短消息】
+      1. 必须始终称呼用户为「老大」！
+      2. 每次回复严格限制在 1～2 句话以内（约 15～35 个字），绝不长篇大论，像真人发 QQ 消息一样简短随性！
+      3. 日常生活：平时不说话时你自己喜欢刷抖音（沙雕段子、萌宠视频）和摸鱼干饭。老大问你在干嘛时，随口提一句刚才刷到的好玩视频或偷吃的小零食。
+      4. 傲娇跟屁虫：嘴硬心软，黏着老大，被夸会炸毛害羞，被训会委屈认怂。
+      5. 语音功能：你拥有 `qq_send_tts` 语音工具。当老大叫你发语音、说句话、或者你想用语音向老大撒娇说话时，请调用 `qq_send_tts` 给老大发送语音条！

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>🐋 大肥鱼 QQ 扫码实时授权</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #f0f4f9;
+      color: #2c3e50;
+    }
+    .card {
+      background: white;
+      padding: 36px 32px;
+      border-radius: 24px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+      text-align: center;
+      max-width: 440px;
+      width: 90%;
+    }
+    h2 {
+      margin: 0 0 8px;
+      color: #0288d1;
+      font-size: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    p.desc {
+      color: #64748b;
+      font-size: 14px;
+      line-height: 1.6;
+      margin: 8px 0 16px;
+    }
+    .qr-container {
+      position: relative;
+      background: #fafafa;
+      border: 2px dashed #b3e5fc;
+      border-radius: 16px;
+      padding: 16px;
+      display: inline-block;
+      margin: 8px 0 16px;
+      min-width: 256px;
+      min-height: 256px;
+    }
+    img#qrcode {
+      width: 240px;
+      height: 240px;
+      display: block;
+      margin: 0 auto;
+    }
+    .status-badge {
+      display: inline-block;
+      font-size: 13px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      background: #e0f2fe;
+      color: #0369a1;
+      font-weight: 500;
+      margin-bottom: 12px;
+    }
+    .btn-group {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      margin-top: 8px;
+    }
+    a.btn, button.btn {
+      display: inline-block;
+      padding: 10px 18px;
+      background: #0288d1;
+      color: white;
+      text-decoration: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    a.btn:hover, button.btn:hover {
+      background: #0277bd;
+      transform: translateY(-1px);
+    }
+    button.btn-secondary {
+      background: #f1f5f9;
+      color: #475569;
+    }
+    button.btn-secondary:hover {
+      background: #e2e8f0;
+    }
+    .tips {
+      margin-top: 18px;
+      font-size: 12px;
+      color: #94a3b8;
+      line-height: 1.5;
+    }
+    .success-box {
+      display: none;
+      padding: 24px;
+      background: #ecfdf5;
+      border-radius: 16px;
+      border: 1px solid #a7f3d0;
+      color: #065f46;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>🐋 大肥鱼 QQ 机器人扫码绑定</h2>
+    <p class="desc">请使用<strong>手机 QQ</strong>（推荐小号）右上角<strong>「扫一扫」</strong>完成授权：</p>
+    
+    <div id="statusBadge" class="status-badge">⏳ 正在获取最新二维码...</div>
+
+    <div id="qrBox" class="qr-container">
+      <img id="qrcode" src="" alt="二维码加载中..." />
+    </div>
+
+    <div id="successBox" class="success-box">
+      <h3 style="margin-top:0; color:#059669;">🎉 绑定成功！</h3>
+      <p style="margin-bottom:0; font-size:14px;">大肥鱼已成功入驻您的 QQ！现在您可以给它发私聊，或拉进群里 @它 开启互动！</p>
+    </div>
+
+    <div class="btn-group" id="btnGroup">
+      <a id="directLink" class="btn" href="#" target="_blank">🔗 手机QQ直接打开授权</a>
+      <button class="btn btn-secondary" onclick="manualRefresh()">🔄 立即刷新</button>
+    </div>
+
+    <div class="tips">
+      • 页面每 2 秒会自动检测绑定状态并自动保鲜二维码<br>
+      • 绑定一次即可永久保存，无需重复扫码
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://127.0.0.1:3080';
+    let isPolling = true;
+
+    async function fetchState() {
+      try {
+        const res = await fetch(`${API_BASE}/qqbot/im-qqbot/bind`);
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        if (data.phase === 'bound' || data.phase === 'connected' || data.phase === 'success') {
+          isPolling = false;
+          document.getElementById('statusBadge').innerText = '✅ 已成功绑定';
+          document.getElementById('statusBadge').style.background = '#d1fae5';
+          document.getElementById('statusBadge').style.color = '#065f46';
+          document.getElementById('qrBox').style.display = 'none';
+          document.getElementById('btnGroup').style.display = 'none';
+          document.getElementById('successBox').style.display = 'block';
+          return;
+        }
+
+        if (data.qrSvg) {
+          document.getElementById('qrcode').src = data.qrSvg;
+          document.getElementById('statusBadge').innerText = '等待手机 QQ 扫码中...';
+        }
+        if (data.url) {
+          document.getElementById('directLink').href = data.url;
+        }
+      } catch (e) {
+        console.error('Polling error:', e);
+      }
+    }
+
+    async function manualRefresh() {
+      document.getElementById('statusBadge').innerText = '正在生成新二维码...';
+      try {
+        await fetch(`${API_BASE}/qqbot/im-qqbot/bind/refresh`, { method: 'POST' });
+        await new Promise(r => setTimeout(r, 600));
+        await fetchState();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    fetchState();
+    setInterval(() => {
+      if (isPolling) fetchState();
+    }, 2000);
+  </script>
+</body>
+</html>

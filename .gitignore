@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Logs & Debug files
+*.log
+out.log
+err.log
+run.log
+debug.log
+install.log
+
+# NapCat runtime & heavy binaries (1.2GB QQNT shell)
+[Nn]ap[Cc]at/
+[Nn]apcat/
+
+# TTS Audio runtime cache
+*.wav
+!voices/**/*.wav
+
+# Credentials & local secrets
+.credentials*
+.env
+.env.local
+tokens*
+
+# Legacy temp files
+start-all.bat
+*DeepSeekHarness.bat
