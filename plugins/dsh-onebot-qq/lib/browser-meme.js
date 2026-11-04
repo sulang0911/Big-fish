@@ -88,13 +88,20 @@ export async function searchDouyinMeme(keyword = '傲娇') {
         const filename = `douyin_${safeKw}_${Date.now()}.${ext}`;
         const savePath = path.join(memesDir, filename);
 
+        let pageScreenshotBase64 = null;
+        try {
+            const pageBuf = await page.screenshot({ type: 'jpeg', quality: 75 });
+            pageScreenshotBase64 = pageBuf.toString('base64');
+        } catch {}
+
         const buf = await downloadFile(selectedUrl, savePath);
         return {
             success: true,
             filePath: savePath,
             filename,
             url: selectedUrl,
-            base64: buf.toString('base64')
+            base64: buf.toString('base64'),
+            pageScreenshotBase64
         };
     } finally {
         await browser.close().catch(() => {});

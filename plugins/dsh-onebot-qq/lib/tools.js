@@ -325,6 +325,10 @@ export function registerTools(ctx, bridge, connection, limits) {
                 required: true,
                 description: '在抖音搜索的表情包关键词（如："傲娇"、"可莉"、"猫猫 委屈"、"沙雕 摸鱼"、"修驴蹄"等）',
             },
+            include_page_screenshot: {
+                type: 'boolean',
+                description: '当老大要求看搜索页面、或者你想把浏览器的搜索结果网页截图给老大看时设为 true，会同时把完整搜索网页截图发过去',
+            },
             chat_id: {
                 type: 'string',
                 description: '目标会话；省略时默认当前会话',
@@ -339,10 +343,14 @@ export function registerTools(ctx, bridge, connection, limits) {
             if (!crawlRes || !crawlRes.base64) {
                 throw new Error(`在抖音未找到与 "${a.keyword}" 相关的表情包`);
             }
-            const messageId = await bridge.sendSegments(chatId, [
+            const segments = [
                 { type: 'image', data: { file: `base64://${crawlRes.base64}` } },
-            ]);
-            return { sent: true, keyword: a.keyword, filename: crawlRes.filename, messageId: messageId ?? null };
+            ];
+            if (a.include_page_screenshot && crawlRes.pageScreenshotBase64) {
+                segments.push({ type: 'image', data: { file: `base64://${crawlRes.pageScreenshotBase64}` } });
+            }
+            const messageId = await bridge.sendSegments(chatId, segments);
+            return { sent: true, keyword: a.keyword, filename: crawlRes.filename, hasPageScreenshot: !!crawlRes.pageScreenshotBase64, messageId: messageId ?? null };
         },
     }));
     register(defineTool({
