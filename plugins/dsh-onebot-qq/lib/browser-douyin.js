@@ -1,12 +1,57 @@
 import puppeteer from 'puppeteer-core';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, promises as fsPromises } from 'node:fs';
+import path from 'node:path';
+import https from 'node:https';
+import http from 'node:http';
 
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const PROFILE_DIR = 'C:\\Users\\25362\\.dsh\\chrome-douyin-profile';
+const MEMES_DIR = 'D:\\deepseek-harness\\memes';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 if (!existsSync(PROFILE_DIR)) {
     mkdirSync(PROFILE_DIR, { recursive: true });
+}
+if (!existsSync(MEMES_DIR)) {
+    mkdirSync(MEMES_DIR, { recursive: true });
+}
+
+// 串行队列锁：防止并发调用时 Chrome 报 "The browser is already running" 冲突
+let browserQueue = Promise.resolve();
+function runExclusive(fn) {
+    const next = browserQueue.then(fn, fn);
+    browserQueue = next.catch(() => {});
+    return next;
+}
+
+export function downloadFile(url, dest) {
+    return new Promise((resolve, reject) => {
+        const client = url.startsWith('https') ? https : http;
+        const headers = {
+            'User-Agent': USER_AGENT,
+            'Referer': 'https://www.douyin.com/'
+        };
+        const req = client.get(url, { headers }, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+            }
+            if (res.statusCode !== 200) {
+                return reject(new Error(`HTTP status ${res.statusCode}`));
+            }
+            const chunks = [];
+            res.on('data', chunk => chunks.push(chunk));
+            res.on('end', async () => {
+                const buf = Buffer.concat(chunks);
+                await fsPromises.writeFile(dest, buf);
+                resolve(buf);
+            });
+        });
+        req.on('error', reject);
+        req.setTimeout(12000, () => {
+            req.destroy();
+            reject(new Error('Download timeout'));
+        });
+    });
 }
 
 /**
@@ -14,8 +59,9 @@ if (!existsSync(PROFILE_DIR)) {
  * 流程：通过真实已登录 Chrome 访问主页建立合法 Session 与 Token ->
  * 聚焦搜索框模拟人工打字输入关键词 -> 按回车搜索 ->
  * 拦截接口返回精准结构化数据并截取完整真实搜索网页截图。
+ * 同时自动将抓取到的表情包/视频封面批量保存进本地大肥鱼表情包库。
  */
-export async function searchDouyin(keyword, options = {}) {
+async function _searchDouyin(keyword, options = {}) {
     let browser = null;
     try {
         console.log(`[dsh-onebot] 大肥鱼在后台为老大真实搜索抖音: "${keyword}"...`);
@@ -47,13 +93,14 @@ export async function searchDouyin(keyword, options = {}) {
                         for (const it of json.data) {
                             const info = it.aweme_info || it;
                             if (info && (info.desc || info.aweme_id)) {
+                                const cover = info.video?.cover?.url_list?.[0] || info.video?.origin_cover?.url_list?.[0] || null;
                                 searchItems.push({
                                     title: (info.desc || '短视频').replace(/\n+/g, ' ').slice(0, 100),
                                     author: info.author?.nickname ? `@${info.author.nickname}` : '@未知作者',
                                     aweme_id: info.aweme_id,
                                     url: info.aweme_id ? `https://www.douyin.com/video/${info.aweme_id}` : '',
                                     diggCount: info.statistics?.digg_count || 0,
-                                    coverUrl: info.video?.cover?.url_list?.[0] || info.video?.origin_cover?.url_list?.[0] || null
+                                    coverUrl: cover
                                 });
                             }
                         }
@@ -97,10 +144,40 @@ export async function searchDouyin(keyword, options = {}) {
 
         console.log(`[dsh-onebot] 抖音搜索 "${keyword}" 成功，抓取到 ${searchItems.length} 条真实结果。`);
 
+        // 8. 自动全量将搜索到的大肥鱼表情包/视频封面批量保存到本地库！
+        let savedCount = 0;
+        const savedFiles = [];
+        if (options.saveMemes !== false && searchItems.length > 0) {
+            for (let i = 0; i < searchItems.length; i++) {
+                const it = searchItems[i];
+                if (!it.coverUrl || !it.coverUrl.startsWith('http')) continue;
+                const cleanTitle = (it.title || `meme_${i}`).replace(/[\\/:*?"<>|#@\s]/g, '_').slice(0, 25);
+                const idPart = it.aweme_id || `${Date.now()}_${i}`;
+                const filename = `douyin_大肥鱼_${cleanTitle}_${idPart}.jpg`;
+                const dest = path.join(MEMES_DIR, filename);
+                if (!existsSync(dest)) {
+                    try {
+                        await downloadFile(it.coverUrl, dest);
+                        savedCount++;
+                        savedFiles.push(filename);
+                    } catch (e) {
+                        console.warn(`[dsh-onebot] 保存表情包 ${filename} 失败:`, e.message);
+                    }
+                } else {
+                    savedFiles.push(filename);
+                }
+            }
+            if (savedCount > 0) {
+                console.log(`[dsh-onebot] 已将 ${savedCount} 张大肥鱼表情包存入本地库: ${MEMES_DIR}`);
+            }
+        }
+
         return {
             success: true,
             keyword,
             items: searchItems.slice(0, 8),
+            savedCount,
+            savedFiles,
             pageScreenshotBase64: screenshotBase64
         };
     } catch (err) {
@@ -110,6 +187,8 @@ export async function searchDouyin(keyword, options = {}) {
             keyword,
             error: err.message,
             items: [],
+            savedCount: 0,
+            savedFiles: [],
             pageScreenshotBase64: null
         };
     } finally {
@@ -119,12 +198,16 @@ export async function searchDouyin(keyword, options = {}) {
     }
 }
 
+export function searchDouyin(keyword, options = {}) {
+    return runExclusive(() => _searchDouyin(keyword, options));
+}
+
 /**
  * 大肥鱼后台自主刷抖音
  * 像真人一样在后台静默打开抖音、静音播放、随机往下刷 2~4 个短视频，
  * 并抓取一条真正好看/好玩的视频信息（标题、作者、链接、截图帧）。
  */
-export async function browseDouyinFeed(options = {}) {
+async function _browseDouyinFeed(options = {}) {
     let browser = null;
     try {
         browser = await puppeteer.launch({
@@ -247,4 +330,8 @@ export async function browseDouyinFeed(options = {}) {
             try { await browser.close(); } catch {}
         }
     }
+}
+
+export function browseDouyinFeed(options = {}) {
+    return runExclusive(() => _browseDouyinFeed(options));
 }

@@ -83,64 +83,27 @@ export async function searchDouyinMeme(keyword = '傲娇') {
         console.warn('[dsh-onebot] 真实抖音表情包搜索异常，启动兜底引擎:', dyErr.message);
     }
 
-    // 2. 兜底方案：使用聚合无头搜索
-    const exePath = getBrowserPath();
-    const browser = await puppeteer.launch({
-        executablePath: exePath,
-        headless: 'new',
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled'
-        ]
-    });
+    // 2. 兜底方案：绝不使用第三方搜狗泛化搜索，直接从本地大肥鱼表情包库挑选最匹配的表情包！
+    const localFiles = (await fs.promises.readdir(memesDir).catch(() => []))
+        .filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f));
 
-    try {
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1920, height: 1080 });
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-        const query = `抖音 ${keyword} 表情包`;
-        const searchUrl = 'https://pic.sogou.com/pics?query=' + encodeURIComponent(query);
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await new Promise(r => setTimeout(r, 2000));
-
-        const imgUrls = await page.evaluate(() => {
-            const imgs = Array.from(document.querySelectorAll('img'));
-            return imgs.map(i => i.src)
-                .filter(s => s && s.startsWith('http') && !s.includes('logo') && !s.includes('icon') && !s.includes('query=') && !s.includes('header'));
-        });
-
-        if (imgUrls.length === 0) {
-            throw new Error(`未找到关键词 "${keyword}" 的抖音表情包`);
-        }
-
-        // 随机挑选前 15 个中的一个，增加多样性
-        const pickPool = imgUrls.slice(0, 15);
-        const selectedUrl = pickPool[Math.floor(Math.random() * pickPool.length)];
-
-        // 确定扩展名（默认 .jpg，检测是否包含 gif）
-        const ext = selectedUrl.toLowerCase().includes('.gif') ? 'gif' : 'jpg';
-        const safeKw = keyword.replace(/[\\/:*?"<>|]/g, '_');
-        const filename = `douyin_${safeKw}_${Date.now()}.${ext}`;
-        const savePath = path.join(memesDir, filename);
-
-        let pageScreenshotBase64 = null;
-        try {
-            const pageBuf = await page.screenshot({ type: 'jpeg', quality: 75 });
-            pageScreenshotBase64 = pageBuf.toString('base64');
-        } catch {}
-
-        const buf = await downloadFile(selectedUrl, savePath);
+    if (localFiles.length > 0) {
+        const kw = keyword.toLowerCase();
+        const matched = localFiles.filter(f => f.toLowerCase().includes(kw));
+        const pickName = matched.length > 0
+            ? matched[Math.floor(Math.random() * matched.length)]
+            : localFiles[Math.floor(Math.random() * localFiles.length)];
+        const pickPath = path.join(memesDir, pickName);
+        const buf = await fs.promises.readFile(pickPath);
         return {
             success: true,
-            filePath: savePath,
-            filename,
-            url: selectedUrl,
+            filePath: pickPath,
+            filename: pickName,
+            url: '',
             base64: buf.toString('base64'),
-            pageScreenshotBase64
+            pageScreenshotBase64: null,
+            source: 'local_library'
         };
-    } finally {
-        await browser.close().catch(() => {});
     }
+    throw new Error(`未在抖音或本地表情包库中找到与 "${keyword}" 相关的表情包`);
 }

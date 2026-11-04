@@ -288,13 +288,14 @@ export function registerTools(ctx, bridge, connection, limits) {
                     targetFile = matched[Math.floor(Math.random() * matched.length)];
                 }
             }
-            if (!targetFile && foundFiles.length > 0 && (!a.keyword || a.keyword.trim() === '')) {
+            // 如果本地关键词未直接命中，但本地已有大肥鱼表情包，优先从本地正版大肥鱼表情包库挑选，绝不乱发
+            if (!targetFile && foundFiles.length > 0) {
                 targetFile = foundFiles[Math.floor(Math.random() * foundFiles.length)];
             }
-            // 如果本地没有匹配，或者本地完全没有表情包，自发启动无头浏览器前往抖音搜索爬取！
+            // 只有本地完全没有任何表情包时，才自发前往抖音搜索爬取
             if (!targetFile) {
                 try {
-                    const crawlRes = await searchDouyinMeme(a.keyword || '傲娇');
+                    const crawlRes = await searchDouyinMeme(a.keyword || '大肥鱼 表情包');
                     if (crawlRes && crawlRes.base64) {
                         const messageId = await bridge.sendSegments(chatId, [
                             { type: 'image', data: { file: `base64://${crawlRes.base64}` } },
@@ -302,10 +303,7 @@ export function registerTools(ctx, bridge, connection, limits) {
                         return { sent: true, meme: crawlRes.filename, fromDouyin: true, messageId: messageId ?? null };
                     }
                 } catch (e) {
-                    if (foundFiles.length === 0) {
-                        return { sent: false, error: '本地无表情包且从抖音抓取失败: ' + e.message };
-                    }
-                    targetFile = foundFiles[Math.floor(Math.random() * foundFiles.length)];
+                    return { sent: false, error: '本地无表情包且从抖音抓取失败: ' + e.message };
                 }
             }
             const buf = await fs.promises.readFile(targetFile);
@@ -355,7 +353,7 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_search_douyin',
-        description: '在抖音真正使用搜索框搜索关键词（方案1拟人化打字防反爬技术）。能够直接获取真实的抖音搜索结果视频标题、作者、抖音链接、点赞量，并且能够直接把真实的抖音搜索结果页面网页全屏截图发送到 QQ 聊天中给老大看！当老大要求在抖音搜索某个主题/视频/图文/表情包、或者要求看抖音搜索页面截图时调用。',
+        description: '在抖音真正使用搜索框搜索关键词（方案1拟人化打字防反爬技术）。能够直接获取真实的抖音搜索结果视频标题、作者、抖音链接、点赞量，并且能够直接把真实的抖音搜索结果页面网页全屏截图发送到 QQ 聊天中给老大看！同时会自动将搜索到的全部大肥鱼表情包/封面存入本地表情包库。当老大要求在抖音搜索某个主题/视频/图文/表情包、或者要求看抖音搜索页面截图时调用。',
         parameters: {
             keyword: {
                 type: 'string',
@@ -366,6 +364,10 @@ export function registerTools(ctx, bridge, connection, limits) {
                 type: 'boolean',
                 description: '是否直接将真实抖音搜索页面的网页截图发送到 QQ 会话中给老大看，默认为 true',
             },
+            save_memes: {
+                type: 'boolean',
+                description: '是否自动将搜索到的表情包封面批量存入本地库，默认为 true',
+            },
             chat_id: {
                 type: 'string',
                 description: '目标会话；省略时默认当前会话',
@@ -375,7 +377,7 @@ export function registerTools(ctx, bridge, connection, limits) {
         isConcurrencySafe: () => true,
         execute: async (args, exec) => {
             const chatId = resolveChat(bridge, exec, args.chat_id);
-            const res = await searchDouyin(args.keyword);
+            const res = await searchDouyin(args.keyword, { saveMemes: args.save_memes !== false });
             if (!res.success) {
                 return { success: false, message: `在抖音搜索 "${args.keyword}" 失败: ${res.error || '未知原因'}` };
             }
@@ -389,6 +391,8 @@ export function registerTools(ctx, bridge, connection, limits) {
                 success: true,
                 keyword: args.keyword,
                 resultsCount: res.items.length,
+                savedCount: res.savedCount || 0,
+                savedFiles: res.savedFiles || [],
                 results: res.items.map(it => ({
                     title: it.title,
                     author: it.author,
@@ -397,6 +401,53 @@ export function registerTools(ctx, bridge, connection, limits) {
                 })),
                 screenshotSent: !!messageId,
                 messageId: messageId ?? null
+            };
+        },
+    }));
+    register(defineTool({
+        name: 'qq_collect_douyin_memes',
+        description: '在抖音批量搜集大肥鱼的最新表情包，全量自动下载并永久存入本地大肥鱼表情包库（D:\\deepseek-harness\\memes）。当老大让你「多搜集一些大肥鱼表情包」、「搜集表情包自己用」时专门调用！会自动将搜索到的整批大肥鱼表情包存好，并向老大汇报保存了多少张，并挑一张发给老大看。',
+        parameters: {
+            topic: {
+                type: 'string',
+                description: '搜集主题（如："大肥鱼 表情包"、"大肥鱼 傲娇"、"大肥鱼 可爱"、"大肥鱼 摸鱼"等，默认 "大肥鱼 表情包"）',
+            },
+            send_sample: {
+                type: 'boolean',
+                description: '搜集完成后是否挑一张最可爱的大肥鱼表情包发送给老大看，默认为 true',
+            },
+            chat_id: {
+                type: 'string',
+                description: '目标会话；省略时默认当前会话',
+            },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => true,
+        execute: async (args, exec) => {
+            const chatId = resolveChat(bridge, exec, args.chat_id);
+            const topic = args.topic || '大肥鱼 表情包';
+            const res = await searchDouyin(topic, { saveMemes: true });
+            if (!res.success) {
+                return { success: false, message: `在抖音搜集表情包失败: ${res.error || '未知原因'}` };
+            }
+            let messageId = null;
+            if (args.send_sample !== false && res.savedFiles && res.savedFiles.length > 0) {
+                const sampleName = res.savedFiles[0];
+                const samplePath = path.join('D:\\deepseek-harness\\memes', sampleName);
+                if (fs.existsSync(samplePath)) {
+                    const buf = await fs.promises.readFile(samplePath);
+                    messageId = await bridge.sendSegments(chatId, [
+                        { type: 'image', data: { file: `base64://${buf.toString('base64')}` } },
+                    ]);
+                }
+            }
+            return {
+                success: true,
+                topic,
+                savedCount: res.savedCount || 0,
+                savedFiles: res.savedFiles || [],
+                sampleSent: !!messageId,
+                message: `已成功在抖音搜集并存入 ${res.savedCount || 0} 张大肥鱼表情包到本地表情包库！`
             };
         },
     }));
