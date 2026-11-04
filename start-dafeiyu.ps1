@@ -1,9 +1,9 @@
-﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $BaseDir = $PSScriptRoot
 if (-not $BaseDir) { $BaseDir = "D:\deepseek-harness" }
 
 Write-Host "===================================================" -ForegroundColor Cyan
-Write-Host "         正在启动大肥鱼 (QQ + 语音 + 大脑)        " -ForegroundColor Cyan
+Write-Host "     正在启动大肥鱼 (QQ + 语音 + 视觉 + 大脑)    " -ForegroundColor Cyan
 Write-Host "===================================================" -ForegroundColor Cyan
 
 # 1. 检查并启动 NapCat QQ (3001)
@@ -64,25 +64,41 @@ if (-not $conn9880) {
         Start-Process -FilePath $pythonExe -ArgumentList @("api_v2.py", "-a", "127.0.0.1", "-p", "9880", "-c", "GPT_SoVITS/configs/tts_infer.yaml") -WorkingDirectory $sovitsDir -WindowStyle Hidden
         Start-Sleep -Seconds 3
     } else {
-        Write-Host "[2/3] 提示: 未检测到本地 GPT-SoVITS 目录，若需要语音请参考 README 下载放置。" -ForegroundColor DarkYellow
+        Write-Host "[2/4] 提示: 未检测到本地 GPT-SoVITS 目录，若需要语音请参考 README 下载放置。" -ForegroundColor DarkYellow
     }
 } else {
-    Write-Host "[2/3] GPT-SoVITS 语音服务已在运行中 (端口: 9880)。" -ForegroundColor Green
+    Write-Host "[2/4] GPT-SoVITS 语音服务已在运行中 (端口: 9880)。" -ForegroundColor Green
 }
 
-# 3. 检查并启动 DeepSeek Harness (3080)
+# 3. 检查并启动 Ollama 本地视觉服务 (11434)
+$conn11434 = Get-NetTCPConnection -LocalPort 11434 -State Listen -ErrorAction SilentlyContinue
+if (-not $conn11434) {
+    $ollamaExe = (Get-Command "ollama.exe" -ErrorAction SilentlyContinue).Source
+    if (-not $ollamaExe) {
+        $ollamaExe = "C:\Users\25362\AppData\Local\Programs\Ollama\ollama.exe"
+    }
+    if (Test-Path $ollamaExe) {
+        Write-Host "[3/4] 正在启动 Ollama 本地视觉服务 (端口: 11434)..." -ForegroundColor Yellow
+        Start-Process -FilePath $ollamaExe -ArgumentList "serve" -WindowStyle Hidden
+        Start-Sleep -Seconds 2
+    }
+} else {
+    Write-Host "[3/4] Ollama 本地视觉服务已在运行中 (端口: 11434)。" -ForegroundColor Green
+}
+
+# 4. 检查并启动 DeepSeek Harness (3080)
 $conn3080 = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue
 if (-not $conn3080) {
     $dshBin = Join-Path $BaseDir "node_modules\@deepseek-ai\dsh\lib\bin.js"
     if (Test-Path $dshBin) {
-        Write-Host "[3/3] 正在启动大肥鱼大脑 DSH (无弹窗静默模式)..." -ForegroundColor Yellow
+        Write-Host "[4/4] 正在启动大肥鱼大脑 DSH (无弹窗静默模式)..." -ForegroundColor Yellow
         Start-Process -FilePath "node" -ArgumentList @($dshBin, "web", "--no-open") -WorkingDirectory $BaseDir -WindowStyle Hidden
         Start-Sleep -Seconds 2
     } else {
-        Write-Host "[3/3] 未找到 DSH 依赖，请在 $BaseDir 执行 npm install！" -ForegroundColor Red
+        Write-Host "[4/4] 未找到 DSH 依赖，请在 $BaseDir 执行 npm install！" -ForegroundColor Red
     }
 } else {
-    Write-Host "[3/3] 大肥鱼大脑 DSH 已在运行中 (端口: 3080)。" -ForegroundColor Green
+    Write-Host "[4/4] 大肥鱼大脑 DSH 已在运行中 (端口: 3080)。" -ForegroundColor Green
 }
 
 Write-Host "===================================================" -ForegroundColor Cyan

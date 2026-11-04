@@ -14,6 +14,7 @@
 import { writeFile } from 'node:fs/promises';
 import { extForInboundName } from './media.js';
 import { transcriptLabel } from './stt.js';
+import { describeImage } from './vision.js';
 import { cqUnescape, detectExplicitMention, detectMention, parseMessage, segmentText } from './cq.js';
 import { buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed, RESTRICTED_PREFIX, sanitizeNickname, wrapUserMessage, } from './chat.js';
 import { describeError } from './errors.js';
@@ -352,13 +353,21 @@ export class InboundPipeline {
         if (resolved === undefined)
             return '';
         switch (resolved.kind) {
-            case 'image':
+            case 'image': {
                 // Remember the most recent inbound image for /ocr (survives /new);
                 // consume the pre-routing pending ref so /ocr never re-resolves it.
                 const settings = this.ctx.getSettings(chatId);
                 settings.lastImagePath = resolved.path;
                 settings.pendingImageRef = undefined;
-                return '[图片:' + resolved.path + ']';
+                let visualNote = '';
+                try {
+                    const desc = await describeImage(resolved.path);
+                    if (desc) {
+                        visualNote = ` （视觉画面描述: ${desc}）`;
+                    }
+                } catch {}
+                return `[图片:${resolved.path}${visualNote}]`;
+            }
             case 'voice': {
                 // M3-D4c: dispatch must not wait on STT — the [语音] placeholder ships
                 // now and the transcript steers into the turn when it completes. A
