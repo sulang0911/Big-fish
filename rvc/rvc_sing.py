@@ -35,7 +35,7 @@ from rvc_python.infer import RVCInference
 
 RVC_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MODEL = os.path.join(RVC_DIR, "weights", "dafeiyu.pth")
-DEFAULT_INDEX = "" # 置空以避免 FAISS 加载 160MB 索引导致 8G 内存机器触发 Windows 线程创建内存耗尽
+DEFAULT_INDEX = "" # 内存保护：162MB FAISS 索引在 8G 内存环境会频繁触发系统页面文件耗尽 (WinError 1455)，因此置空
 SONGS_DIR = os.path.join(RVC_DIR, "songs")
 
 # 严格时长上限限制：大肥鱼最高只生成 25~30 秒精华片段，严禁整首完整长歌
@@ -131,7 +131,7 @@ class DaFeiYuSinger:
             p.t_max = 16000 * 10
         print(f"[RVC] 模型加载成功，耗时 {time.time()-t0:.2f}s，目标采样率: {self.rvc.vc.tgt_sr}Hz")
 
-    def convert_vocal(self, input_vocal, output_vocal, f0_up_key=0, f0_method="rmvpe", index_rate=0.75):
+    def convert_vocal(self, input_vocal, output_vocal, f0_up_key=0, f0_method="rmvpe", index_rate=0.85):
         """调用 RVC 转换人声音色 (最高限制 25~30 秒)"""
         v_data, v_sr = sf.read(input_vocal)
         v_duration = len(v_data) / v_sr
@@ -227,7 +227,7 @@ class DaFeiYuSinger:
         print(f"[MIX] 混音生成成功 -> {output_path} (时长: {duration:.1f}s, 采样率: {target_sr}Hz)")
         return output_path
 
-    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=None, index_rate=0.75, with_bgm=False):
+    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=None, index_rate=0.85, with_bgm=False):
         """完整歌曲处理流程：智能检测原唱音高 -> 转换人声 -> 纯清唱输出（默认去掉背景音乐）"""
         if output_path is None:
             output_path = os.path.splitext(vocal_path)[0] + "_dafeiyu.wav"
@@ -394,7 +394,7 @@ def main():
     parser.add_argument("--bgm", type=str, default=None, help="输入伴奏音频路径 (可选)")
     parser.add_argument("--output", type=str, default=None, help="输出最终音频路径")
     parser.add_argument("--key", type=int, default=None, help="升降调半音数 (默认自动检测原唱男/女声)")
-    parser.add_argument("--index_rate", type=float, default=0.75, help="检索特征比 (默认 0.75)")
+    parser.add_argument("--index_rate", type=float, default=0.85, help="检索特征比 (默认 0.85)")
     parser.add_argument("--with-bgm", action="store_true", default=False, help="是否混入伴奏 (默认 False，全量纯清唱模式)")
     args = parser.parse_args()
 

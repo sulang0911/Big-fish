@@ -43,6 +43,9 @@ def add_song(song_name, preset_key, key_offset=None, force=False):
     songs = r.json().get('result', {}).get('songs', [])
     downloaded = False
     for s in songs:
+        name = s.get('name', '')
+        if any(w in name.lower() for w in ['伴奏', 'instrumental', 'inst', 'beat', '伴奏版', '纯音乐']):
+            continue
         sid = s.get('id')
         stream = f'http://music.163.com/song/media/outer/url?id={sid}.mp3'
         resp = requests.get(stream, headers=headers, timeout=8)
@@ -92,15 +95,15 @@ def add_song(song_name, preset_key, key_offset=None, force=False):
 
     # 4. RVC 歌声转换 (纯清唱模式，独立进程)
     print("[4/4] RVC 歌声转换 (纯清唱模式)...")
-    rvc_script = os.path.join(RVC_DIR, "rvc_sing.py")
-    rvc_cmd = [
-        sys.executable, rvc_script,
+    sovits_script = r"D:\deepseek-harness\sovits\sovits_sing.py"
+    sovits_cmd = [
+        sys.executable, sovits_script,
         "--vocal", vocal_stem,
         "--output", out_cover
     ]
     if key_offset is not None:
-        rvc_cmd.extend(["--key", str(key_offset)])
-    subprocess.run(rvc_cmd, check=True)
+        sovits_cmd.extend(["--key", str(key_offset)])
+    subprocess.run(sovits_cmd, check=True)
 
     # 清理临时文件
     for f in [temp_mp3, temp_clip, vocal_stem, inst_stem]:
@@ -115,12 +118,12 @@ def add_song(song_name, preset_key, key_offset=None, force=False):
 
 def regenerate_all():
     # 1. 晴天与青花瓷直接使用现有分离人声升 12 半音纯清唱
-    rvc_script = os.path.join(RVC_DIR, "rvc_sing.py")
+    sovits_script = r"D:\deepseek-harness\sovits\sovits_sing.py"
     for k in ["qingtian", "qinghuaci"]:
         print(f"\n[*] 重新生成预置歌曲: {k} (升 12 半音纯清唱)")
         v = os.path.join(SONGS_DIR, f"{k}_vocal.wav")
         o = os.path.join(SONGS_DIR, f"{k}_dafeiyu_cover.wav")
-        subprocess.run([sys.executable, rvc_script, "--vocal", v, "--output", o, "--key", "12"], check=True)
+        subprocess.run([sys.executable, sovits_script, "--vocal", v, "--output", o, "--key", "12"], check=True)
 
     # 2. 其他歌曲重新生成
     songs_to_add = [

@@ -27,6 +27,16 @@ rvc/**/*.pth
 rvc/**/*.index
 rvc/songs/
 rvc/__pycache__/
+
+# SO-VITS-SVC weights & runtime cache
+sovits/models/*.pth
+sovits/models/*.pt
+sovits/pretrain/*.pt
+sovits/**/*.pt
+sovits/**/*.pth
+sovits/**/*.bin
+sovits/__pycache__/
+sovits/**/__pycache__/
 __pycache__/
 *.whl
 
