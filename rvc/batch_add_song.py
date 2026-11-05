@@ -21,13 +21,13 @@ os.environ["MKL_NUM_THREADS"] = "2"
 RVC_DIR = os.path.dirname(os.path.abspath(__file__))
 SONGS_DIR = os.path.join(RVC_DIR, "songs")
 
-def add_song(song_name, preset_key):
+def add_song(song_name, preset_key, key_offset=None, force=False):
     print(f"\n==========================================")
-    print(f"[*] 开始生成歌曲: 《{song_name}》 (Key: {preset_key})")
+    print(f"[*] 开始生成歌曲: 《{song_name}》 (Key: {preset_key}, 变调: {key_offset})")
     print(f"==========================================")
     
     out_cover = os.path.join(SONGS_DIR, f"{preset_key}_dafeiyu_cover.wav")
-    if os.path.exists(out_cover):
+    if os.path.exists(out_cover) and not force:
         print(f"[EXISTS] 翻唱音频已就绪: {out_cover}")
         return out_cover
 
@@ -99,6 +99,8 @@ def add_song(song_name, preset_key):
         "--bgm", inst_stem,
         "--output", out_cover
     ]
+    if key_offset is not None:
+        rvc_cmd.extend(["--key", str(key_offset)])
     subprocess.run(rvc_cmd, check=True)
 
     # 清理临时文件
@@ -112,14 +114,28 @@ def add_song(song_name, preset_key):
     print(f"[SUCCESS] 《{song_name}》生成完成 -> {out_cover} (大小: {os.path.getsize(out_cover)} 字节)")
     return out_cover
 
-if __name__ == "__main__":
+def regenerate_all():
+    # 1. 晴天与青花瓷直接使用现有分离文件升 12 半音
+    rvc_script = os.path.join(RVC_DIR, "rvc_sing.py")
+    for k in ["qingtian", "qinghuaci"]:
+        print(f"\n[*] 重新生成预置歌曲: {k} (升 12 半音萝莉调)")
+        v = os.path.join(SONGS_DIR, f"{k}_vocal.wav")
+        b = os.path.join(SONGS_DIR, f"{k}_instrument.wav")
+        o = os.path.join(SONGS_DIR, f"{k}_dafeiyu_cover.wav")
+        subprocess.run([sys.executable, rvc_script, "--vocal", v, "--bgm", b, "--output", o, "--key", "12"], check=True)
+
+    # 2. 其他歌曲重新生成
     songs_to_add = [
-        ("夜曲 周杰伦", "yequ"),
-        ("告白气球 周杰伦", "gaobaiqiqiu"),
-        ("七里香 周杰伦", "qilixiang"),
+        ("稻香 周杰伦", "daoxiang", 12),
+        ("夜曲 周杰伦", "yequ", 12),
+        ("告白气球 周杰伦", "gaobaiqiqiu", 12),
+        ("爱你 王心凌", "aini", 0), # 女声原调 0
     ]
-    for q, k in songs_to_add:
+    for q, k, offset in songs_to_add:
         try:
-            add_song(q, k)
+            add_song(q, k, key_offset=offset, force=True)
         except Exception as e:
-            print(f"[ERROR] 添加 {q} 失败: {e}")
+            print(f"[ERROR] 生成 {q} 失败: {e}")
+
+if __name__ == "__main__":
+    regenerate_all()

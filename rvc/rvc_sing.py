@@ -43,39 +43,68 @@ MAX_SONG_DURATION = 25.0
 
 PRESETS = {
     "qingtian": {
-        "title": "晴天 - 周杰伦 (大肥鱼翻唱版)",
+        "title": "晴天 - 周杰伦 (大肥鱼甜美翻唱版)",
         "vocal": os.path.join(SONGS_DIR, "qingtian_vocal.wav"),
         "bgm": os.path.join(SONGS_DIR, "qingtian_instrument.wav"),
         "output": os.path.join(SONGS_DIR, "qingtian_dafeiyu_cover.wav"),
-        "f0_up_key": 0,
+        "f0_up_key": 12,
         "index_rate": 0.75,
         "alias": ["晴天", "qingtian"],
     },
     "qinghuaci": {
-        "title": "青花瓷 - 周杰伦 (大肥鱼翻唱版)",
+        "title": "青花瓷 - 周杰伦 (大肥鱼甜美翻唱版)",
         "vocal": os.path.join(SONGS_DIR, "qinghuaci_vocal.wav"),
         "bgm": os.path.join(SONGS_DIR, "qinghuaci_instrument.wav"),
         "output": os.path.join(SONGS_DIR, "qinghuaci_dafeiyu_cover.wav"),
-        "f0_up_key": 0,
+        "f0_up_key": 12,
         "index_rate": 0.75,
         "alias": ["青花瓷", "qinghuaci"],
     },
     "daoxiang": {
-        "title": "稻香 - 周杰伦 (大肥鱼翻唱版)",
+        "title": "稻香 - 周杰伦 (大肥鱼甜美翻唱版)",
         "output": os.path.join(SONGS_DIR, "daoxiang_dafeiyu_cover.wav"),
         "alias": ["稻香", "daoxiang"],
     },
     "yequ": {
-        "title": "夜曲 - 周杰伦 (大肥鱼翻唱版)",
+        "title": "夜曲 - 周杰伦 (大肥鱼甜美翻唱版)",
         "output": os.path.join(SONGS_DIR, "yequ_dafeiyu_cover.wav"),
         "alias": ["夜曲", "yequ"],
     },
     "gaobaiqiqiu": {
-        "title": "告白气球 - 周杰伦 (大肥鱼翻唱版)",
+        "title": "告白气球 - 周杰伦 (大肥鱼甜美翻唱版)",
         "output": os.path.join(SONGS_DIR, "gaobaiqiqiu_dafeiyu_cover.wav"),
         "alias": ["告白气球", "gaobaiqiqiu", "情歌"],
     },
+    "aini": {
+        "title": "爱你 - 王心凌 (大肥鱼原汁萌唱版)",
+        "output": os.path.join(SONGS_DIR, "aini_dafeiyu_cover.wav"),
+        "alias": ["爱你", "aini", "王心凌"],
+    },
 }
+
+def detect_auto_key(vocal_path, singer=None):
+    """
+    智能检测歌曲原唱音高 (F0)：
+    - 男声 (< 175 Hz)：自动升 12 个半音 (高八度)，匹配大肥鱼清脆萝莉音区，消除男低音突兀感
+    - 女声 (>= 175 Hz)：保持原调 0 半音 (原唱即为女声音域，避免过度升高成花栗鼠)
+    """
+    try:
+        x, _ = librosa.load(vocal_path, sr=16000, duration=10, mono=True)
+        if singer and hasattr(singer.rvc.vc, "pipeline") and singer.rvc.vc.pipeline:
+            f0, _ = singer.rvc.vc.pipeline.get_f0(vocal_path, x, len(x) // 160, 0, "rmvpe", 3)
+            voiced = f0[f0 > 50]
+            if len(voiced) > 0:
+                med_f0 = float(np.median(voiced))
+                print(f"[AUTO_KEY] 探测原唱人声基频 F0 中位数: {med_f0:.1f}Hz")
+                if med_f0 < 175:
+                    print(f"[AUTO_KEY] 识别为男声原唱 ({med_f0:.1f}Hz < 175Hz)，自动升 12 半音 (+1个八度) 匹配大肥鱼萝莉女声音域！")
+                    return 12
+                else:
+                    print(f"[AUTO_KEY] 识别为女声原唱 ({med_f0:.1f}Hz >= 175Hz)，保持原调 0 半音！")
+                    return 0
+    except Exception as e:
+        print(f"[AUTO_KEY WARN] 音高探测失败，默认升 12 半音: {e}")
+    return 12
 
 class DaFeiYuSinger:
     def __init__(self, model_path=DEFAULT_MODEL, index_path=DEFAULT_INDEX, device="cuda:0"):
@@ -184,11 +213,14 @@ class DaFeiYuSinger:
         print(f"[MIX] 混音生成成功 -> {output_path} (时长: {duration:.1f}s, 采样率: {target_sr}Hz)")
         return output_path
 
-    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=0, index_rate=0.75):
-        """完整歌曲处理流程：转换人声 -> 伴奏混音"""
+    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=None, index_rate=0.75):
+        """完整歌曲处理流程：智能检测原唱音高 -> 转换人声 -> 伴奏混音"""
         if output_path is None:
             output_path = os.path.splitext(vocal_path)[0] + "_dafeiyu.wav"
             
+        if f0_up_key is None:
+            f0_up_key = detect_auto_key(vocal_path, self)
+
         temp_vocal = os.path.splitext(output_path)[0] + "_vocal_only.wav"
         self.convert_vocal(vocal_path, temp_vocal, f0_up_key=f0_up_key, index_rate=index_rate)
         
@@ -346,7 +378,7 @@ def main():
     parser.add_argument("--vocal", type=str, help="输入人声干声音频路径")
     parser.add_argument("--bgm", type=str, default=None, help="输入伴奏音频路径 (可选)")
     parser.add_argument("--output", type=str, default=None, help="输出最终音频路径")
-    parser.add_argument("--key", type=int, default=0, help="升降调半音数 (默认 0)")
+    parser.add_argument("--key", type=int, default=None, help="升降调半音数 (默认自动检测原唱男/女声)")
     parser.add_argument("--index_rate", type=float, default=0.75, help="检索特征比 (默认 0.75)")
     args = parser.parse_args()
 
