@@ -117,10 +117,13 @@ export class InboundPipeline {
                 return;
             }
         }
+        const isAdmin = classifyUserRole(userId, policy.adminUsers) === 'admin';
+        // 群聊限制：非管理员群成员必须 @ 肥鱼（或回复肥鱼消息）才唤醒回复；老大在群内免 @ 直接回复
+        const requireMentionForThisMessage = kind === 'group' && (this.ctx.config.requireMention || !isAdmin);
         let mentioned = detectMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ);
         let verifiedQuote;
         let mentionDropReason = TRACE_REASONS.inboundUnmentioned;
-        if (kind === 'group' && this.ctx.config.requireMention
+        if (requireMentionForThisMessage
             && !detectExplicitMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ)) {
             mentioned = false;
             const bot = this.ctx.selfId() || this.ctx.config.botQQ;
@@ -156,8 +159,8 @@ export class InboundPipeline {
                 }
             }
         }
-        if (kind === 'group' && this.ctx.config.requireMention && !mentioned) {
-            this.ctx.log('debug', mentionDropReason + ': ' + groupId);
+        if (requireMentionForThisMessage && !mentioned) {
+            this.ctx.log('debug', mentionDropReason + ': ' + groupId + ' (非管理员群成员未@机器人，已忽略)');
             currentTrace()?.emit('mention', { ok: false, reason: mentionDropReason });
             return;
         }
@@ -208,7 +211,6 @@ export class InboundPipeline {
                 this.ctx.getSettings(chatId).pendingImageRef = pending;
             }
         }
-        const isAdmin = classifyUserRole(userId, policy.adminUsers) === 'admin';
         if (this.rateLimited(chatId))
             return;
         // M3-D5: the whole sender-controlled payload (body + quote/forward

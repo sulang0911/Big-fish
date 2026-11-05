@@ -83,12 +83,21 @@ export function detectExplicitMention(segments, raw, selfId, botQQ) {
     if (bot === '')
         return false;
     if (segments !== undefined) {
-        return segments.some(seg => seg.type === 'at' && (seg.data.qq === bot || seg.data.qq === 'all'));
+        if (segments.some(seg => seg.type === 'at' && (String(seg.data.qq) === bot || seg.data.qq === 'all'))) {
+            return true;
+        }
     }
     CQ_AT_RE.lastIndex = 0;
     for (const m of raw.matchAll(CQ_AT_RE)) {
         if (m[1] === bot || m[1] === 'all')
             return true;
+    }
+    // 文本级@或呼叫唤醒（支持用户在群里直接打字 @肥鱼、@大肥鱼、@开心飞鱼）
+    const text = segments !== undefined
+        ? segments.filter(s => s.type === 'text').map(s => s.data.text ?? '').join('')
+        : (raw || '');
+    if (/@(肥鱼|大肥鱼|开心飞鱼)/i.test(text)) {
+        return true;
     }
     return false;
 }
