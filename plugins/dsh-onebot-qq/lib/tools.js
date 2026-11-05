@@ -132,6 +132,27 @@ export function registerTools(ctx, bridge, connection, limits) {
     const register = (tool) => {
         disposers.push(ctx.tools.register(tool));
     };
+
+    // 核心安全栅栏：群聊中除老大（2536218596）外，其他群友请求一律禁止修改/创建/删除文件与执行系统命令
+    const RESTRICTED_ACTIONS = new Set([
+        'write',
+        'edit',
+        'str_replace_editor',
+        'bash',
+        'pwsh',
+        'terminal',
+        'qq_exec_command'
+    ]);
+    if (typeof ctx.tools?.guard === 'function') {
+        disposers.push(ctx.tools.guard((exec) => {
+            if (RESTRICTED_ACTIONS.has(exec.name)) {
+                const sessionId = exec.agent?.session?.id;
+                if (!bridge.canEditFiles(sessionId)) {
+                    return '【权限拒绝】当前消息来自群聊中的非管理员成员。根据最高安全策略，大肥鱼在群聊中除老大（QQ: 2536218596）外的所有操作请求中，严禁修改/创建/删除任何文件、运行脚本或操作电脑，只能进行纯聊天、解答问题和斗图交流！';
+                }
+            }
+        }));
+    }
     register(defineTool({
         name: 'qq_send_image',
         description: '向 QQ 会话发送一张或多张图片（本地文件路径或 http(s) URL，最多 9 张）。用于回复用户时附带截图/生成图等。',
