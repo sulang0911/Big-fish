@@ -92,11 +92,11 @@ export function detectExplicitMention(segments, raw, selfId, botQQ) {
         if (m[1] === bot || m[1] === 'all')
             return true;
     }
-    // 文本级@或呼叫唤醒（支持用户在群里直接打字 @肥鱼、@大肥鱼、@开心飞鱼）
+    // 文本级@或呼叫唤醒（支持用户在群里直接打字 @肥鱼本鱼、@肥鱼、@大肥鱼、@开心飞鱼）
     const text = segments !== undefined
         ? segments.filter(s => s.type === 'text').map(s => s.data.text ?? '').join('')
         : (raw || '');
-    if (/@(肥鱼|大肥鱼|开心飞鱼)/i.test(text)) {
+    if (/@(肥鱼本鱼|肥鱼|大肥鱼|开心飞鱼)/i.test(text)) {
         return true;
     }
     return false;
