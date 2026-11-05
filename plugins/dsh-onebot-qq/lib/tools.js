@@ -271,9 +271,9 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_sing_song',
-        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 RVC v2 AI 歌声与伴奏立体声翻唱合成器。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如周杰伦《晴天》、《青花瓷》）时，必须且只能调用此工具生成 30 秒黄金副歌翻唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
+        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 RVC v2 AI 歌声与伴奏立体声翻唱合成器。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如《晴天》、《青花瓷》、《稻香》、《夜曲》、《告白气球》或任意歌曲）时，必须且只能调用此工具生成 25~30 秒黄金副歌翻唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
         parameters: {
-            song_name: { type: 'string', required: true, description: '歌曲名称或预置曲目（如 "晴天"、"青花瓷"）' },
+            song_name: { type: 'string', required: true, description: '歌曲名称或点歌内容（如 "晴天"、"青花瓷"、"稻香"、"情歌" 或任意歌名）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
         },
         output: sendOutput(),
@@ -283,33 +283,38 @@ export function registerTools(ctx, bridge, connection, limits) {
             if (typeof a.song_name !== 'string' || a.song_name.trim() === '')
                 throw new Error('qq_sing_song: song_name 必填');
             const chatId = resolveChat(bridge, exec, a.chat_id);
-            const songRaw = a.song_name.trim().toLowerCase();
-            let presetKey = 'qingtian';
-            if (songRaw.includes('青花瓷') || songRaw.includes('qinghuaci')) {
-                presetKey = 'qinghuaci';
-            } else if (songRaw.includes('晴天') || songRaw.includes('qingtian')) {
-                presetKey = 'qingtian';
-            }
-            const coverPath = `D:\\deepseek-harness\\rvc\\songs\\${presetKey}_dafeiyu_cover.wav`;
-            if (!fs.existsSync(coverPath)) {
-                const pyPath = 'D:\\ollama\\GPT-SoVITS-v2pro\\GPT-SoVITS-v2pro-20250604\\runtime\\python.exe';
-                const scriptPath = 'D:\\deepseek-harness\\rvc\\rvc_sing.py';
-                const cmd = `& "${pyPath}" -u "${scriptPath}" --preset ${presetKey}`;
-                
-                await new Promise((resolve, reject) => {
-                    cpExec(cmd, { shell: 'powershell.exe', timeout: 60000 }, (err, stdout, stderr) => {
-                        if (err) return reject(new Error('RVC 唱歌生成失败: ' + (stderr || err.message)));
-                        resolve(stdout);
-                    });
+            const songQuery = a.song_name.trim();
+
+            const pyPath = 'D:\\ollama\\GPT-SoVITS-v2pro\\GPT-SoVITS-v2pro-20250604\\runtime\\python.exe';
+            const scriptPath = 'D:\\deepseek-harness\\rvc\\rvc_sing.py';
+            const safeSongQuery = songQuery.replace(/["'`$\\]/g, ' ').trim() || '晴天';
+            const cmd = `& "${pyPath}" -u "${scriptPath}" --song "${safeSongQuery}"`;
+
+            const stdout = await new Promise((resolve, reject) => {
+                cpExec(cmd, { shell: 'powershell.exe', timeout: 90000 }, (err, stdout, stderr) => {
+                    if (err) return reject(new Error('RVC 唱歌生成失败: ' + (stderr || err.message)));
+                    resolve(stdout);
                 });
+            });
+
+            let coverPath = null;
+            const match = stdout.match(/\[OUTPUT_COVER\]\s+([^\r\n]+)/);
+            if (match && match[1]) {
+                coverPath = match[1].trim();
             }
 
-            if (!fs.existsSync(coverPath)) {
-                throw new Error('生成的歌曲文件未找到: ' + coverPath);
+            if (!coverPath || !fs.existsSync(coverPath)) {
+                const fallbackPath = 'D:\\deepseek-harness\\rvc\\songs\\qingtian_dafeiyu_cover.wav';
+                if (fs.existsSync(fallbackPath)) {
+                    coverPath = fallbackPath;
+                } else {
+                    throw new Error('生成的歌曲文件未找到: ' + (coverPath || stdout));
+                }
             }
+
             const rawBuffer = await fs.promises.readFile(coverPath);
             const buffer = padWavSilence(rawBuffer, 250);
-            const filename = `song_${presetKey}_${Date.now()}.wav`;
+            const filename = `song_${Date.now()}.wav`;
             const allowedRoots = await mediaRoots(bridge, exec);
             const mediaDir = allowedRoots[0] || bridge.deps?.config?.mediaDir || 'C:\\Users\\25362\\.dsh\\media\\onebot';
             await fs.promises.mkdir(mediaDir, { recursive: true });
