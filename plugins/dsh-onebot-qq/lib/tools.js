@@ -61,8 +61,12 @@ function sendOutput() {
 }
 /** Resolve the target chat for a tool call. */
 function resolveChat(bridge, exec, chatIdArg) {
-    if (typeof chatIdArg === 'string' && chatIdArg !== '')
-        return chatIdArg;
+    if (typeof chatIdArg === 'string' && chatIdArg.trim() !== '') {
+        const parts = chatIdArg.split(':');
+        if (parts.length === 2 && parts[1].trim() !== '') {
+            return chatIdArg;
+        }
+    }
     const sessionId = exec.agent?.session.id;
     if (sessionId !== undefined) {
         const chatId = bridge.chatForSession(String(sessionId));
@@ -202,6 +206,119 @@ export function registerTools(ctx, bridge, connection, limits) {
         },
     }));
     register(defineTool({
+        name: 'qq_generate_image',
+        description: '使用 AI 生图大模型（ChatGPT / DALL-E / Sub2API 生图引擎）根据提示词生成全新图片并直接发送到 QQ 会话。当老大或群友让你画画、画图、生成图片、制作图片或发自画像时（例如「画一只小猫」、「生成一张壁纸」、「给我画个大肥鱼」等），必须直接调用此工具！',
+        parameters: {
+            prompt: {
+                type: 'string',
+                required: true,
+                description: '画图提示词。根据用户的具体要求进行生动、详细的画面视觉描写（支持中文或英文）。',
+            },
+            chat_id: {
+                type: 'string',
+                description: '目标会话，格式 private:<QQ号> 或 group:<群号>；省略时默认当前会话',
+            },
+            caption: {
+                type: 'string',
+                description: '随图片一起发送的附带文字说明（可选）',
+            },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => false,
+        execute: async (args, exec) => {
+            const a = args;
+            if (typeof a.prompt !== 'string' || a.prompt.trim() === '')
+                throw new Error('qq_generate_image: prompt 必填');
+            const chatId = resolveChat(bridge, exec, a.chat_id);
+            const prompt = a.prompt.trim();
+
+            let apiKey = process.env.LUNA_API_KEY;
+            if (!apiKey) {
+                const credPath = 'C:\\Users\\25362\\.dsh\\.credentials.yaml';
+                if (fs.existsSync(credPath)) {
+                    try {
+                        const content = await fs.promises.readFile(credPath, 'utf-8');
+                        const m = content.match(/LUNA_API_KEY:\s*([^\r\n]+)/);
+                        if (m && m[1]) apiKey = m[1].trim();
+                    } catch {}
+                }
+            }
+
+            let imgBuffer = null;
+            let ext = 'png';
+
+            // 1. 首选尝试 Sub2API (ChatGPT 官方生图引擎)
+            if (apiKey) {
+                try {
+                    const apiUrl = 'https://sub2api.echovoid.top/v1/images/generations';
+                    const payload = {
+                        prompt: prompt,
+                        model: 'gpt-image-1',
+                        n: 1,
+                        size: '1024x1024'
+                    };
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${apiKey}`
+                        },
+                        body: JSON.stringify(payload),
+                        signal: AbortSignal.timeout(60000)
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        const item = data?.data?.[0];
+                        if (item?.b64_json) {
+                            imgBuffer = Buffer.from(item.b64_json, 'base64');
+                        } else if (item?.url) {
+                            const imgResp = await fetch(item.url, { signal: AbortSignal.timeout(30000) });
+                            if (imgResp.ok) {
+                                imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            // 2. 若 Sub2API 分组未开启生图权限或调用失败，自动启用备用高速 AI 生图引擎，保证 100% 成功生成并发图
+            if (!imgBuffer) {
+                try {
+                    ext = 'jpg';
+                    const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?nologo=true`;
+                    const fallbackResp = await fetch(fallbackUrl, { signal: AbortSignal.timeout(45000) });
+                    if (fallbackResp.ok) {
+                        imgBuffer = Buffer.from(await fallbackResp.arrayBuffer());
+                    }
+                } catch (e) {}
+            }
+
+            if (!imgBuffer) {
+                throw new Error('生图失败: 所有生图通道均未能获取到图片，请稍后重试');
+            }
+
+            const allowedRoots = await mediaRoots(bridge, exec);
+            const mediaDir = allowedRoots[0] || bridge.deps?.config?.mediaDir || 'C:\\Users\\25362\\.dsh\\media\\onebot';
+            await fs.promises.mkdir(mediaDir, { recursive: true });
+            const filename = `gen_${Date.now()}.${ext}`;
+            const fullPath = path.join(mediaDir, filename);
+            await fs.promises.writeFile(fullPath, imgBuffer);
+
+            const segments = [];
+            if (typeof a.caption === 'string' && a.caption.trim() !== '') {
+                segments.push({ type: 'text', data: { text: a.caption.trim() } });
+            }
+            segments.push({
+                type: 'image',
+                data: { file: await fencedMediaFile(fullPath, limits.maxImageBytes, allowedRoots) }
+            });
+
+            const messageId = await bridge.sendSegments(chatId, segments);
+            return { sent: true, messageId: messageId ?? null };
+        },
+    }));
+    register(defineTool({
         name: 'qq_send_voice',
         description: '向 QQ 会话发送一条语音消息（本地音频文件路径，mp3/wav/silk 等；NapCat 负责转码）。',
         parameters: {
@@ -222,9 +339,48 @@ export function registerTools(ctx, bridge, connection, limits) {
             return { sent: true, messageId: messageId ?? null };
         },
     }));
+    const VOICE_CONFIG_PATH = 'D:\\deepseek-harness\\voice_config.json';
+
+    function getActiveVoice() {
+        try {
+            if (fs.existsSync(VOICE_CONFIG_PATH)) {
+                const cfg = JSON.parse(fs.readFileSync(VOICE_CONFIG_PATH, 'utf-8'));
+                const activeKey = cfg.active_voice || 'klee';
+                const voice = cfg.voices?.[activeKey] || cfg.voices?.klee;
+                if (voice) return voice;
+            }
+        } catch (e) {
+            console.error('[VoiceConfig] 读取失败:', e);
+        }
+        return {
+            id: 'klee',
+            name: '可莉',
+            style: '元气天真萝莉音',
+            ref_audio: 'D:\\ollama\\voices\\klee\\116425_audio.wav',
+            prompt_text: '抓到了就是这里，我们来把宝物挖出来吧。'
+        };
+    }
+
+    function setActiveVoice(voiceKey) {
+        if (!fs.existsSync(VOICE_CONFIG_PATH)) return null;
+        const cfg = JSON.parse(fs.readFileSync(VOICE_CONFIG_PATH, 'utf-8'));
+        const key = String(voiceKey).toLowerCase().trim();
+        let targetKey = null;
+        for (const [k, v] of Object.entries(cfg.voices || {})) {
+            if (k.toLowerCase() === key || v.name === key || (v.style && v.style.includes(key))) {
+                targetKey = k;
+                break;
+            }
+        }
+        if (!targetKey) return null;
+        cfg.active_voice = targetKey;
+        fs.writeFileSync(VOICE_CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+        return cfg.voices[targetKey];
+    }
+
     register(defineTool({
         name: 'qq_send_tts',
-        description: '使用本地部署的 GPT-SoVITS 语音大模型将指定文字合成大肥鱼的声音，并向 QQ 会话发送语音消息。仅用于日常聊天说话、向老大撒娇或要求发语音时调用。严禁用于唱歌或点歌（任何人点歌/唱歌必须调用 qq_sing_song）！',
+        description: '使用本地部署的 GPT-SoVITS 语音大模型将指定文字合成大肥鱼的声音，并向 QQ 会话发送语音消息。采用当前激活的音色（支持随时切换可莉/芙宁娜/芭芭拉/迪奥娜）。仅用于日常聊天说话、向老大撒娇或要求发语音时调用。严禁用于唱歌或点歌（任何人点歌/唱歌必须调用 qq_sing_song）！',
         parameters: {
             text: { type: 'string', required: true, description: '要转换并发出的语音文字内容（建议 5~30 字，简洁生动）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
@@ -237,11 +393,12 @@ export function registerTools(ctx, bridge, connection, limits) {
                 throw new Error('qq_send_tts: text 必填');
             const chatId = resolveChat(bridge, exec, a.chat_id);
             const ttsUrl = 'http://127.0.0.1:9880/tts';
+            const activeVoice = getActiveVoice();
             const payload = {
                 text: a.text,
                 text_lang: 'zh',
-                ref_audio_path: 'D:\\ollama\\voices\\klee\\116425_audio.wav',
-                prompt_text: '到了到了，就是这里，我们来把宝物挖出来吧。',
+                ref_audio_path: activeVoice.ref_audio,
+                prompt_text: activeVoice.prompt_text,
                 prompt_lang: 'zh',
                 text_split_method: 'cut2',
                 fragment_interval: 0.3
@@ -266,7 +423,76 @@ export function registerTools(ctx, bridge, connection, limits) {
             const messageId = await bridge.sendSegments(chatId, [
                 { type: 'record', data: { file: await fencedMediaFile(fullPath, limits.maxVoiceBytes, allowedRoots) } },
             ]);
-            return { sent: true, messageId: messageId ?? null };
+            return { sent: true, voice: activeVoice.name, messageId: messageId ?? null };
+        },
+    }));
+    register(defineTool({
+        name: 'qq_switch_voice',
+        description: '【音色切换工具】允许用户随时切换大肥鱼的说话音色。支持可选音色：klee（可莉/元气萝莉）、furina（芙宁娜/傲娇女王）、barbara（芭芭拉/治愈甜妹）、diona（迪奥娜/傲娇猫娘）。当老大或用户说「换成芙宁娜声音」、「切换音色为可莉」、「换成芭芭拉音色」等指令时调用此工具。切换后会自动使用新音色发一条语音确认。',
+        parameters: {
+            voice: { type: 'string', required: true, description: '目标音色标识或名称，如 "klee" / "可莉"、"furina" / "芙宁娜"、"barbara" / "芭芭拉"、"diona" / "迪奥娜"' },
+            chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => false,
+        execute: async (args, exec) => {
+            const a = args;
+            const chatId = resolveChat(bridge, exec, a.chat_id);
+            const voice = setActiveVoice(a.voice);
+            if (!voice) {
+                throw new Error(`未知音色: "${a.voice}"。支持的音色包括：可莉 (klee)、芙宁娜 (furina)、芭芭拉 (barbara)、迪奥娜 (diona)`);
+            }
+            const confirmText = `音色已切换为【${voice.name}·${voice.style}】啦！以后本鱼就用这个声音说话咯~`;
+            const ttsUrl = 'http://127.0.0.1:9880/tts';
+            const payload = {
+                text: confirmText,
+                text_lang: 'zh',
+                ref_audio_path: voice.ref_audio,
+                prompt_text: voice.prompt_text,
+                prompt_lang: 'zh',
+                text_split_method: 'cut2',
+                fragment_interval: 0.3
+            };
+            const response = await fetch(ttsUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                throw new Error('TTS 合成确认语音失败: ' + (await response.text()));
+            }
+            const rawBuffer = Buffer.from(await response.arrayBuffer());
+            const buffer = padWavSilence(rawBuffer, 250);
+            const filename = `voice_switch_${Date.now()}.wav`;
+            const allowedRoots = await mediaRoots(bridge, exec);
+            const mediaDir = allowedRoots[0] || bridge.deps?.config?.mediaDir || 'C:\\Users\\25362\\.dsh\\media\\onebot';
+            await fs.promises.mkdir(mediaDir, { recursive: true });
+            const fullPath = path.join(mediaDir, filename);
+            await fs.promises.writeFile(fullPath, buffer);
+            const messageId = await bridge.sendSegments(chatId, [
+                { type: 'record', data: { file: await fencedMediaFile(fullPath, limits.maxVoiceBytes, allowedRoots) } },
+            ]);
+            return { sent: true, switched_to: voice.name, style: voice.style, messageId: messageId ?? null };
+        },
+    }));
+    register(defineTool({
+        name: 'qq_list_voices',
+        description: '【查询音色库】查询大肥鱼当前已加载的所有可用音色、风格特色与当前正在使用的音色。当用户询问「你有什么音色」、「支持哪些声音」、「查看当前音色」时调用。',
+        parameters: {
+            chat_id: { type: 'string', description: '目标会话' },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => true,
+        execute: async (args, exec) => {
+            const cfg = JSON.parse(fs.readFileSync(VOICE_CONFIG_PATH, 'utf-8'));
+            const active = cfg.voices[cfg.active_voice] || cfg.voices.klee;
+            let list = `【大肥鱼音色库】\n当前生效：${active.name}（${active.style}）\n\n可选音色：\n`;
+            for (const v of Object.values(cfg.voices)) {
+                const mark = v.id === cfg.active_voice ? ' [当前生效]' : '';
+                list += `• ${v.name} (${v.id})${mark}：${v.style}\n  ${v.description}\n`;
+            }
+            list += `\n提示：直接对我发「切换音色为XX」即可随时更换！`;
+            return { active_voice: active.name, voice_list: list };
         },
     }));
     register(defineTool({

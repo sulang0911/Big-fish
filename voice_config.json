@@ -1,0 +1,37 @@
+{
+  "active_voice": "klee",
+  "voices": {
+    "klee": {
+      "id": "klee",
+      "name": "可莉",
+      "style": "元气天真萝莉音",
+      "description": "欢快甜萌、活力满满的幼女萝莉音（大肥鱼经典原版声线）",
+      "ref_audio": "D:\\ollama\\voices\\klee\\116425_audio.wav",
+      "prompt_text": "抓到了就是这里，我们来把宝物挖出来吧。"
+    },
+    "furina": {
+      "id": "furina",
+      "name": "芙宁娜",
+      "style": "优雅傲娇女王音",
+      "description": "高贵戏剧感、从容略带傲娇的御姐/大小姐少女音",
+      "ref_audio": "D:\\ollama\\voices\\furina\\10135_audio.wav",
+      "prompt_text": "我应该早就告诉过你，我不会再扮演任何角色了，一次都不会。"
+    },
+    "barbara": {
+      "id": "barbara",
+      "name": "芭芭拉",
+      "style": "治愈系偶像甜妹音",
+      "description": "清纯温柔、阳光元气的邻家偶像甜美声线",
+      "ref_audio": "D:\\ollama\\voices\\barbara\\118435_audio.wav",
+      "prompt_text": "不愧是荣誉骑士，确实应付的很轻松呢。"
+    },
+    "diona": {
+      "id": "diona",
+      "name": "迪奥娜",
+      "style": "傲娇奶凶猫娘音",
+      "description": "猫系傲娇、嘴硬心软、奶凶可爱的调酒师幼齿音",
+      "ref_audio": "D:\\ollama\\voices\\diona\\102092_audio.wav",
+      "prompt_text": "我们快回去吧，材料也搜集够了，调酒手法这件事，我再自己想想办法。"
+    }
+  }
+}
