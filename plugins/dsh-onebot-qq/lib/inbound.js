@@ -160,9 +160,17 @@ export class InboundPipeline {
             }
         }
         if (requireMentionForThisMessage && !mentioned) {
-            this.ctx.log('debug', mentionDropReason + ': ' + groupId + ' (非管理员群成员未@机器人，已忽略)');
-            currentTrace()?.emit('mention', { ok: false, reason: mentionDropReason });
-            return;
+            const chimeProb = typeof this.ctx.config.randomChimeProbability === 'number'
+                ? this.ctx.config.randomChimeProbability
+                : 0.2;
+            const roll = Math.random();
+            if (chimeProb > 0 && roll < chimeProb) {
+                this.ctx.log('info', `[群聊插话] 群友未@肥鱼，命中 ${Math.round(chimeProb * 100)}% 随机插话几率 (roll=${roll.toFixed(3)})，触发回复！`);
+            } else {
+                this.ctx.log('debug', mentionDropReason + ': ' + groupId + ` (非管理员群成员未@机器人，未命中随机插话 roll=${roll.toFixed(3)}，已忽略)`);
+                currentTrace()?.emit('mention', { ok: false, reason: mentionDropReason });
+                return;
+            }
         }
         // M3-D5 identity whitelist: the sanitized nickname feeds the single-line
         // prefix, the <user_message> attribute and lastNickname — one value,

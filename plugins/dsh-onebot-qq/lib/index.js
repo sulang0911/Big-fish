@@ -84,6 +84,8 @@ export const Config = z.object({
         .description('机器人自身 QQ 号；留空则从 meta 事件自动学习'),
     requireMention: z.boolean().default(true)
         .description('群聊是否仅在 @机器人（或回复其消息）时响应'),
+    randomChimeProbability: z.number().min(0).max(1).default(0.2)
+        .description('群聊中其他群成员未 @ 机器人时，随机插话搭理的概率（0~1，默认 0.2 即 20%）'),
     unknownCommand: z.union([z.const('intercept'), z.const('passthrough')]).default('intercept')
         .description('未知斜杠命令处理：intercept（默认）=拦截并提示相近命令或 /help；passthrough=透传给模型（旧行为）'),
     newMessagePolicy: z.union([z.const('queue'), z.const('steer')]).default('queue')
@@ -385,6 +387,7 @@ export function apply(ctx, config) {
             botQQ: config.botQQ,
             ignoreSelf: config.ignoreSelf,
             requireMention: config.requireMention,
+            randomChimeProbability: config.randomChimeProbability ?? 0.2,
             unknownCommand: config.unknownCommand,
             newMessagePolicy: config.newMessagePolicy,
             autoSteerPolicy: config.autoSteerPolicy,
