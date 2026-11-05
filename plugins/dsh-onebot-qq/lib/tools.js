@@ -514,7 +514,8 @@ export function registerTools(ctx, bridge, connection, limits) {
             const pyPath = 'D:\\ollama\\GPT-SoVITS-v2pro\\GPT-SoVITS-v2pro-20250604\\runtime\\python.exe';
             const scriptPath = 'D:\\deepseek-harness\\sovits\\sovits_sing.py';
             const safeSongQuery = songQuery.replace(/["'`$\\]/g, ' ').trim() || '晴天';
-            const cmd = `& "${pyPath}" -u "${scriptPath}" --song "${safeSongQuery}"`;
+            const activeVoice = getActiveVoice();
+            const cmd = `& "${pyPath}" -u "${scriptPath}" --song "${safeSongQuery}" --voice "${activeVoice.id}"`;
 
             const stdout = await new Promise((resolve, reject) => {
                 cpExec(cmd, { shell: 'powershell.exe', timeout: 90000 }, (err, stdout, stderr) => {
@@ -549,7 +550,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             const messageId = await bridge.sendSegments(chatId, [
                 { type: 'record', data: { file: await fencedMediaFile(fullPath, limits.maxVoiceBytes, allowedRoots) } },
             ]);
-            return { sent: true, messageId: messageId ?? null };
+            return { sent: true, song: songQuery, voice: activeVoice.name, messageId: messageId ?? null };
         },
     }));
     register(defineTool({

@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-SO-VITS-SVC 4.1 高保真大肥鱼唱歌生成器 (纯清唱模式 + 25s上限 + 动态音高自适应)
+SO-VITS-SVC 4.1 高保真多音色唱歌翻唱生成器 (纯清唱模式 + 25s上限 + 动态音色自适应同步)
 架构升级:
-- 声学模型: Klee 40,000 步高阶生成器
-- 特征检索: 14.7MB K-Means 聚类模型 (替代 162MB FAISS 索引，彻底消除虚拟内存耗尽崩溃)
-- 基频提取: FCPE (Fast Context-aware Pitch Estimator，亚音分级音高捕捉)
-- 降噪/响度: 响度包络自适应 + -1.0 dBFS 峰值平滑归一化
+- 多音色模型库: 可莉 (40k高阶)、芙宁娜 (107k高阶)、纳西妲 (40k高阶)、胡桃 (40k高阶)
+- 实时音色同步: 动态读取 voice_config.json 或传入 --voice，说话音色与唱歌音色 100% 自动同步
+- 独立分音色缓存: 预置曲目与动态抓取歌曲均按音色进行独立缓存，秒级极速直出
+- 基频与响度: FCPE 细粒度基频追踪 + 纯清唱 -1.0 dBFS 峰值平滑归一化
 """
 
 import os
@@ -18,6 +18,7 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 import argparse
+import json
 import time
 import re
 import hashlib
@@ -32,16 +33,66 @@ os.chdir(SOVITS_DIR)
 sys.path.insert(0, SOVITS_DIR)
 
 # 限制线程数与内存保护
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["MKL_NUM_THREADS"] = "2"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 
 from inference.infer_tool import Svc
 
-DEFAULT_MODEL = os.path.join(SOVITS_DIR, "models", "klee_G_40000.pth")
-DEFAULT_CONFIG = os.path.join(SOVITS_DIR, "models", "klee.json")
-DEFAULT_CLUSTER = os.path.join(SOVITS_DIR, "models", "klee_kmeans_10000.pt")
 MAX_SONG_DURATION = 25.0  # 严格限制最多 25 秒
+
+# 多音色模型配置字典
+VOICE_MODELS = {
+    "klee": {
+        "name": "可莉",
+        "model": os.path.join(SOVITS_DIR, "models", "klee_G_40000.pth"),
+        "config": os.path.join(SOVITS_DIR, "models", "klee.json"),
+        "cluster": os.path.join(SOVITS_DIR, "models", "klee_kmeans_10000.pt"),
+        "spk": "klee",
+        "cluster_ratio": 0.5,
+    },
+    "furina": {
+        "name": "芙宁娜",
+        "model": os.path.join(SOVITS_DIR, "models", "furina_G_107200.pth"),
+        "config": os.path.join(SOVITS_DIR, "models", "furina.json"),
+        "cluster": "",
+        "spk": "fnn",
+        "cluster_ratio": 0.0,
+    },
+    "nahida": {
+        "name": "纳西妲",
+        "model": os.path.join(SOVITS_DIR, "models", "nahida_G_40000.pth"),
+        "config": os.path.join(SOVITS_DIR, "models", "nahida.json"),
+        "cluster": os.path.join(SOVITS_DIR, "models", "nahida_kmeans_10000.pt"),
+        "spk": "nahida",
+        "cluster_ratio": 0.5,
+    },
+    "hutao": {
+        "name": "胡桃",
+        "model": os.path.join(SOVITS_DIR, "models", "hutao_G_40000.pth"),
+        "config": os.path.join(SOVITS_DIR, "models", "hutao.json"),
+        "cluster": os.path.join(SOVITS_DIR, "models", "hutao_kmeans_10000.pt"),
+        "spk": "hutao",
+        "cluster_ratio": 0.5,
+    },
+    "barbara": {
+        "name": "芭芭拉",
+        "model": os.path.join(SOVITS_DIR, "models", "furina_G_107200.pth"),
+        "config": os.path.join(SOVITS_DIR, "models", "furina.json"),
+        "cluster": "",
+        "spk": "fnn",
+        "cluster_ratio": 0.0,
+    },
+    "diona": {
+        "name": "迪奥娜",
+        "model": os.path.join(SOVITS_DIR, "models", "klee_G_40000.pth"),
+        "config": os.path.join(SOVITS_DIR, "models", "klee.json"),
+        "cluster": os.path.join(SOVITS_DIR, "models", "klee_kmeans_10000.pt"),
+        "spk": "klee",
+        "cluster_ratio": 0.5,
+    },
+}
 
 # 预置歌曲目录
 SONGS_DIR = r"D:\deepseek-harness\rvc\songs"
@@ -49,40 +100,53 @@ CACHE_DIR = os.path.join(SONGS_DIR, "cache")
 
 PRESETS = {
     "qingtian": {
-        "title": "晴天 - 周杰伦 (大肥鱼甜美清唱版)",
+        "title": "晴天 - 周杰伦",
         "vocal": os.path.join(SONGS_DIR, "qingtian_vocal.wav"),
         "output": os.path.join(SONGS_DIR, "qingtian_dafeiyu_cover.wav"),
         "f0_up_key": 12,
         "alias": ["晴天", "qingtian"],
     },
     "qinghuaci": {
-        "title": "青花瓷 - 周杰伦 (大肥鱼甜美清唱版)",
+        "title": "青花瓷 - 周杰伦",
         "vocal": os.path.join(SONGS_DIR, "qinghuaci_vocal.wav"),
         "output": os.path.join(SONGS_DIR, "qinghuaci_dafeiyu_cover.wav"),
         "f0_up_key": 12,
         "alias": ["青花瓷", "qinghuaci"],
     },
     "daoxiang": {
-        "title": "稻香 - 周杰伦 (大肥鱼甜美清唱版)",
+        "title": "稻香 - 周杰伦",
         "output": os.path.join(SONGS_DIR, "daoxiang_dafeiyu_cover.wav"),
         "alias": ["稻香", "daoxiang"],
     },
     "yequ": {
-        "title": "夜曲 - 周杰伦 (大肥鱼甜美清唱版)",
+        "title": "夜曲 - 周杰伦",
         "output": os.path.join(SONGS_DIR, "yequ_dafeiyu_cover.wav"),
         "alias": ["夜曲", "yequ"],
     },
     "gaobaiqiqiu": {
-        "title": "告白气球 - 周杰伦 (大肥鱼甜美清唱版)",
+        "title": "告白气球 - 周杰伦",
         "output": os.path.join(SONGS_DIR, "gaobaiqiqiu_dafeiyu_cover.wav"),
         "alias": ["告白气球", "gaobaiqiqiu", "情歌"],
     },
     "aini": {
-        "title": "爱你 - 王心凌 (大肥鱼原汁萌唱版)",
+        "title": "爱你 - 王心凌",
         "output": os.path.join(SONGS_DIR, "aini_dafeiyu_cover.wav"),
         "alias": ["爱你", "aini", "王心凌"],
     },
 }
+
+
+def get_active_voice_key():
+    """读取当前活跃音色配置，未配置时默认 klee"""
+    cfg_path = r"D:\deepseek-harness\voice_config.json"
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                return cfg.get("active_voice", "klee")
+        except Exception:
+            pass
+    return "klee"
 
 
 def detect_key_offset(y, sr):
@@ -114,23 +178,36 @@ def normalize_vocal(audio_data, target_peak_db=-1.0):
 
 
 class DaFeiYuSoVitsSinger:
-    def __init__(self, model_path=DEFAULT_MODEL, config_path=DEFAULT_CONFIG, cluster_path=DEFAULT_CLUSTER):
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"SO-VITS 模型不存在: {model_path}")
-        if not os.path.exists(config_path):
-            raise FileNotFoundError(f"SO-VITS 配置文件不存在: {config_path}")
+    def __init__(self, voice="klee", model_path=None, config_path=None, cluster_path=None, spk=None, cluster_ratio=None):
+        self.voice = str(voice).lower().strip()
+        v_info = VOICE_MODELS.get(self.voice, VOICE_MODELS["klee"])
 
-        print(f"[SO-VITS] 正在初始化大肥鱼歌声转换引擎...")
+        self.model_path = model_path or v_info["model"]
+        self.config_path = config_path or v_info["config"]
+        self.cluster_path = cluster_path if cluster_path is not None else v_info["cluster"]
+        self.spk = spk or v_info["spk"]
+        self.cluster_ratio = v_info["cluster_ratio"] if cluster_ratio is None else float(cluster_ratio)
+
+        if not os.path.exists(self.model_path):
+            print(f"[WARN] 音色【{self.voice}】模型文件不存在 ({self.model_path})，自动回退到经典可莉模型")
+            v_info = VOICE_MODELS["klee"]
+            self.model_path = v_info["model"]
+            self.config_path = v_info["config"]
+            self.cluster_path = v_info["cluster"]
+            self.spk = v_info["spk"]
+            self.cluster_ratio = v_info["cluster_ratio"]
+
+        print(f"[SO-VITS] 正在初始化歌声转换引擎 (音色: {self.voice}, spk: {self.spk})...")
         t0 = time.time()
         self.svc = Svc(
-            net_g_path=model_path,
-            config_path=config_path,
-            cluster_model_path=cluster_path if os.path.exists(cluster_path) else "",
+            net_g_path=self.model_path,
+            config_path=self.config_path,
+            cluster_model_path=self.cluster_path if (self.cluster_path and os.path.exists(self.cluster_path)) else "",
         )
         print(f"[SO-VITS] 模型加载完成，耗时 {time.time() - t0:.2f}s, 目标采样率: {self.svc.target_sample}Hz")
 
-    def convert(self, vocal_path, output_path, key_offset="auto", cluster_ratio=0.5, f0_predictor="fcpe"):
-        """将干声转换为大肥鱼清唱音频"""
+    def convert(self, vocal_path, output_path, key_offset="auto", cluster_ratio=None, f0_predictor="fcpe"):
+        """将干声转换为当前音色清唱音频"""
         if not os.path.exists(vocal_path):
             raise FileNotFoundError(f"输入音频不存在: {vocal_path}")
 
@@ -152,19 +229,20 @@ class DaFeiYuSoVitsSinger:
             tran = detect_key_offset(y, sr)
         else:
             tran = int(key_offset)
-        print(f"[SO-VITS] 最终变调参数 tran = {tran:+d} 半音")
+        print(f"[SO-VITS] 变调参数 tran = {tran:+d} 半音 (音色: {self.voice})")
 
         # 4. 临时保存标准采样率的 wav 供 slice_inference 读取
         temp_input = os.path.join(SOVITS_DIR, f"temp_input_{os.getpid()}.wav")
         sf.write(temp_input, y, sr)
 
         try:
+            ratio = self.cluster_ratio if cluster_ratio is None else float(cluster_ratio)
             kwarg = {
                 "raw_audio_path": temp_input,
-                "spk": "klee",
+                "spk": self.spk,
                 "tran": tran,
                 "slice_db": -40,
-                "cluster_infer_ratio": float(cluster_ratio),
+                "cluster_infer_ratio": ratio,
                 "auto_predict_f0": False,
                 "noice_scale": 0.4,
                 "pad_seconds": 0.5,
@@ -172,7 +250,7 @@ class DaFeiYuSoVitsSinger:
                 "f0_predictor": f0_predictor,
                 "loudness_envelope_adjustment": 1.0,
             }
-            print(f"[SO-VITS] 开始推理 (F0预测器: {f0_predictor}, 聚类融合比: {cluster_ratio})...")
+            print(f"[SO-VITS] 开始推理 (音色: {self.voice}, F0预测器: {f0_predictor}, 聚类比: {ratio})...")
             t_infer = time.time()
             audio = self.svc.slice_inference(**kwarg)
             print(f"[SO-VITS] 推理完成，耗时 {time.time() - t_infer:.2f}s")
@@ -183,7 +261,7 @@ class DaFeiYuSoVitsSinger:
             # 6. 保存最终翻唱音频
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
             sf.write(output_path, norm_audio, self.svc.target_sample)
-            print(f"[SUCCESS] 大肥鱼翻唱音频已生成: {output_path} (大小: {os.path.getsize(output_path)} 字节)")
+            print(f"[SUCCESS] 翻唱音频已生成: {output_path} (音色: {self.voice}, 大小: {os.path.getsize(output_path)} 字节)")
             return output_path
         finally:
             if os.path.exists(temp_input):
@@ -193,39 +271,59 @@ class DaFeiYuSoVitsSinger:
                 torch.cuda.empty_cache()
 
 
-def dynamic_sing_flow(song_query):
+def dynamic_sing_flow(song_query, voice=None):
     """
-    全自动点歌流水线:
-    1. 匹配预置歌曲 (秒级直出)
-    2. 匹配缓存 (秒级直出)
-    3. 网易云搜索下载 -> 副歌切片 -> UVR5 人声分离 -> SO-VITS-SVC 4.1 清唱转换
+    全自动点歌流水线 (音色同步版):
+    1. 自动同步当前音色
+    2. 匹配预置歌曲 (秒级直出专属音色翻唱)
+    3. 匹配动态缓存 (按歌曲+音色隔离缓存)
+    4. 网易云搜索下载 -> 副歌切片 -> UVR5 人声分离 -> SO-VITS-SVC 4.1 清唱转换
     """
+    if not voice:
+        voice = get_active_voice_key()
+    voice = str(voice).lower().strip()
+    if voice not in VOICE_MODELS:
+        voice = "klee"
+
     query_clean = song_query.strip().strip("《》\"'").strip()
     
     # 0. 泛指点歌处理
     if not query_clean or query_clean in ["随便", "歌", "一首", "来一首", "唱首歌", "唱歌", "听听", "唱歌听听"]:
-        fallback_cover = PRESETS["qingtian"]["output"]
-        print(f"[PRESET] 命中通用点歌，默认选送经典《晴天》")
-        print(f"[OUTPUT_COVER] {fallback_cover}")
-        return fallback_cover
+        query_clean = "晴天"
 
     # 1. 优先检查预置歌曲
     for p_key, p_info in PRESETS.items():
         aliases = p_info.get("alias", [p_key])
         if any(a in query_clean for a in aliases) or any(a in query_clean.lower() for a in aliases):
-            if os.path.exists(p_info["output"]):
-                print(f"[PRESET] 命中预置歌曲《{p_info['title']}》")
+            # 检查当前音色的专属预置翻唱
+            voice_preset = os.path.join(SONGS_DIR, f"{p_key}_{voice}_cover.wav")
+            if os.path.exists(voice_preset):
+                print(f"[PRESET] 命中预置歌曲《{p_info['title']}》（音色: {voice}）")
+                print(f"[OUTPUT_COVER] {voice_preset}")
+                return voice_preset
+
+            # 若音色是 klee 且默认 cover 存在
+            if voice in ["klee", "dafeiyu"] and os.path.exists(p_info.get("output", "")):
+                print(f"[PRESET] 命中经典预置歌曲《{p_info['title']}》（音色: {voice}）")
                 print(f"[OUTPUT_COVER] {p_info['output']}")
                 return p_info["output"]
 
+            # 若存在干声音频，则现场快速生成并缓存该音色版本
+            if "vocal" in p_info and os.path.exists(p_info["vocal"]):
+                print(f"[PRESET] 命中预置曲目《{p_info['title']}》，正在为音色【{voice}】生成翻唱...")
+                singer = DaFeiYuSoVitsSinger(voice=voice)
+                singer.convert(vocal_path=p_info["vocal"], output_path=voice_preset, key_offset="auto")
+                print(f"[OUTPUT_COVER] {voice_preset}")
+                return voice_preset
+
     os.makedirs(CACHE_DIR, exist_ok=True)
     
-    # 2. 检查缓存
+    # 2. 检查动态缓存 (包含音色维度)
     safe_name = re.sub(r'[^\w\u4e00-\u9fa5]+', '_', query_clean).strip('_')
-    safe_hash = hashlib.md5(query_clean.encode('utf-8', errors='ignore')).hexdigest()[:8]
-    cached_cover = os.path.join(CACHE_DIR, f"{safe_name or 'song'}_{safe_hash}_dafeiyu_cover.wav")
+    safe_hash = hashlib.md5(f"{query_clean}_{voice}".encode('utf-8', errors='ignore')).hexdigest()[:8]
+    cached_cover = os.path.join(CACHE_DIR, f"{safe_name or 'song'}_{safe_hash}_{voice}_cover.wav")
     if os.path.exists(cached_cover):
-        print(f"[CACHE] 命中缓存翻唱音频: {cached_cover}")
+        print(f"[CACHE] 命中缓存翻唱音频: {cached_cover} (音色: {voice})")
         print(f"[OUTPUT_COVER] {cached_cover}")
         return cached_cover
 
@@ -263,8 +361,11 @@ def dynamic_sing_flow(song_query):
         print(f"[WARN] 音乐搜索接口异常: {e}")
 
     if not downloaded_mp3:
-        print(f"[FALLBACK] 未搜索到《{query_clean}》有效音频，回退至经典抒情歌《晴天》")
-        fallback_cover = PRESETS["qingtian"]["output"]
+        # 回退到对应音色的晴天
+        fallback_cover = os.path.join(SONGS_DIR, f"qingtian_{voice}_cover.wav")
+        if not os.path.exists(fallback_cover):
+            fallback_cover = PRESETS["qingtian"]["output"]
+        print(f"[FALLBACK] 未搜索到《{query_clean}》有效音频，回退至经典抒情歌《晴天》（音色: {voice}）")
         print(f"[OUTPUT_COVER] {fallback_cover}")
         return fallback_cover
 
@@ -316,8 +417,8 @@ def dynamic_sing_flow(song_query):
         print(f"[UVR5 ERROR] {sub_res.stderr}")
         raise RuntimeError("UVR5 音轨分离失败")
 
-    # 6. SO-VITS-SVC 4.1 高保真转换 (纯清唱模式，自动判断升降调)
-    singer = DaFeiYuSoVitsSinger()
+    # 6. SO-VITS-SVC 4.1 高保真转换 (纯清唱模式，使用当前同步音色)
+    singer = DaFeiYuSoVitsSinger(voice=voice)
     singer.convert(vocal_path=vocal_stem, output_path=cached_cover, key_offset="auto")
 
     # 7. 清理临时过程文件，仅保留最终 cover
@@ -331,20 +432,21 @@ def dynamic_sing_flow(song_query):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SO-VITS-SVC 4.1 大肥鱼高保真唱歌翻唱工具")
+    parser = argparse.ArgumentParser(description="SO-VITS-SVC 4.1 大肥鱼高保真多音色唱歌翻唱工具")
     parser.add_argument("--song", type=str, help="全自动搜索、下载、分离并翻唱指定歌曲")
+    parser.add_argument("--voice", type=str, default=None, help="目标音色 (klee/furina/nahida/hutao/barbara/diona)")
     parser.add_argument("--vocal", help="输入的干声音频路径")
     parser.add_argument("--output", help="输出的翻唱音频路径")
     parser.add_argument("--key", default="auto", help="变调半音数 (如 12, 0, -12, auto)")
-    parser.add_argument("--cluster-ratio", type=float, default=0.5, help="聚类模型融合比 (0.0~1.0)")
+    parser.add_argument("--cluster-ratio", type=float, default=None, help="聚类模型融合比 (0.0~1.0)")
     parser.add_argument("--f0-predictor", default="fcpe", choices=["fcpe", "pm", "crepe", "dio", "harvest"], help="F0 预测器")
 
     args = parser.parse_args()
 
     if args.song:
-        dynamic_sing_flow(args.song)
+        dynamic_sing_flow(args.song, voice=args.voice)
     elif args.vocal and args.output:
-        singer = DaFeiYuSoVitsSinger()
+        singer = DaFeiYuSoVitsSinger(voice=args.voice or "klee")
         singer.convert(
             vocal_path=args.vocal,
             output_path=args.output,
