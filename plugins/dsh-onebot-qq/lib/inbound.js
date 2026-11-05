@@ -162,12 +162,12 @@ export class InboundPipeline {
         if (requireMentionForThisMessage && !mentioned) {
             const chimeProb = typeof this.ctx.config.randomChimeProbability === 'number'
                 ? this.ctx.config.randomChimeProbability
-                : 0.2;
+                : 0;
             const roll = Math.random();
             if (chimeProb > 0 && roll < chimeProb) {
                 this.ctx.log('info', `[群聊插话] 群友未@肥鱼，命中 ${Math.round(chimeProb * 100)}% 随机插话几率 (roll=${roll.toFixed(3)})，触发回复！`);
             } else {
-                this.ctx.log('debug', mentionDropReason + ': ' + groupId + ` (非管理员群成员未@机器人，未命中随机插话 roll=${roll.toFixed(3)}，已忽略)`);
+                this.ctx.log('debug', mentionDropReason + ': ' + groupId + ` (群聊消息未@机器人，免打扰已忽略)`);
                 currentTrace()?.emit('mention', { ok: false, reason: mentionDropReason });
                 return;
             }
