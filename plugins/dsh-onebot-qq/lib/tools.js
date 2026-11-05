@@ -244,10 +244,14 @@ export function registerTools(ctx, bridge, connection, limits) {
                     styleTokens = 'standard anime proportion, elegant anime girl';
                 }
 
-                finalPrompt = `masterpiece, best quality, 1girl, solo, ${styleTokens}, official character design of anime mascot Dafeiyu (大肥鱼), cute anime maid girl, long wavy gradient hair from deep ocean blue to soft cyan tips, distinct curved ahoge on top, whale fin ears on head with small cyan ribbon bows, white frilly lace maid headband, large sparkling deep blue eyes, soft blushing cheeks, navy blue lolita maid dress, white pleated shirt chest with blue ribbon bow tie and golden brooch, navy blue waist corset with gold buttons, crisp white ruffled lace apron with a cute small blue whale spouting water embroidered on the apron, navy skirt adorned with golden filigree vine embroidery and white petticoat ruffles, an adorable blue whale tail sticking out from behind her waist, navy mary jane shoes with white ruffled socks, anime illustration, clean bright background, holding a bowl of warm steaming white rice, strictly human anime girl, strictly no animal, no fish body, no fish scales, no carp, no goldfish${sheetTokens}. Details: ${prompt}`;
+                // 核心色彩校准（杜绝偏紫，严格纯深海蓝与纯白）与自然浅景深背景虚化（去滤镜感、突出主体）
+                const colorAndOpticTokens = 'color palette strictly matches 3-view reference (pure deep ocean blue and soft cyan tips, dark navy blue dress, crisp pure white apron, strictly no purple, no violet, no magenta tint), natural comfortable soft lighting, clean comfortable anime aesthetic, no heavy filters, no color cast, shallow depth of field, softly blurred background, creamy bokeh, sharp and crisp subject focus highlighting the cute character';
+
+                finalPrompt = `masterpiece, best quality, 1girl, solo, ${styleTokens}, official character design of anime mascot Dafeiyu (大肥鱼), cute anime maid girl, hair color is strictly pure deep ocean blue with soft cyan tips, distinct curved ahoge on top, whale fin ears on head with small cyan ribbon bows, white frilly lace maid headband, large sparkling sapphire blue eyes, soft natural blushing cheeks, dark navy blue lolita maid dress, white pleated shirt chest with blue ribbon bow tie and golden brooch, navy blue waist corset with gold buttons, crisp pure white ruffled lace apron with a cute small blue whale spouting water embroidered on the apron, navy skirt adorned with golden filigree vine embroidery and white petticoat ruffles, an adorable blue whale tail sticking out from behind her waist, navy mary jane shoes with white ruffled socks, holding a bowl of warm steaming white rice, ${colorAndOpticTokens}, strictly human anime girl, strictly no animal, no fish body, no fish scales, no carp, no goldfish${sheetTokens}. Details: ${prompt}`;
                 finalPrompt = finalPrompt
                     .replace(/一条.*?鱼|胖鱼|金鱼|鲤鱼|锦鲤|圆滚滚.*?鱼|小蓝鲸|蓝鲸本体/g, 'Q版可爱蓝发女仆萌娘大肥鱼')
-                    .replace(/温暖柔和的配色/g, '深海蓝与纯白清爽配色');
+                    .replace(/温暖柔和的配色/g, '纯正深海蓝与纯白清爽配色')
+                    .replace(/紫色|紫蓝|青紫/g, '纯正深海蓝');
             }
 
             let apiKey = process.env.LUNA_API_KEY;
@@ -501,29 +505,34 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_list_voices',
-        description: '【查询音色库】查询大肥鱼当前已加载的所有可用音色、风格特色与当前正在使用的音色。当用户询问「你有什么音色」、「支持哪些声音」、「查看当前音色」时调用。',
+        description: '【查询音色库】查询大肥鱼当前已加载的所有可用音色、风格特色与当前正在使用的音色。当用户询问「你有什么音色」、「支持哪些声音」、「查看当前音色」时调用。调用后会自动将完整音色列表直接发送到 QQ 会话。',
         parameters: {
             chat_id: { type: 'string', description: '目标会话' },
         },
         output: sendOutput(),
         isConcurrencySafe: () => true,
         execute: async (args, exec) => {
+            const a = args;
+            const chatId = resolveChat(bridge, exec, a.chat_id);
             const cfg = JSON.parse(fs.readFileSync(VOICE_CONFIG_PATH, 'utf-8'));
             const active = cfg.voices[cfg.active_voice] || cfg.voices.klee;
-            let list = `【大肥鱼音色库】\n当前生效：${active.name}（${active.style}）\n\n可选音色：\n`;
+            let list = `【大肥鱼音色库（共 8 款精品音色）】\n当前生效：${active.name}（${active.style}）\n\n可选音色：\n`;
             for (const v of Object.values(cfg.voices)) {
                 const mark = v.id === cfg.active_voice ? ' [当前生效]' : '';
                 list += `• ${v.name} (${v.id})${mark}：${v.style}\n  ${v.description}\n`;
             }
-            list += `\n提示：直接对我发「切换音色为XX」即可随时更换！`;
-            return { active_voice: active.name, voice_list: list };
+            list += `\n提示：直接对我发「换成XX声音」即可随时更换！`;
+            const messageId = await bridge.sendSegments(chatId, [
+                { type: 'text', data: { text: list } },
+            ]);
+            return { sent: true, active_voice: active.name, voice_list: list, messageId: messageId ?? null };
         },
     }));
     register(defineTool({
         name: 'qq_sing_song',
-        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 SoulX-Singer 零样本高保真歌声大模型翻唱合成器（采用 Whisper 语音音素解耦 + DiffLlama Flow Matching 条件流匹配逆扩散 + Vocos 神经声码器，彻底告别传统 SVC/RVC 的原唱口音残留与机械破音，真正还原可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜等角色的真实歌声发音与共鸣，纯清唱已彻底去掉背景音乐）。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如《晴天》、《青花瓷》、《稻香》、《夜曲》、《告白气球》或任意歌曲）时，必须且只能调用此工具生成 25 秒黄金副歌清唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
+        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 SoulX-Singer 零样本高保真歌声大模型翻唱合成器（采用 Whisper 语音音素解耦 + DiffLlama Flow Matching 条件流匹配逆扩散 + Vocos 神经声码器，彻底告别传统 SVC/RVC 的原唱口音残留与机械破音，真正还原可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜等角色的真实歌声发音与共鸣，已搭载原声立体声伴奏混音）。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如经典抒情歌《爱你》、《小幸运》、《暖暖》、《慢慢喜欢你》或任意歌曲）时，必须且只能调用此工具生成 24 秒黄金副歌翻唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
         parameters: {
-            song_name: { type: 'string', required: true, description: '歌曲名称或点歌内容（如 "晴天"、"青花瓷"、"稻香"、"情歌" 或任意歌名）' },
+            song_name: { type: 'string', required: true, description: '歌曲名称或点歌内容（如 "爱你"、"小幸运"、"暖暖"、"情歌" 或任意歌名）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
         },
         output: sendOutput(),
@@ -537,7 +546,7 @@ export function registerTools(ctx, bridge, connection, limits) {
 
             const pyPath = 'D:\\ollama\\GPT-SoVITS-v2pro\\GPT-SoVITS-v2pro-20250604\\runtime\\python.exe';
             const scriptPath = 'D:\\deepseek-harness\\sovits\\sovits_sing.py';
-            const safeSongQuery = songQuery.replace(/["'`$\\]/g, ' ').trim() || '晴天';
+            const safeSongQuery = songQuery.replace(/["'`$\\]/g, ' ').trim() || '爱你';
             const cmd = `& "${pyPath}" -u "${scriptPath}" --song "${safeSongQuery}"`;
 
             const stdout = await new Promise((resolve, reject) => {

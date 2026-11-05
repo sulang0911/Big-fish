@@ -129,6 +129,26 @@ SONGS_DIR = r"D:\deepseek-harness\rvc\songs"
 CACHE_DIR = os.path.join(SONGS_DIR, "cache")
 
 PRESETS = {
+    "aini": {
+        "title": "爱你 - 王心凌",
+        "vocal": os.path.join(SONGS_DIR, "aini_vocal_24s.wav"),
+        "inst": os.path.join(SONGS_DIR, "aini_instrument_24s.wav"),
+        "output": os.path.join(SONGS_DIR, "aini_klee_soulx_bgm.wav"),
+        "f0_up_key": 0,
+        "alias": ["爱你", "aini", "王心凌", "甜歌", "情歌", "唱首情歌", "唱首歌", "来首歌"],
+    },
+    "xiaoxingyun": {
+        "title": "小幸运 - 田馥甄",
+        "vocal": os.path.join(SONGS_DIR, "xiaoxingyun_vocal_24s.wav"),
+        "inst": os.path.join(SONGS_DIR, "xiaoxingyun_instrument_24s.wav"),
+        "output": os.path.join(SONGS_DIR, "xiaoxingyun_klee_soulx_bgm.wav"),
+        "f0_up_key": 0,
+        "alias": ["小幸运", "xiaoxingyun", "田馥甄", "幸运", "我的少女时代"],
+    },
+    "nuannuan": {
+        "title": "暖暖 - 梁静茹",
+        "alias": ["暖暖", "nuannuan", "梁静茹"],
+    },
     "qingtian": {
         "title": "晴天 - 周杰伦",
         "vocal": os.path.join(SONGS_DIR, "qingtian_vocal_24s.wav"),
@@ -144,26 +164,6 @@ PRESETS = {
         "output": os.path.join(SONGS_DIR, "qinghuaci_klee_soulx_bgm.wav"),
         "f0_up_key": 12,
         "alias": ["青花瓷", "qinghuaci"],
-    },
-    "daoxiang": {
-        "title": "稻香 - 周杰伦",
-        "output": os.path.join(SONGS_DIR, "daoxiang_dafeiyu_cover.wav"),
-        "alias": ["稻香", "daoxiang"],
-    },
-    "yequ": {
-        "title": "夜曲 - 周杰伦",
-        "output": os.path.join(SONGS_DIR, "yequ_dafeiyu_cover.wav"),
-        "alias": ["夜曲", "yequ"],
-    },
-    "gaobaiqiqiu": {
-        "title": "告白气球 - 周杰伦",
-        "output": os.path.join(SONGS_DIR, "gaobaiqiqiu_dafeiyu_cover.wav"),
-        "alias": ["告白气球", "gaobaiqiqiu", "情歌"],
-    },
-    "aini": {
-        "title": "爱你 - 王心凌",
-        "output": os.path.join(SONGS_DIR, "aini_dafeiyu_cover.wav"),
-        "alias": ["爱你", "aini", "王心凌"],
     },
 }
 
@@ -467,11 +467,11 @@ def dynamic_sing_flow(song_query, voice=None):
         print(f"[WARN] 音乐搜索接口异常: {e}")
 
     if not downloaded_mp3:
-        # 回退到对应音色的晴天
-        fallback_cover = os.path.join(SONGS_DIR, f"qingtian_{voice}_cover.wav")
+        # 回退到对应音色的经典情歌《爱你》
+        fallback_cover = os.path.join(SONGS_DIR, f"aini_{voice}_soulx_bgm.wav")
         if not os.path.exists(fallback_cover):
-            fallback_cover = PRESETS["qingtian"]["output"]
-        print(f"[FALLBACK] 未搜索到《{query_clean}》有效音频，回退至经典抒情歌《晴天》（音色: {voice}）")
+            fallback_cover = PRESETS["aini"]["output"]
+        print(f"[FALLBACK] 未搜索到《{query_clean}》有效音频，回退至经典抒情歌《爱你》（音色: {voice}）")
         print(f"[OUTPUT_COVER] {fallback_cover}")
         return fallback_cover
 
