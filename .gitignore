@@ -18,6 +18,18 @@ install.log
 *.wav
 !voices/**/*.wav
 
+# RVC weights & audio files
+rvc/*.pt
+rvc/*.pth
+rvc/*.index
+rvc/**/*.pt
+rvc/**/*.pth
+rvc/**/*.index
+rvc/songs/
+rvc/__pycache__/
+__pycache__/
+*.whl
+
 # Credentials & local secrets
 .credentials*
 .env

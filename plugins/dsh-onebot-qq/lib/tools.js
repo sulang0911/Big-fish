@@ -31,6 +31,8 @@ function padWavSilence(wavBuf, padMs = 250) {
 }
 /** OneBot actions a model may invoke through qq_napcat_api. */
 const NAPCAT_API_WHITELIST = [
+    'get_group_list',
+    'get_group_info',
     'get_group_member_list',
     'get_group_member_info',
     'get_stranger_info',
@@ -222,7 +224,7 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_send_tts',
-        description: '使用本地部署的 GPT-SoVITS 语音大模型将指定文字合成大肥鱼的声音，并向 QQ 会话发送语音消息。当老大想听你的声音、要求发语音、或者你想用语音向老大撒娇/说话时调用此工具。',
+        description: '使用本地部署的 GPT-SoVITS 语音大模型将指定文字合成大肥鱼的声音，并向 QQ 会话发送语音消息。仅用于日常聊天说话、向老大撒娇或要求发语音时调用。严禁用于唱歌或点歌（任何人点歌/唱歌必须调用 qq_sing_song）！',
         parameters: {
             text: { type: 'string', required: true, description: '要转换并发出的语音文字内容（建议 5~30 字，简洁生动）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
@@ -256,6 +258,58 @@ export function registerTools(ctx, bridge, connection, limits) {
             const rawBuffer = Buffer.from(await response.arrayBuffer());
             const buffer = padWavSilence(rawBuffer, 250);
             const filename = `tts_${Date.now()}.wav`;
+            const allowedRoots = await mediaRoots(bridge, exec);
+            const mediaDir = allowedRoots[0] || bridge.deps?.config?.mediaDir || 'C:\\Users\\25362\\.dsh\\media\\onebot';
+            await fs.promises.mkdir(mediaDir, { recursive: true });
+            const fullPath = path.join(mediaDir, filename);
+            await fs.promises.writeFile(fullPath, buffer);
+            const messageId = await bridge.sendSegments(chatId, [
+                { type: 'record', data: { file: await fencedMediaFile(fullPath, limits.maxVoiceBytes, allowedRoots) } },
+            ]);
+            return { sent: true, messageId: messageId ?? null };
+        },
+    }));
+    register(defineTool({
+        name: 'qq_sing_song',
+        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 RVC v2 AI 歌声与伴奏立体声翻唱合成器。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如周杰伦《晴天》、《青花瓷》）时，必须且只能调用此工具生成 30 秒黄金副歌翻唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
+        parameters: {
+            song_name: { type: 'string', required: true, description: '歌曲名称或预置曲目（如 "晴天"、"青花瓷"）' },
+            chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
+        },
+        output: sendOutput(),
+        isConcurrencySafe: () => false,
+        execute: async (args, exec) => {
+            const a = args;
+            if (typeof a.song_name !== 'string' || a.song_name.trim() === '')
+                throw new Error('qq_sing_song: song_name 必填');
+            const chatId = resolveChat(bridge, exec, a.chat_id);
+            const songRaw = a.song_name.trim().toLowerCase();
+            let presetKey = 'qingtian';
+            if (songRaw.includes('青花瓷') || songRaw.includes('qinghuaci')) {
+                presetKey = 'qinghuaci';
+            } else if (songRaw.includes('晴天') || songRaw.includes('qingtian')) {
+                presetKey = 'qingtian';
+            }
+            const coverPath = `D:\\deepseek-harness\\rvc\\songs\\${presetKey}_dafeiyu_cover.wav`;
+            if (!fs.existsSync(coverPath)) {
+                const pyPath = 'D:\\ollama\\GPT-SoVITS-v2pro\\GPT-SoVITS-v2pro-20250604\\runtime\\python.exe';
+                const scriptPath = 'D:\\deepseek-harness\\rvc\\rvc_sing.py';
+                const cmd = `& "${pyPath}" -u "${scriptPath}" --preset ${presetKey}`;
+                
+                await new Promise((resolve, reject) => {
+                    cpExec(cmd, { shell: 'powershell.exe', timeout: 60000 }, (err, stdout, stderr) => {
+                        if (err) return reject(new Error('RVC 唱歌生成失败: ' + (stderr || err.message)));
+                        resolve(stdout);
+                    });
+                });
+            }
+
+            if (!fs.existsSync(coverPath)) {
+                throw new Error('生成的歌曲文件未找到: ' + coverPath);
+            }
+            const rawBuffer = await fs.promises.readFile(coverPath);
+            const buffer = padWavSilence(rawBuffer, 250);
+            const filename = `song_${presetKey}_${Date.now()}.wav`;
             const allowedRoots = await mediaRoots(bridge, exec);
             const mediaDir = allowedRoots[0] || bridge.deps?.config?.mediaDir || 'C:\\Users\\25362\\.dsh\\media\\onebot';
             await fs.promises.mkdir(mediaDir, { recursive: true });
@@ -792,9 +846,9 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_group_history',
-        description: '拉取群聊最近消息历史（供总结群内上下文、查看用户之前的发言）。仅群聊可用。',
+        description: '拉取群聊最近消息历史（可供总结群内上下文、查看群友发言与自己之前的插话记录）。群聊中省略 chat_id 默认当前群；在私聊中老大询问群聊记录时需传入 chat_id: "group:<群号>"（如 group:434137389）。',
         parameters: {
-            chat_id: { type: 'string', description: '目标群会话 group:<群号>；省略时默认当前会话（须为群聊）' },
+            chat_id: { type: 'string', description: '目标群会话 group:<群号>；群聊中可省略' },
             count: { type: 'number', description: '拉取条数（≤50，默认 20）' },
             message_seq: { type: 'number', description: '起始消息序号（翻页用，可选）' },
         },
@@ -805,7 +859,12 @@ export function registerTools(ctx, bridge, connection, limits) {
             },
             render: (_args, value) => {
                 const list = Array.isArray(value) ? value : [];
-                return [{ type: 'text', text: list.length + ' 条历史消息' }];
+                if (list.length === 0) return [{ type: 'text', text: '暂无历史群消息记录' }];
+                const lines = list.map(m => {
+                    const timeStr = m.time ? new Date(Number(m.time) * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+                    return `[${timeStr}] ${m.nickname || m.user_id}: ${m.text || ''}`;
+                });
+                return [{ type: 'text', text: `拉取到最近 ${list.length} 条群历史消息：\n` + lines.join('\n') }];
             },
         },
         isConcurrencySafe: () => true,
