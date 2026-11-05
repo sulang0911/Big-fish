@@ -82,6 +82,8 @@ export class InboundPipeline {
     /** W2-② dedup window state: "chatId#messageId" → first-seen epoch ms, in
      * insertion order (Map) so the oldest entry is the LRU victim. */
     seenMessages = new Map();
+    /** 群聊近期消息滑动缓存: groupId → Array<{ time, label, text }> */
+    recentGroupMessages = new Map();
     constructor(ctx, options = {}) {
         this.ctx = ctx;
         this.dedupMaxEntries = options.dedupMaxEntries ?? DEDUP_MAX_ENTRIES;
@@ -96,6 +98,17 @@ export class InboundPipeline {
         if (this.duplicated(inbound))
             return;
         const { kind, userId, groupId, chatId } = inbound;
+        if (kind === 'group' && groupId) {
+            const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const sNick = sanitizeNickname(inbound.nickname) || userId;
+            const cleanText = (inbound.text || '').replace(/\r?\n/g, ' ').trim();
+            if (cleanText) {
+                const list = this.recentGroupMessages.get(groupId) || [];
+                list.push({ time: timeStr, label: sNick, text: cleanText.slice(0, 100) });
+                if (list.length > 20) list.shift();
+                this.recentGroupMessages.set(groupId, list);
+            }
+        }
         if (this.ctx.config.ignoreSelf && this.ctx.selfId() !== '' && userId === this.ctx.selfId()) {
             // pipeline-hooks.md #5: this drop used to be fully silent.
             this.ctx.log('debug', '机器人自己的消息已忽略: ' + chatId);
@@ -235,10 +248,46 @@ export class InboundPipeline {
         }
         let final = wrapUserMessage(content, userId, nickname);
         if (kind === 'group') {
-            final = buildGroupMessagePrefix(nickname, userId, mentioned) + final;
-            if (!isAdmin && this.ctx.config.restrictedMemberPrefix) {
-                final = RESTRICTED_PREFIX + final;
+            const prefix = buildGroupMessagePrefix(nickname, userId, mentioned);
+            const restricted = (!isAdmin && this.ctx.config.restrictedMemberPrefix) ? RESTRICTED_PREFIX : '';
+
+            // 自动加载群聊最近上下文（最近 6~10 条群友发言），彻底杜绝无上下文或驴头不对马嘴
+            let contextBlock = '';
+            try {
+                let historyLines = [];
+                // 1. 优先调用 OneBot 接口拉取真实群历史（包含其他群友、图片、表情及自己之前发言）
+                const historyData = await this.ctx.call('get_group_msg_history', {
+                    group_id: Number(groupId),
+                    count: 12
+                }).catch(() => null);
+                const rawMsgs = Array.isArray(historyData?.messages) ? historyData.messages : [];
+                for (const m of rawMsgs) {
+                    if (inbound.messageId && String(m.message_id) === String(inbound.messageId)) continue;
+                    const sender = m.sender || {};
+                    const sNick = sender.card || sender.nickname || String(sender.user_id || m.user_id || '');
+                    const isSelf = String(sender.user_id) === String(this.ctx.selfId() || this.ctx.config.botQQ);
+                    const label = isSelf ? '肥鱼本鱼(我)' : sNick;
+                    const parsed = parseMessage(Array.isArray(m.message) ? m.message : undefined, typeof m.raw_message === 'string' ? m.raw_message : '');
+                    const cleanText = cqUnescape(parsed.text || '').replace(/\r?\n/g, ' ').trim();
+                    if (!cleanText) continue;
+                    const timeStr = m.time ? new Date(m.time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+                    historyLines.push(`[${timeStr} ${label}]: ${cleanText.slice(0, 100)}`);
+                }
+                // 2. 若 API 未能拉取到，使用内存中的滑动历史兜底
+                if (historyLines.length === 0) {
+                    const fallbackList = this.recentGroupMessages.get(groupId) || [];
+                    for (const item of fallbackList) {
+                        historyLines.push(`[${item.time} ${item.label}]: ${item.text}`);
+                    }
+                }
+                if (historyLines.length > 0) {
+                    const recentSlice = historyLines.slice(-8);
+                    contextBlock = '【群聊前文背景（供理解对话上下文，无需逐条回复）】：\n' + recentSlice.join('\n') + '\n---\n';
+                }
+            } catch (err) {
+                this.ctx.log('debug', '获取群聊上下文失败: ' + describeError(err));
             }
+            final = contextBlock + restricted + prefix + final;
         }
         const role = isAdmin ? 'admin' : 'member';
         // T2 (P1): the busy-turn policy seam runs AFTER every gate above (dedup /
