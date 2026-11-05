@@ -233,13 +233,21 @@ export function registerTools(ctx, bridge, connection, limits) {
             const prompt = a.prompt.trim();
 
             let finalPrompt = prompt;
-            if (/自拍|照片|大肥鱼|自画|你长什么样|你的样子|肥鱼/i.test(prompt)) {
-                if (/二次元|拟人|少女|妹|自画|立绘/i.test(prompt)) {
-                    finalPrompt = `DeepSeek official mascot anime girl, cute anime girl with short DeepSeek blue hair, cute small blue whale hairpin accessory, wearing clean blue and white sailor dress or apron, holding a bowl of warm white steamed rice, adorable tsundere expression, DeepSeek blue and white color palette, high quality anime illustration, masterpiece, clean bright background, strictly no orange goldfish, no fish scales, no carp. Details: ${prompt}`;
-                } else {
-                    finalPrompt = `DeepSeek official mascot blue whale: adorable chubby baby blue whale with soft clean white belly and cute tiny blowhole spouting water star bubbles, DeepSeek blue color scheme, shiny big eyes, holding a bowl of warm white rice with flippers, 3D cute cartoon mascot render, masterpiece, clean bright background, strictly no orange goldfish, no carp, no fish scales. Details: ${prompt}`;
+            if (/自拍|照片|大肥鱼|自画|你长什么样|你的样子|肥鱼|本鱼|形象|三视图|3视图/i.test(prompt)) {
+                let sheetTokens = '';
+                if (/三视图|3视图|设定图|角色设定|立绘设定/i.test(prompt)) {
+                    sheetTokens = ', character turnaround sheet, front view, side view, back view, expressions reference, details showcase, character sheet';
                 }
-                finalPrompt = finalPrompt.replace(/温暖柔和的配色/g, 'DeepSeek科技蓝与纯白清爽配色').replace(/金鱼|鲤鱼|锦鲤/g, 'DeepSeek蓝色小鲸鱼');
+                // 默认采用三视图(HPP5kfkbwAAoOdF.jpg)的Q版三头身超软萌形态；除非用户明确要求少女形态或青年形态
+                let styleTokens = 'chibi, cute chibi character, 3-head-tall cute proportion, adorable round chubby cheeks, super cute chibi anime girl';
+                if (/少女形态|青年形态|成熟形态|高挑|正常比例/i.test(prompt)) {
+                    styleTokens = 'standard anime proportion, elegant anime girl';
+                }
+
+                finalPrompt = `masterpiece, best quality, 1girl, solo, ${styleTokens}, official character design of anime mascot Dafeiyu (大肥鱼), cute anime maid girl, long wavy gradient hair from deep ocean blue to soft cyan tips, distinct curved ahoge on top, whale fin ears on head with small cyan ribbon bows, white frilly lace maid headband, large sparkling deep blue eyes, soft blushing cheeks, navy blue lolita maid dress, white pleated shirt chest with blue ribbon bow tie and golden brooch, navy blue waist corset with gold buttons, crisp white ruffled lace apron with a cute small blue whale spouting water embroidered on the apron, navy skirt adorned with golden filigree vine embroidery and white petticoat ruffles, an adorable blue whale tail sticking out from behind her waist, navy mary jane shoes with white ruffled socks, anime illustration, clean bright background, holding a bowl of warm steaming white rice, strictly human anime girl, strictly no animal, no fish body, no fish scales, no carp, no goldfish${sheetTokens}. Details: ${prompt}`;
+                finalPrompt = finalPrompt
+                    .replace(/一条.*?鱼|胖鱼|金鱼|鲤鱼|锦鲤|圆滚滚.*?鱼|小蓝鲸|蓝鲸本体/g, 'Q版可爱蓝发女仆萌娘大肥鱼')
+                    .replace(/温暖柔和的配色/g, '深海蓝与纯白清爽配色');
             }
 
             let apiKey = process.env.LUNA_API_KEY;
@@ -513,7 +521,7 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_sing_song',
-        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 SO-VITS-SVC 4.1 高保真纯清唱歌声翻唱合成器（采用 40,000 步高保真生成器 + 聚类特征 + FCPE 细粒度音高追踪，彻底解决机械音与破音，音色高保真纯净可爱，已彻底去掉背景音乐）。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如《晴天》、《青花瓷》、《稻香》、《夜曲》、《告白气球》或任意歌曲）时，必须且只能调用此工具生成 25 秒黄金副歌清唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
+        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 SoulX-Singer 零样本高保真歌声大模型翻唱合成器（采用 Whisper 语音音素解耦 + DiffLlama Flow Matching 条件流匹配逆扩散 + Vocos 神经声码器，彻底告别传统 SVC/RVC 的原唱口音残留与机械破音，真正还原可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜等角色的真实歌声发音与共鸣，纯清唱已彻底去掉背景音乐）。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如《晴天》、《青花瓷》、《稻香》、《夜曲》、《告白气球》或任意歌曲）时，必须且只能调用此工具生成 25 秒黄金副歌清唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
         parameters: {
             song_name: { type: 'string', required: true, description: '歌曲名称或点歌内容（如 "晴天"、"青花瓷"、"稻香"、"情歌" 或任意歌名）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
@@ -533,8 +541,8 @@ export function registerTools(ctx, bridge, connection, limits) {
             const cmd = `& "${pyPath}" -u "${scriptPath}" --song "${safeSongQuery}"`;
 
             const stdout = await new Promise((resolve, reject) => {
-                cpExec(cmd, { shell: 'powershell.exe', timeout: 90000 }, (err, stdout, stderr) => {
-                    if (err) return reject(new Error('SO-VITS 唱歌生成失败: ' + (stderr || err.message)));
+                cpExec(cmd, { shell: 'powershell.exe', timeout: 120000 }, (err, stdout, stderr) => {
+                    if (err) return reject(new Error('SoulX-Singer 唱歌生成失败: ' + (stderr || err.message)));
                     resolve(stdout);
                 });
             });

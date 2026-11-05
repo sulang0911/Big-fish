@@ -228,25 +228,48 @@ class DaFeiYuSoVitsSinger:
             self.cluster_ratio = v_info["cluster_ratio"]
 
         self.engine = v_info.get("engine", "sovits")
-        if self.engine == "rvc":
-            print(f"[RVC] 启用 RVC 音色独立子进程转换模式 (音色: {self.voice}, 模型: {self.model_path})...")
-            self.svc = None
-            return
+        self.svc = None
 
-        print(f"[SO-VITS] 正在初始化歌声转换引擎 (音色: {self.voice}, spk: {self.spk})...")
-        t0 = time.time()
-        self.svc = Svc(
-            net_g_path=self.model_path,
-            config_path=self.config_path,
-            cluster_model_path=self.cluster_path if (self.cluster_path and os.path.exists(self.cluster_path)) else "",
-        )
-        print(f"[SO-VITS] 模型加载完成，耗时 {time.time() - t0:.2f}s, 目标采样率: {self.svc.target_sample}Hz")
+    def _get_svc(self):
+        if self.svc is None:
+            print(f"[SO-VITS] 正在初始化回退歌声转换引擎 (音色: {self.voice}, spk: {self.spk})...")
+            t0 = time.time()
+            self.svc = Svc(
+                net_g_path=self.model_path,
+                config_path=self.config_path,
+                cluster_model_path=self.cluster_path if (self.cluster_path and os.path.exists(self.cluster_path)) else "",
+            )
+            print(f"[SO-VITS] 模型加载完成，耗时 {time.time() - t0:.2f}s, 目标采样率: {self.svc.target_sample}Hz")
+        return self.svc
 
     def convert(self, vocal_path, output_path, key_offset="auto", cluster_ratio=None, f0_predictor="fcpe"):
-        """将干声转换为当前音色清唱音频"""
+        """将干声转换为当前音色清唱音频 (优先 SoulX-Singer 零样本大模型)"""
         if not os.path.exists(vocal_path):
             raise FileNotFoundError(f"输入音频不存在: {vocal_path}")
 
+        # 1. 优先使用 SoulX-Singer 零样本高保真歌声大模型
+        soulx_py = r"D:\SoulX-Singer\venv\Scripts\python.exe"
+        soulx_script = r"D:\SoulX-Singer\soulx_sing.py"
+        if os.path.exists(soulx_py) and os.path.exists(soulx_script):
+            print(f"[SoulX-Singer] 启动独立子进程执行零样本歌声大模型转换 (音色: {self.voice})...")
+            cmd = [
+                soulx_py,
+                soulx_script,
+                "--vocal", vocal_path,
+                "--output", output_path,
+                "--voice", self.voice,
+                "--pitch_shift", str(key_offset),
+            ]
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                    print(f"[SoulX-Singer SUCCESS] 歌声大模型翻唱已生成: {output_path}")
+                    return output_path
+                print(f"[WARN] SoulX-Singer 执行未生成有效文件，回退到经典引擎: {res.stderr or res.stdout}")
+            except Exception as e:
+                print(f"[WARN] SoulX-Singer 运行异常: {e}，回退到经典引擎")
+
+        # 2. 回退模式: RVC 子进程
         if getattr(self, "engine", "sovits") == "rvc":
             key = 12 if (key_offset is None or str(key_offset).lower() == "auto") else int(key_offset)
             print(f"[RVC Subprocess] 执行独立子进程 RVC 歌声转换 (音色: {self.voice}, 变调: {key:+d})...")
@@ -262,6 +285,9 @@ class DaFeiYuSoVitsSinger:
             if not os.path.exists(output_path):
                 raise RuntimeError(f"RVC 转换失败: {res.stderr or res.stdout}")
             return output_path
+
+        # 3. 回退模式: SO-VITS-SVC 4.1
+        svc = self._get_svc()
 
         # 1. 读取音频并强制截断至 25.0 秒以内
         y, sr = librosa.load(vocal_path, sr=44100, mono=True)
@@ -304,7 +330,7 @@ class DaFeiYuSoVitsSinger:
             }
             print(f"[SO-VITS] 开始推理 (音色: {self.voice}, F0预测器: {f0_predictor}, 聚类比: {ratio})...")
             t_infer = time.time()
-            audio = self.svc.slice_inference(**kwarg)
+            audio = svc.slice_inference(**kwarg)
             print(f"[SO-VITS] 推理完成，耗时 {time.time() - t_infer:.2f}s")
 
             # 5. 纯清唱峰值平滑归一化至 -1.0 dBFS
@@ -312,7 +338,7 @@ class DaFeiYuSoVitsSinger:
 
             # 6. 保存最终翻唱音频
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-            sf.write(output_path, norm_audio, self.svc.target_sample)
+            sf.write(output_path, norm_audio, svc.target_sample)
             print(f"[SUCCESS] 翻唱音频已生成: {output_path} (音色: {self.voice}, 大小: {os.path.getsize(output_path)} 字节)")
             return output_path
         finally:
@@ -347,7 +373,14 @@ def dynamic_sing_flow(song_query, voice=None):
     for p_key, p_info in PRESETS.items():
         aliases = p_info.get("alias", [p_key])
         if any(a in query_clean for a in aliases) or any(a in query_clean.lower() for a in aliases):
-            # 检查当前音色的专属预置翻唱
+            # 1. 优先检查当前音色的专属 SoulX-Singer 高保真预置翻唱
+            soulx_preset = os.path.join(SONGS_DIR, f"{p_key}_{voice}_soulx_cover.wav")
+            if os.path.exists(soulx_preset):
+                print(f"[SOULX PRESET] 命中 SoulX-Singer 高保真翻唱《{p_info['title']}》（音色: {voice}）")
+                print(f"[OUTPUT_COVER] {soulx_preset}")
+                return soulx_preset
+
+            # 2. 检查当前音色的专属传统预置翻唱
             voice_preset = os.path.join(SONGS_DIR, f"{p_key}_{voice}_cover.wav")
             if os.path.exists(voice_preset):
                 print(f"[PRESET] 命中预置歌曲《{p_info['title']}》（音色: {voice}）")
@@ -364,15 +397,20 @@ def dynamic_sing_flow(song_query, voice=None):
             if "vocal" in p_info and os.path.exists(p_info["vocal"]):
                 print(f"[PRESET] 命中预置曲目《{p_info['title']}》，正在为音色【{voice}】生成翻唱...")
                 singer = DaFeiYuSoVitsSinger(voice=voice)
-                singer.convert(vocal_path=p_info["vocal"], output_path=voice_preset, key_offset="auto")
-                print(f"[OUTPUT_COVER] {voice_preset}")
-                return voice_preset
+                singer.convert(vocal_path=p_info["vocal"], output_path=soulx_preset, key_offset="auto")
+                print(f"[OUTPUT_COVER] {soulx_preset}")
+                return soulx_preset
 
     os.makedirs(CACHE_DIR, exist_ok=True)
     
-    # 2. 检查动态缓存 (包含音色维度)
+    # 2. 检查动态缓存 (优先 SoulX 缓存)
     safe_name = re.sub(r'[^\w\u4e00-\u9fa5]+', '_', query_clean).strip('_')
     safe_hash = hashlib.md5(f"{query_clean}_{voice}".encode('utf-8', errors='ignore')).hexdigest()[:8]
+    cached_soulx = os.path.join(CACHE_DIR, f"{safe_name or 'song'}_{safe_hash}_{voice}_soulx_cover.wav")
+    if os.path.exists(cached_soulx):
+        print(f"[SOULX CACHE] 命中 SoulX-Singer 缓存翻唱音频: {cached_soulx} (音色: {voice})")
+        print(f"[OUTPUT_COVER] {cached_soulx}")
+        return cached_soulx
     cached_cover = os.path.join(CACHE_DIR, f"{safe_name or 'song'}_{safe_hash}_{voice}_cover.wav")
     if os.path.exists(cached_cover):
         print(f"[CACHE] 命中缓存翻唱音频: {cached_cover} (音色: {voice})")
@@ -469,9 +507,9 @@ def dynamic_sing_flow(song_query, voice=None):
         print(f"[UVR5 ERROR] {sub_res.stderr}")
         raise RuntimeError("UVR5 音轨分离失败")
 
-    # 6. SO-VITS-SVC 4.1 高保真转换 (纯清唱模式，使用当前同步音色)
+    # 6. 优先 SoulX-Singer 零样本高保真转换 (纯清唱模式，使用当前同步音色)
     singer = DaFeiYuSoVitsSinger(voice=voice)
-    singer.convert(vocal_path=vocal_stem, output_path=cached_cover, key_offset="auto")
+    singer.convert(vocal_path=vocal_stem, output_path=cached_soulx, key_offset="auto")
 
     # 7. 清理临时过程文件，仅保留最终 cover
     for f in [downloaded_mp3, temp_clip_wav, vocal_stem, inst_stem]:
@@ -479,8 +517,8 @@ def dynamic_sing_flow(song_query, voice=None):
             try: os.remove(f)
             except Exception: pass
 
-    print(f"[OUTPUT_COVER] {cached_cover}")
-    return cached_cover
+    print(f"[OUTPUT_COVER] {cached_soulx}")
+    return cached_soulx
 
 
 def main():
