@@ -232,6 +232,16 @@ export function registerTools(ctx, bridge, connection, limits) {
             const chatId = resolveChat(bridge, exec, a.chat_id);
             const prompt = a.prompt.trim();
 
+            let finalPrompt = prompt;
+            if (/自拍|照片|大肥鱼|自画|你长什么样|你的样子|肥鱼/i.test(prompt)) {
+                if (/二次元|拟人|少女|妹|自画|立绘/i.test(prompt)) {
+                    finalPrompt = `DeepSeek official mascot anime girl, cute anime girl with short DeepSeek blue hair, cute small blue whale hairpin accessory, wearing clean blue and white sailor dress or apron, holding a bowl of warm white steamed rice, adorable tsundere expression, DeepSeek blue and white color palette, high quality anime illustration, masterpiece, clean bright background, strictly no orange goldfish, no fish scales, no carp. Details: ${prompt}`;
+                } else {
+                    finalPrompt = `DeepSeek official mascot blue whale: adorable chubby baby blue whale with soft clean white belly and cute tiny blowhole spouting water star bubbles, DeepSeek blue color scheme, shiny big eyes, holding a bowl of warm white rice with flippers, 3D cute cartoon mascot render, masterpiece, clean bright background, strictly no orange goldfish, no carp, no fish scales. Details: ${prompt}`;
+                }
+                finalPrompt = finalPrompt.replace(/温暖柔和的配色/g, 'DeepSeek科技蓝与纯白清爽配色').replace(/金鱼|鲤鱼|锦鲤/g, 'DeepSeek蓝色小鲸鱼');
+            }
+
             let apiKey = process.env.LUNA_API_KEY;
             if (!apiKey) {
                 const credPath = 'C:\\Users\\25362\\.dsh\\.credentials.yaml';
@@ -252,8 +262,8 @@ export function registerTools(ctx, bridge, connection, limits) {
                 try {
                     const apiUrl = 'https://sub2api.echovoid.top/v1/images/generations';
                     const payload = {
-                        prompt: prompt,
-                        model: 'gpt-image-1',
+                        prompt: finalPrompt,
+                        model: 'gpt-image-2',
                         n: 1,
                         size: '1024x1024'
                     };
@@ -286,7 +296,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             if (!imgBuffer) {
                 try {
                     ext = 'jpg';
-                    const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?nologo=true`;
+                    const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?nologo=true`;
                     const fallbackResp = await fetch(fallbackUrl, { signal: AbortSignal.timeout(45000) });
                     if (fallbackResp.ok) {
                         imgBuffer = Buffer.from(await fallbackResp.arrayBuffer());
@@ -296,6 +306,12 @@ export function registerTools(ctx, bridge, connection, limits) {
 
             if (!imgBuffer) {
                 throw new Error('生图失败: 所有生图通道均未能获取到图片，请稍后重试');
+            }
+
+            if (imgBuffer.length > 4) {
+                if (imgBuffer[0] === 0xff && imgBuffer[1] === 0xd8) ext = 'jpg';
+                else if (imgBuffer[0] === 0x89 && imgBuffer[1] === 0x50) ext = 'png';
+                else if (imgBuffer[0] === 0x52 && imgBuffer[1] === 0x49) ext = 'webp';
             }
 
             const allowedRoots = await mediaRoots(bridge, exec);
@@ -380,7 +396,7 @@ export function registerTools(ctx, bridge, connection, limits) {
 
     register(defineTool({
         name: 'qq_send_tts',
-        description: '使用本地部署的 GPT-SoVITS 语音大模型将指定文字合成大肥鱼的声音，并向 QQ 会话发送语音消息。采用当前激活的音色（支持随时切换可莉/芙宁娜/芭芭拉/迪奥娜）。仅用于日常聊天说话、向老大撒娇或要求发语音时调用。严禁用于唱歌或点歌（任何人点歌/唱歌必须调用 qq_sing_song）！',
+        description: '使用本地部署的 GPT-SoVITS 语音大模型将指定文字合成大肥鱼的声音，并向 QQ 会话发送语音消息。采用当前激活的音色（支持可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜）。仅用于日常聊天说话、向老大撒娇或要求发语音时调用。严禁用于唱歌或点歌（任何人点歌/唱歌必须调用 qq_sing_song）！',
         parameters: {
             text: { type: 'string', required: true, description: '要转换并发出的语音文字内容（建议 5~30 字，简洁生动）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
@@ -428,9 +444,9 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_switch_voice',
-        description: '【音色切换工具】允许用户随时切换大肥鱼的说话音色。支持可选音色：klee（可莉/元气萝莉）、furina（芙宁娜/傲娇女王）、barbara（芭芭拉/治愈甜妹）、diona（迪奥娜/傲娇猫娘）。当老大或用户说「换成芙宁娜声音」、「切换音色为可莉」、「换成芭芭拉音色」等指令时调用此工具。切换后会自动使用新音色发一条语音确认。',
+        description: '【音色切换工具】允许用户随时切换大肥鱼的说话音色。支持可选音色：klee（可莉/元气萝莉）、furina（芙宁娜/优雅女王）、hutao（胡桃/俏皮少女）、ayaka（神里绫华/端庄温婉少女）、raiden（雷电将军/威严女王御姐）、yae（八重神子/妩媚慵懒御姐）、barbara（芭芭拉/治愈甜妹）、diona（迪奥娜/傲娇猫娘）。当老大或用户说「换成胡桃声音」、「切换音色为雷电将军」、「换成神里绫华音色」、「换成八重神子」等指令时调用此工具。切换后会自动使用新音色发一条语音确认。',
         parameters: {
-            voice: { type: 'string', required: true, description: '目标音色标识或名称，如 "klee" / "可莉"、"furina" / "芙宁娜"、"barbara" / "芭芭拉"、"diona" / "迪奥娜"' },
+            voice: { type: 'string', required: true, description: '目标音色标识或名称，如 "klee" / "可莉"、"furina" / "芙宁娜"、"hutao" / "胡桃"、"ayaka" / "神里绫华"、"raiden" / "雷电将军"、"yae" / "八重神子"' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
         },
         output: sendOutput(),
@@ -440,7 +456,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             const chatId = resolveChat(bridge, exec, a.chat_id);
             const voice = setActiveVoice(a.voice);
             if (!voice) {
-                throw new Error(`未知音色: "${a.voice}"。支持的音色包括：可莉 (klee)、芙宁娜 (furina)、芭芭拉 (barbara)、迪奥娜 (diona)`);
+                throw new Error(`未知音色: "${a.voice}"。支持的音色包括：可莉 (klee)、芙宁娜 (furina)、胡桃 (hutao)、神里绫华 (ayaka)、雷电将军 (raiden)、八重神子 (yae)、芭芭拉 (barbara)、迪奥娜 (diona)`);
             }
             const confirmText = `音色已切换为【${voice.name}·${voice.style}】啦！以后本鱼就用这个声音说话咯~`;
             const ttsUrl = 'http://127.0.0.1:9880/tts';
@@ -514,8 +530,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             const pyPath = 'D:\\ollama\\GPT-SoVITS-v2pro\\GPT-SoVITS-v2pro-20250604\\runtime\\python.exe';
             const scriptPath = 'D:\\deepseek-harness\\sovits\\sovits_sing.py';
             const safeSongQuery = songQuery.replace(/["'`$\\]/g, ' ').trim() || '晴天';
-            const activeVoice = getActiveVoice();
-            const cmd = `& "${pyPath}" -u "${scriptPath}" --song "${safeSongQuery}" --voice "${activeVoice.id}"`;
+            const cmd = `& "${pyPath}" -u "${scriptPath}" --song "${safeSongQuery}"`;
 
             const stdout = await new Promise((resolve, reject) => {
                 cpExec(cmd, { shell: 'powershell.exe', timeout: 90000 }, (err, stdout, stderr) => {
@@ -550,7 +565,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             const messageId = await bridge.sendSegments(chatId, [
                 { type: 'record', data: { file: await fencedMediaFile(fullPath, limits.maxVoiceBytes, allowedRoots) } },
             ]);
-            return { sent: true, song: songQuery, voice: activeVoice.name, messageId: messageId ?? null };
+            return { sent: true, messageId: messageId ?? null };
         },
     }));
     register(defineTool({

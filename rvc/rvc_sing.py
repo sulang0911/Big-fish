@@ -114,11 +114,21 @@ class DaFeiYuSinger:
         
         print(f"[RVC] 初始化大肥鱼 RVC 推理引擎 (设备: {self.device})...")
         t0 = time.time()
+        version = "v2"
+        try:
+            cpt = torch.load(self.model_path, map_location="cpu")
+            if "version" in cpt:
+                version = cpt["version"]
+            elif "weight" in cpt and "enc_p.emb_phone.weight" in cpt["weight"]:
+                if cpt["weight"]["enc_p.emb_phone.weight"].shape[1] == 256:
+                    version = "v1"
+        except Exception:
+            pass
         self.rvc = RVCInference(
             device=self.device,
             model_path=self.model_path,
             index_path=self.index_path,
-            version="v2"
+            version=version
         )
         # 针对 Pascal 显卡 (GTX 1080 Ti 等 fp32 模式) 配置 8~10s 安全切片分段，彻底杜绝长音频显存溢出
         if hasattr(self.rvc.vc, "pipeline") and self.rvc.vc.pipeline:
@@ -393,6 +403,7 @@ def main():
     parser.add_argument("--vocal", type=str, help="输入人声干声音频路径")
     parser.add_argument("--bgm", type=str, default=None, help="输入伴奏音频路径 (可选)")
     parser.add_argument("--output", type=str, default=None, help="输出最终音频路径")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="RVC 模型权重路径")
     parser.add_argument("--key", type=int, default=None, help="升降调半音数 (默认自动检测原唱男/女声)")
     parser.add_argument("--index_rate", type=float, default=0.85, help="检索特征比 (默认 0.85)")
     parser.add_argument("--with-bgm", action="store_true", default=False, help="是否混入伴奏 (默认 False，全量纯清唱模式)")
@@ -409,7 +420,7 @@ def main():
             print(f"[PRESET] 预置音频已就绪: {preset_info['output']}")
             print(f"[OUTPUT_COVER] {preset_info['output']}")
         elif "vocal" in preset_info:
-            singer = DaFeiYuSinger()
+            singer = DaFeiYuSinger(model_path=args.model)
             singer.sing_song(
                 vocal_path=preset_info["vocal"],
                 bgm_path=preset_info.get("bgm", None),
@@ -422,7 +433,7 @@ def main():
         else:
             dynamic_sing_flow(preset_info["title"])
     elif args.vocal:
-        singer = DaFeiYuSinger()
+        singer = DaFeiYuSinger(model_path=args.model)
         out = singer.sing_song(
             vocal_path=args.vocal,
             bgm_path=args.bgm,

@@ -70,27 +70,57 @@ VOICE_MODELS = {
     },
     "hutao": {
         "name": "胡桃",
+        "engine": "sovits",
         "model": os.path.join(SOVITS_DIR, "models", "hutao_G_40000.pth"),
         "config": os.path.join(SOVITS_DIR, "models", "hutao.json"),
         "cluster": os.path.join(SOVITS_DIR, "models", "hutao_kmeans_10000.pt"),
         "spk": "hutao",
         "cluster_ratio": 0.5,
     },
+    "ayaka": {
+        "name": "神里绫华",
+        "engine": "rvc",
+        "model": r"D:\deepseek-harness\rvc\weights\ayaka.pth",
+        "config": "",
+        "cluster": "",
+        "spk": "ayaka",
+        "cluster_ratio": 0.0,
+    },
+    "raiden": {
+        "name": "雷电将军",
+        "engine": "rvc",
+        "model": r"D:\deepseek-harness\rvc\weights\raiden.pth",
+        "config": "",
+        "cluster": "",
+        "spk": "raiden",
+        "cluster_ratio": 0.0,
+    },
+    "yae": {
+        "name": "八重神子",
+        "engine": "rvc",
+        "model": r"D:\deepseek-harness\rvc\weights\yae.pth",
+        "config": "",
+        "cluster": "",
+        "spk": "yae",
+        "cluster_ratio": 0.0,
+    },
     "barbara": {
         "name": "芭芭拉",
-        "model": os.path.join(SOVITS_DIR, "models", "furina_G_107200.pth"),
-        "config": os.path.join(SOVITS_DIR, "models", "furina.json"),
+        "engine": "rvc",
+        "model": r"D:\deepseek-harness\rvc\weights\barbara.pth",
+        "config": "",
         "cluster": "",
-        "spk": "fnn",
+        "spk": "barbara",
         "cluster_ratio": 0.0,
     },
     "diona": {
         "name": "迪奥娜",
-        "model": os.path.join(SOVITS_DIR, "models", "klee_G_40000.pth"),
-        "config": os.path.join(SOVITS_DIR, "models", "klee.json"),
-        "cluster": os.path.join(SOVITS_DIR, "models", "klee_kmeans_10000.pt"),
-        "spk": "klee",
-        "cluster_ratio": 0.5,
+        "engine": "rvc",
+        "model": r"D:\deepseek-harness\rvc\weights\diona.pth",
+        "config": "",
+        "cluster": "",
+        "spk": "diona",
+        "cluster_ratio": 0.0,
     },
 }
 
@@ -197,6 +227,12 @@ class DaFeiYuSoVitsSinger:
             self.spk = v_info["spk"]
             self.cluster_ratio = v_info["cluster_ratio"]
 
+        self.engine = v_info.get("engine", "sovits")
+        if self.engine == "rvc":
+            print(f"[RVC] 启用 RVC 音色独立子进程转换模式 (音色: {self.voice}, 模型: {self.model_path})...")
+            self.svc = None
+            return
+
         print(f"[SO-VITS] 正在初始化歌声转换引擎 (音色: {self.voice}, spk: {self.spk})...")
         t0 = time.time()
         self.svc = Svc(
@@ -210,6 +246,22 @@ class DaFeiYuSoVitsSinger:
         """将干声转换为当前音色清唱音频"""
         if not os.path.exists(vocal_path):
             raise FileNotFoundError(f"输入音频不存在: {vocal_path}")
+
+        if getattr(self, "engine", "sovits") == "rvc":
+            key = 12 if (key_offset is None or str(key_offset).lower() == "auto") else int(key_offset)
+            print(f"[RVC Subprocess] 执行独立子进程 RVC 歌声转换 (音色: {self.voice}, 变调: {key:+d})...")
+            cmd = [
+                sys.executable,
+                r"D:\deepseek-harness\rvc\rvc_sing.py",
+                "--vocal", vocal_path,
+                "--output", output_path,
+                "--model", self.model_path,
+                "--key", str(key)
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            if not os.path.exists(output_path):
+                raise RuntimeError(f"RVC 转换失败: {res.stderr or res.stdout}")
+            return output_path
 
         # 1. 读取音频并强制截断至 25.0 秒以内
         y, sr = librosa.load(vocal_path, sr=44100, mono=True)

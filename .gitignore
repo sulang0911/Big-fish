@@ -39,6 +39,7 @@ sovits/__pycache__/
 sovits/**/__pycache__/
 __pycache__/
 *.whl
+*.zip
 
 # Credentials & local secrets
 .credentials*

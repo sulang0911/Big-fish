@@ -19,6 +19,42 @@
       "prompt_text": "我应该早就告诉过你，我不会再扮演任何角色了，一次都不会。",
       "singing_model": "furina_G_107200.pth (SO-VITS-SVC 4.1)"
     },
+    "hutao": {
+      "id": "hutao",
+      "name": "胡桃",
+      "style": "俏皮古灵少女音",
+      "description": "往生堂堂主声线，俏皮活泼、古灵精怪、通透元气的少女音",
+      "ref_audio": "D:\\ollama\\voices\\hutao\\reference.wav",
+      "prompt_text": "好了我们也该重新出发了我可不想错过新生意",
+      "singing_model": "hutao_G_40000.pth (SO-VITS-SVC 4.1)"
+    },
+    "ayaka": {
+      "id": "ayaka",
+      "name": "神里绫华",
+      "style": "端庄温婉千金少女音",
+      "description": "社奉行神里家大小姐白鹭公主，端庄高雅、清丽温柔、如沐春风的千金少女声线",
+      "ref_audio": "D:\\ollama\\voices\\ayaka\\reference.wav",
+      "prompt_text": "也不必觉得为难今天这片树林里什么事都没有发生不是吗",
+      "singing_model": "ayaka.pth (RVC)"
+    },
+    "raiden": {
+      "id": "raiden",
+      "name": "雷电将军",
+      "style": "威严高冷女王御姐音",
+      "description": "稻妻鸣神大御所兼一心净土影，威严霸气、深沉高冷、至尊女王御姐声线",
+      "ref_audio": "D:\\ollama\\voices\\raiden\\reference.wav",
+      "prompt_text": "幸好损伤情况不算严重根系的养护工作之后交给社奉行即可",
+      "singing_model": "raiden.pth (RVC)"
+    },
+    "yae": {
+      "id": "yae",
+      "name": "八重神子",
+      "style": "优雅妩媚大姐姐御姐音",
+      "description": "鸣神大社大宫司兼八重堂总编，优雅从容、妩媚慵懒、狡黠戏谑的大姐姐御姐声线",
+      "ref_audio": "D:\\ollama\\voices\\yae\\reference.wav",
+      "prompt_text": "只要内容本身有趣这些专家们可以帮忙往里面加料",
+      "singing_model": "yae.pth (RVC)"
+    },
     "barbara": {
       "id": "barbara",
       "name": "芭芭拉",
@@ -26,7 +62,7 @@
       "description": "清纯温柔、阳光元气的邻家偶像甜美声线",
       "ref_audio": "D:\\ollama\\voices\\barbara\\118435_audio.wav",
       "prompt_text": "不愧是荣誉骑士，确实应付的很轻松呢。",
-      "singing_model": "furina_G_107200.pth / barbara.pth"
+      "singing_model": "barbara.pth (RVC)"
     },
     "diona": {
       "id": "diona",
@@ -35,7 +71,7 @@
       "description": "猫系傲娇、嘴硬心软、奶凶可爱的调酒师幼齿音",
       "ref_audio": "D:\\ollama\\voices\\diona\\102092_audio.wav",
       "prompt_text": "我们快回去吧，材料也搜集够了，调酒手法这件事，我再自己想想办法。",
-      "singing_model": "klee_G_40000.pth / diona.pth"
+      "singing_model": "diona.pth (RVC)"
     }
   }
 }
