@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
 import http from 'node:http';
+import { describeImage } from './vision.js';
 
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const PROFILE_DIR = 'C:\\Users\\25362\\.dsh\\chrome-douyin-profile';
@@ -144,31 +145,43 @@ async function _searchDouyin(keyword, options = {}) {
 
         console.log(`[dsh-onebot] 抖音搜索 "${keyword}" 成功，抓取到 ${searchItems.length} 条真实结果。`);
 
-        // 8. 自动全量将搜索到的大肥鱼表情包/视频封面批量保存到本地库！
+        // 8. 抖音表情包质检与保存：必须经过本地 minicpm-v 视觉质检，确保确属蓝色头发大肥鱼动漫少女，防止红脸老头、狗头等污染
         let savedCount = 0;
         const savedFiles = [];
         if (options.saveMemes !== false && searchItems.length > 0) {
+            const otherDir = path.join(MEMES_DIR, 'other_memes');
+            if (!existsSync(otherDir)) mkdirSync(otherDir, { recursive: true });
+
             for (let i = 0; i < searchItems.length; i++) {
                 const it = searchItems[i];
                 if (!it.coverUrl || !it.coverUrl.startsWith('http')) continue;
-                const cleanTitle = (it.title || `meme_${i}`).replace(/[\\/:*?"<>|#@\s]/g, '_').slice(0, 25);
+                const cleanTitle = (it.title || `meme_${i}`).replace(/[\\/:*?"<>|#@\s]/g, '_').slice(0, 20);
                 const idPart = it.aweme_id || `${Date.now()}_${i}`;
-                const filename = `douyin_大肥鱼_${cleanTitle}_${idPart}.jpg`;
-                const dest = path.join(MEMES_DIR, filename);
-                if (!existsSync(dest)) {
+                const tempDest = path.join(otherDir, `temp_${idPart}.jpg`);
+                try {
+                    await downloadFile(it.coverUrl, tempDest);
+                    // 本地视觉质检
+                    let isBigFish = false;
                     try {
-                        await downloadFile(it.coverUrl, dest);
+                        const desc = await describeImage(tempDest, '请用一句话回答：这张图的主体是不是蓝色头发的二次元动漫少女/大肥鱼卡通角色？若是，简述动作表情；若不是，简述图里是什么：');
+                        if (desc && (desc.includes('是') || desc.includes('蓝色头发') || desc.includes('鲸鱼娘') || desc.includes('二次元动漫少女')) && !desc.includes('不是') && !desc.includes('并非')) {
+                            isBigFish = true;
+                        }
+                    } catch {}
+
+                    if (isBigFish) {
+                        const realFilename = `dafeiyu_douyin_${cleanTitle}_${Date.now()}.jpg`;
+                        const realDest = path.join(MEMES_DIR, realFilename);
+                        await fsPromises.rename(tempDest, realDest);
                         savedCount++;
-                        savedFiles.push(filename);
-                    } catch (e) {
-                        console.warn(`[dsh-onebot] 保存表情包 ${filename} 失败:`, e.message);
+                        savedFiles.push(realFilename);
                     }
-                } else {
-                    savedFiles.push(filename);
+                } catch (e) {
+                    console.warn(`[dsh-onebot] 下载或质检表情包失败:`, e.message);
                 }
             }
             if (savedCount > 0) {
-                console.log(`[dsh-onebot] 已将 ${savedCount} 张大肥鱼表情包存入本地库: ${MEMES_DIR}`);
+                console.log(`[dsh-onebot] 已将 ${savedCount} 张通过视觉质检的纯正大肥鱼表情包存入本地库: ${MEMES_DIR}`);
             }
         }
 

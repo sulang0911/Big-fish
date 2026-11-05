@@ -294,11 +294,32 @@ export function registerTools(ctx, bridge, connection, limits) {
                 }
             }
             let targetFile = null;
+            let visualDescription = '';
+            let indexData = [];
+            for (const dir of memeDirs) {
+                const idxP = path.join(dir, 'index.json');
+                if (fs.existsSync(idxP)) {
+                    try {
+                        indexData = JSON.parse(await fs.promises.readFile(idxP, 'utf-8'));
+                        break;
+                    } catch {}
+                }
+            }
+
             if (typeof a.keyword === 'string' && a.keyword.trim() !== '') {
                 const kw = a.keyword.trim().toLowerCase();
-                const matched = foundFiles.filter(f => path.basename(f).toLowerCase().includes(kw));
-                if (matched.length > 0) {
-                    targetFile = matched[Math.floor(Math.random() * matched.length)];
+                const isGeneral = ['大肥鱼', '肥鱼', '开心飞鱼', '飞鱼', '表情包'].includes(kw);
+                if (!isGeneral) {
+                    const matched = foundFiles.filter(f => {
+                        const name = path.basename(f).toLowerCase();
+                        if (name.includes(kw)) return true;
+                        const matchMeta = indexData.find(it => it.file === path.basename(f));
+                        if (matchMeta && (matchMeta.emotion?.includes(kw) || matchMeta.desc?.includes(kw))) return true;
+                        return false;
+                    });
+                    if (matched.length > 0) {
+                        targetFile = matched[Math.floor(Math.random() * matched.length)];
+                    }
                 }
             }
             // 如果本地关键词未直接命中，但本地已有大肥鱼表情包，优先从本地正版大肥鱼表情包库挑选，绝不乱发
@@ -313,7 +334,6 @@ export function registerTools(ctx, bridge, connection, limits) {
                         const messageId = await bridge.sendSegments(chatId, [
                             { type: 'image', data: { file: `base64://${crawlRes.base64}` } },
                         ]);
-                        let visualDescription = '';
                         try {
                             visualDescription = await describeImageBase64(crawlRes.base64);
                         } catch {}
@@ -328,10 +348,14 @@ export function registerTools(ctx, bridge, connection, limits) {
             const messageId = await bridge.sendSegments(chatId, [
                 { type: 'image', data: { file: `base64://${b64}` } },
             ]);
-            let visualDescription = '';
-            try {
-                visualDescription = await describeImageBase64(b64);
-            } catch {}
+            const matchMeta = indexData.find(it => it.file === path.basename(targetFile));
+            if (matchMeta && matchMeta.desc) {
+                visualDescription = matchMeta.desc;
+            } else {
+                try {
+                    visualDescription = await describeImageBase64(b64);
+                } catch {}
+            }
             return { sent: true, meme: path.basename(targetFile), messageId: messageId ?? null, visualDescription };
         },
     }));
@@ -475,10 +499,16 @@ export function registerTools(ctx, bridge, connection, limits) {
                 return { success: false, message: `在抖音搜集表情包失败: ${res.error || '未知原因'}` };
             }
             let messageId = null;
-            if (args.send_sample !== false && res.savedFiles && res.savedFiles.length > 0) {
-                const sampleName = res.savedFiles[0];
-                const samplePath = path.join('D:\\deepseek-harness\\memes', sampleName);
-                if (fs.existsSync(samplePath)) {
+            if (args.send_sample !== false) {
+                let samplePath = null;
+                if (res.savedFiles && res.savedFiles.length > 0) {
+                    samplePath = path.join('D:\\deepseek-harness\\memes', res.savedFiles[0]);
+                } else {
+                    const local = (await fs.promises.readdir('D:\\deepseek-harness\\memes').catch(() => []))
+                        .filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f));
+                    if (local.length > 0) samplePath = path.join('D:\\deepseek-harness\\memes', local[Math.floor(Math.random() * local.length)]);
+                }
+                if (samplePath && fs.existsSync(samplePath)) {
                     const buf = await fs.promises.readFile(samplePath);
                     messageId = await bridge.sendSegments(chatId, [
                         { type: 'image', data: { file: `base64://${buf.toString('base64')}` } },

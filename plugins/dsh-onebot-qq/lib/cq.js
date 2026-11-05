@@ -209,9 +209,50 @@ export function parseMessage(segments, raw) {
                     textParts.push('[合并转发]');
                 }
                 break;
-            case 'json':
-                textParts.push('[卡片]');
+            case 'json': {
+                let cardText = '[卡片]';
+                try {
+                    let d = seg.data?.data;
+                    if (typeof d === 'string') {
+                        d = JSON.parse(d);
+                    }
+                    if (d && typeof d === 'object') {
+                        const prompt = d.prompt || '';
+                        const meta = d.meta ? Object.values(d.meta)[0] : null;
+                        const title = meta?.title || d.title || '';
+                        const desc = meta?.desc || meta?.summary || d.desc || '';
+                        const url = meta?.qqdocurl || meta?.jumpUrl || meta?.url || d.url || '';
+                        const parts = [];
+                        if (prompt) parts.push(prompt);
+                        if (title && !prompt.includes(title)) parts.push(`标题: ${title}`);
+                        if (desc && !prompt.includes(desc)) parts.push(`描述: ${desc}`);
+                        if (url) parts.push(`链接: ${url}`);
+                        if (parts.length > 0) {
+                            cardText = `[卡片: ${parts.join(' | ')}]`;
+                        }
+                    }
+                } catch {}
+                textParts.push(cardText);
                 break;
+            }
+            case 'xml': {
+                let cardText = '[卡片]';
+                try {
+                    const xml = String(seg.data?.data || '');
+                    const titleMatch = xml.match(/<title>([^<]+)<\/title>/i);
+                    const summaryMatch = xml.match(/<summary>([^<]+)<\/summary>/i);
+                    const urlMatch = xml.match(/url="([^"]+)"/i) || xml.match(/<url>([^<]+)<\/url>/i);
+                    const parts = [];
+                    if (titleMatch) parts.push(`标题: ${titleMatch[1]}`);
+                    if (summaryMatch) parts.push(`描述: ${summaryMatch[1]}`);
+                    if (urlMatch) parts.push(`链接: ${urlMatch[1]}`);
+                    if (parts.length > 0) {
+                        cardText = `[卡片: ${parts.join(' | ')}]`;
+                    }
+                } catch {}
+                textParts.push(cardText);
+                break;
+            }
             case 'poke':
                 textParts.push('[戳一戳]');
                 break;

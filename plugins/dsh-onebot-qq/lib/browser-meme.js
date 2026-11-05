@@ -52,47 +52,72 @@ export async function searchDouyinMeme(keyword = '傲娇') {
     const memesDir = 'D:\\deepseek-harness\\memes';
     await fs.promises.mkdir(memesDir, { recursive: true });
 
-    // 1. 优先调用真实抖音搜索 (方案 1)
-    try {
-        const searchKw = keyword.includes('表情包') ? keyword : `${keyword} 表情包`;
-        const dyRes = await searchDouyin(searchKw);
-        if (dyRes.success && Array.isArray(dyRes.items) && dyRes.items.length > 0) {
-            const validCovers = dyRes.items.filter(it => it.coverUrl && it.coverUrl.startsWith('http'));
-            if (validCovers.length > 0) {
-                const picked = validCovers[Math.floor(Math.random() * Math.min(validCovers.length, 4))];
-                const safeKw = keyword.replace(/[\\/:*?"<>|]/g, '_');
-                const filename = `douyin_${safeKw}_${Date.now()}.jpg`;
-                const savePath = path.join(memesDir, filename);
+    const localFiles = (await fs.promises.readdir(memesDir).catch(() => []))
+        .filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f));
 
-                const buf = await downloadFile(picked.coverUrl, savePath);
+    const kw = (keyword || '').toLowerCase().trim();
+    const isGeneral = !kw || ['大肥鱼', '肥鱼', '开心飞鱼', '飞鱼', '表情包'].includes(kw);
+
+    // 1. 优先从本地已质检的正版大肥鱼表情包库中匹配
+    if (localFiles.length > 0) {
+        if (isGeneral) {
+            const pickName = localFiles[Math.floor(Math.random() * localFiles.length)];
+            const pickPath = path.join(memesDir, pickName);
+            const buf = await fs.promises.readFile(pickPath);
+            return {
+                success: true,
+                filePath: pickPath,
+                filename: pickName,
+                url: '',
+                base64: buf.toString('base64'),
+                pageScreenshotBase64: null,
+                source: 'local_verified'
+            };
+        }
+        const matched = localFiles.filter(f => f.toLowerCase().includes(kw));
+        if (matched.length > 0) {
+            const pickName = matched[Math.floor(Math.random() * matched.length)];
+            const pickPath = path.join(memesDir, pickName);
+            const buf = await fs.promises.readFile(pickPath);
+            return {
+                success: true,
+                filePath: pickPath,
+                filename: pickName,
+                url: '',
+                base64: buf.toString('base64'),
+                pageScreenshotBase64: null,
+                source: 'local_verified'
+            };
+        }
+    }
+
+    // 2. 本地未命中特定情绪时，前往真实抖音搜索并经 minicpm-v 视觉质检
+    try {
+        const searchKw = keyword.includes('大肥鱼') ? keyword : `大肥鱼 ${keyword} 表情包`;
+        const dyRes = await searchDouyin(searchKw, { saveMemes: true });
+        if (dyRes.success && dyRes.savedFiles && dyRes.savedFiles.length > 0) {
+            const sampleName = dyRes.savedFiles[0];
+            const samplePath = path.join(memesDir, sampleName);
+            if (fs.existsSync(samplePath)) {
+                const buf = await fs.promises.readFile(samplePath);
                 return {
                     success: true,
-                    filePath: savePath,
-                    filename,
-                    url: picked.coverUrl,
+                    filePath: samplePath,
+                    filename: sampleName,
+                    url: '',
                     base64: buf.toString('base64'),
                     pageScreenshotBase64: dyRes.pageScreenshotBase64,
-                    source: 'douyin_real',
-                    videoTitle: picked.title,
-                    videoAuthor: picked.author,
-                    videoUrl: picked.url
+                    source: 'douyin_real_verified'
                 };
             }
         }
     } catch (dyErr) {
-        console.warn('[dsh-onebot] 真实抖音表情包搜索异常，启动兜底引擎:', dyErr.message);
+        console.warn('[dsh-onebot] 真实抖音表情包搜索异常，启动正版兜底:', dyErr.message);
     }
 
-    // 2. 兜底方案：绝不使用第三方搜狗泛化搜索，直接从本地大肥鱼表情包库挑选最匹配的表情包！
-    const localFiles = (await fs.promises.readdir(memesDir).catch(() => []))
-        .filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f));
-
+    // 3. 兜底方案：从本地正版大肥鱼表情包库随机选一张，绝不乱发
     if (localFiles.length > 0) {
-        const kw = keyword.toLowerCase();
-        const matched = localFiles.filter(f => f.toLowerCase().includes(kw));
-        const pickName = matched.length > 0
-            ? matched[Math.floor(Math.random() * matched.length)]
-            : localFiles[Math.floor(Math.random() * localFiles.length)];
+        const pickName = localFiles[Math.floor(Math.random() * localFiles.length)];
         const pickPath = path.join(memesDir, pickName);
         const buf = await fs.promises.readFile(pickPath);
         return {
@@ -102,7 +127,7 @@ export async function searchDouyinMeme(keyword = '傲娇') {
             url: '',
             base64: buf.toString('base64'),
             pageScreenshotBase64: null,
-            source: 'local_library'
+            source: 'local_verified_fallback'
         };
     }
     throw new Error(`未在抖音或本地表情包库中找到与 "${keyword}" 相关的表情包`);
