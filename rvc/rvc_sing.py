@@ -120,12 +120,15 @@ class DaFeiYuSinger:
             index_path=self.index_path,
             version="v2"
         )
-        # 针对 Pascal 显卡 (GTX 1080 Ti 等 fp32 模式) 配置 12~15s 分段，避免长音频自注意力矩阵显存超限
+        # 针对 Pascal 显卡 (GTX 1080 Ti 等 fp32 模式) 配置 8~10s 安全切片分段，彻底杜绝长音频显存溢出
         if hasattr(self.rvc.vc, "pipeline") and self.rvc.vc.pipeline:
-            self.rvc.vc.pipeline.x_center = 12
-            self.rvc.vc.pipeline.x_max = 15
-            self.rvc.vc.pipeline.t_center = 16000 * 12
-            self.rvc.vc.pipeline.t_max = 16000 * 15
+            p = self.rvc.vc.pipeline
+            p.x_query = 3
+            p.x_center = 8
+            p.x_max = 10
+            p.t_query = 16000 * 3
+            p.t_center = 16000 * 8
+            p.t_max = 16000 * 10
         print(f"[RVC] 模型加载成功，耗时 {time.time()-t0:.2f}s，目标采样率: {self.rvc.vc.tgt_sr}Hz")
 
     def convert_vocal(self, input_vocal, output_vocal, f0_up_key=0, f0_method="rmvpe", index_rate=0.75):
@@ -165,8 +168,19 @@ class DaFeiYuSinger:
         return output_vocal
 
     @staticmethod
-    def mix_audio(vocal_path, bgm_path, output_path, vocal_gain_db=1.0, bgm_gain_db=-1.0):
-        """高质量人声与伴奏立体声混音 (最高限制 25~30 秒)"""
+    def normalize_vocal(vocal_path, output_path, target_peak_db=-1.0):
+        """纯清唱人声峰值保护与平滑归一化 (-1.0 dBFS)，确保声音清晰透亮且不爆音"""
+        vocal_data, vocal_sr = sf.read(vocal_path)
+        peak = np.max(np.abs(vocal_data))
+        if peak > 1e-4:
+            target_scale = 10.0 ** (target_peak_db / 20.0)
+            vocal_data = vocal_data * (target_scale / peak)
+        sf.write(output_path, vocal_data.astype(np.float32), vocal_sr)
+        return output_path
+
+    @staticmethod
+    def mix_audio(vocal_path, bgm_path, output_path, vocal_gain_db=2.0, bgm_gain_db=-7.0):
+        """人声与伴奏混音（备用模式）"""
         print(f"[MIX] 开始人声与伴奏混音...")
         print(f"      人声: {vocal_path} (增益: {vocal_gain_db:+.1f}dB)")
         print(f"      伴奏: {bgm_path} (增益: {bgm_gain_db:+.1f}dB)")
@@ -213,8 +227,8 @@ class DaFeiYuSinger:
         print(f"[MIX] 混音生成成功 -> {output_path} (时长: {duration:.1f}s, 采样率: {target_sr}Hz)")
         return output_path
 
-    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=None, index_rate=0.75):
-        """完整歌曲处理流程：智能检测原唱音高 -> 转换人声 -> 伴奏混音"""
+    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=None, index_rate=0.75, with_bgm=False):
+        """完整歌曲处理流程：智能检测原唱音高 -> 转换人声 -> 纯清唱输出（默认去掉背景音乐）"""
         if output_path is None:
             output_path = os.path.splitext(vocal_path)[0] + "_dafeiyu.wav"
             
@@ -224,17 +238,18 @@ class DaFeiYuSinger:
         temp_vocal = os.path.splitext(output_path)[0] + "_vocal_only.wav"
         self.convert_vocal(vocal_path, temp_vocal, f0_up_key=f0_up_key, index_rate=index_rate)
         
-        if bgm_path and os.path.exists(bgm_path):
+        if with_bgm and bgm_path and os.path.exists(bgm_path):
             self.mix_audio(temp_vocal, bgm_path, output_path)
             if os.path.exists(temp_vocal):
-                try:
-                    os.remove(temp_vocal)
-                except Exception:
-                    pass
+                try: os.remove(temp_vocal)
+                except Exception: pass
         else:
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            os.rename(temp_vocal, output_path)
+            # 彻底去掉背景音乐，纯清唱模式，并进行人声响度与峰值平滑归一化 (-1.0 dBFS)
+            self.normalize_vocal(temp_vocal, output_path)
+            if os.path.exists(temp_vocal):
+                try: os.remove(temp_vocal)
+                except Exception: pass
+            print(f"[VOCAL] 纯清唱模式生效（无背景音乐） -> {output_path}")
             
         return output_path
 
@@ -356,9 +371,9 @@ def dynamic_sing_flow(song_query):
         print(f"[UVR5 ERROR] {sub_res.stderr}")
         raise RuntimeError("UVR5 音轨分离失败")
 
-    # 6. RVC 转换人声并立体声混音
+    # 6. RVC 转换人声并纯清唱输出 (去掉背景音乐)
     singer = DaFeiYuSinger()
-    singer.sing_song(vocal_path=vocal_stem, bgm_path=inst_stem, output_path=cached_cover)
+    singer.sing_song(vocal_path=vocal_stem, bgm_path=None, output_path=cached_cover, with_bgm=False)
 
     # 7. 清理临时过程文件，仅保留最终 cover
     for f in [downloaded_mp3, temp_clip_wav, vocal_stem, inst_stem]:
@@ -380,6 +395,7 @@ def main():
     parser.add_argument("--output", type=str, default=None, help="输出最终音频路径")
     parser.add_argument("--key", type=int, default=None, help="升降调半音数 (默认自动检测原唱男/女声)")
     parser.add_argument("--index_rate", type=float, default=0.75, help="检索特征比 (默认 0.75)")
+    parser.add_argument("--with-bgm", action="store_true", default=False, help="是否混入伴奏 (默认 False，全量纯清唱模式)")
     args = parser.parse_args()
 
     if args.song:
@@ -392,14 +408,15 @@ def main():
         if os.path.exists(preset_info["output"]):
             print(f"[PRESET] 预置音频已就绪: {preset_info['output']}")
             print(f"[OUTPUT_COVER] {preset_info['output']}")
-        elif "vocal" in preset_info and "bgm" in preset_info:
+        elif "vocal" in preset_info:
             singer = DaFeiYuSinger()
             singer.sing_song(
                 vocal_path=preset_info["vocal"],
-                bgm_path=preset_info["bgm"],
+                bgm_path=preset_info.get("bgm", None),
                 output_path=preset_info["output"],
                 f0_up_key=preset_info.get("f0_up_key", 0),
-                index_rate=preset_info.get("index_rate", 0.75)
+                index_rate=preset_info.get("index_rate", 0.75),
+                with_bgm=args.with_bgm
             )
             print(f"[OUTPUT_COVER] {preset_info['output']}")
         else:
@@ -411,7 +428,8 @@ def main():
             bgm_path=args.bgm,
             output_path=args.output,
             f0_up_key=args.key,
-            index_rate=args.index_rate
+            index_rate=args.index_rate,
+            with_bgm=args.with_bgm
         )
         print(f"[OUTPUT_COVER] {out}")
     else:

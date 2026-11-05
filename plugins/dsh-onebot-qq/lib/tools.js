@@ -271,7 +271,7 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_sing_song',
-        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 RVC v2 AI 歌声与伴奏立体声翻唱合成器。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如《晴天》、《青花瓷》、《稻香》、《夜曲》、《告白气球》或任意歌曲）时，必须且只能调用此工具生成 25~30 秒黄金副歌翻唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
+        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 RVC v2 AI 纯清唱歌声翻唱合成器（已彻底去掉背景音乐，采用纯净可爱的清唱声线）。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如《晴天》、《青花瓷》、《稻香》、《夜曲》、《告白气球》或任意歌曲）时，必须且只能调用此工具生成 25 秒黄金副歌清唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
         parameters: {
             song_name: { type: 'string', required: true, description: '歌曲名称或点歌内容（如 "晴天"、"青花瓷"、"稻香"、"情歌" 或任意歌名）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },

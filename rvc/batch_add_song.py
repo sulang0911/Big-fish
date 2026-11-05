@@ -90,13 +90,12 @@ def add_song(song_name, preset_key, key_offset=None, force=False):
     vocal_stem = os.path.join(temp_dir, f"vocal_{clip_base}_10.wav")
     inst_stem = os.path.join(temp_dir, f"instrument_{clip_base}_10.wav")
 
-    # 4. RVC 转换并混音 (调用 rvc_sing.py 子进程)
-    print("[4/4] RVC 歌声转换与混音 (独立进程)...")
+    # 4. RVC 歌声转换 (纯清唱模式，独立进程)
+    print("[4/4] RVC 歌声转换 (纯清唱模式)...")
     rvc_script = os.path.join(RVC_DIR, "rvc_sing.py")
     rvc_cmd = [
         sys.executable, rvc_script,
         "--vocal", vocal_stem,
-        "--bgm", inst_stem,
         "--output", out_cover
     ]
     if key_offset is not None:
@@ -115,14 +114,13 @@ def add_song(song_name, preset_key, key_offset=None, force=False):
     return out_cover
 
 def regenerate_all():
-    # 1. 晴天与青花瓷直接使用现有分离文件升 12 半音
+    # 1. 晴天与青花瓷直接使用现有分离人声升 12 半音纯清唱
     rvc_script = os.path.join(RVC_DIR, "rvc_sing.py")
     for k in ["qingtian", "qinghuaci"]:
-        print(f"\n[*] 重新生成预置歌曲: {k} (升 12 半音萝莉调)")
+        print(f"\n[*] 重新生成预置歌曲: {k} (升 12 半音纯清唱)")
         v = os.path.join(SONGS_DIR, f"{k}_vocal.wav")
-        b = os.path.join(SONGS_DIR, f"{k}_instrument.wav")
         o = os.path.join(SONGS_DIR, f"{k}_dafeiyu_cover.wav")
-        subprocess.run([sys.executable, rvc_script, "--vocal", v, "--bgm", b, "--output", o, "--key", "12"], check=True)
+        subprocess.run([sys.executable, rvc_script, "--vocal", v, "--output", o, "--key", "12"], check=True)
 
     # 2. 其他歌曲重新生成
     songs_to_add = [
