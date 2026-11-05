@@ -131,15 +131,17 @@ CACHE_DIR = os.path.join(SONGS_DIR, "cache")
 PRESETS = {
     "qingtian": {
         "title": "晴天 - 周杰伦",
-        "vocal": os.path.join(SONGS_DIR, "qingtian_vocal.wav"),
-        "output": os.path.join(SONGS_DIR, "qingtian_dafeiyu_cover.wav"),
+        "vocal": os.path.join(SONGS_DIR, "qingtian_vocal_24s.wav"),
+        "inst": os.path.join(SONGS_DIR, "qingtian_instrument_24s.wav"),
+        "output": os.path.join(SONGS_DIR, "qingtian_klee_soulx_bgm.wav"),
         "f0_up_key": 12,
         "alias": ["晴天", "qingtian"],
     },
     "qinghuaci": {
         "title": "青花瓷 - 周杰伦",
-        "vocal": os.path.join(SONGS_DIR, "qinghuaci_vocal.wav"),
-        "output": os.path.join(SONGS_DIR, "qinghuaci_dafeiyu_cover.wav"),
+        "vocal": os.path.join(SONGS_DIR, "qinghuaci_vocal_24s.wav"),
+        "inst": os.path.join(SONGS_DIR, "qinghuaci_instrument_24s.wav"),
+        "output": os.path.join(SONGS_DIR, "qinghuaci_klee_soulx_bgm.wav"),
         "f0_up_key": 12,
         "alias": ["青花瓷", "qinghuaci"],
     },
@@ -242,8 +244,8 @@ class DaFeiYuSoVitsSinger:
             print(f"[SO-VITS] 模型加载完成，耗时 {time.time() - t0:.2f}s, 目标采样率: {self.svc.target_sample}Hz")
         return self.svc
 
-    def convert(self, vocal_path, output_path, key_offset="auto", cluster_ratio=None, f0_predictor="fcpe"):
-        """将干声转换为当前音色清唱音频 (优先 SoulX-Singer 零样本大模型)"""
+    def convert(self, vocal_path, output_path, inst_path=None, key_offset="auto", cluster_ratio=None, f0_predictor="fcpe"):
+        """将干声转换为当前音色清唱或混音音频 (优先 SoulX-Singer 零样本大模型)"""
         if not os.path.exists(vocal_path):
             raise FileNotFoundError(f"输入音频不存在: {vocal_path}")
 
@@ -251,7 +253,7 @@ class DaFeiYuSoVitsSinger:
         soulx_py = r"D:\SoulX-Singer\venv\Scripts\python.exe"
         soulx_script = r"D:\SoulX-Singer\soulx_sing.py"
         if os.path.exists(soulx_py) and os.path.exists(soulx_script):
-            print(f"[SoulX-Singer] 启动独立子进程执行零样本歌声大模型转换 (音色: {self.voice})...")
+            print(f"[SoulX-Singer] 启动独立子进程执行零样本歌声大模型转换 (音色: {self.voice}, 伴奏混音: {bool(inst_path)})...")
             cmd = [
                 soulx_py,
                 soulx_script,
@@ -260,6 +262,8 @@ class DaFeiYuSoVitsSinger:
                 "--voice", self.voice,
                 "--pitch_shift", str(key_offset),
             ]
+            if inst_path and os.path.exists(inst_path):
+                cmd.extend(["--inst", inst_path])
             try:
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
@@ -373,14 +377,21 @@ def dynamic_sing_flow(song_query, voice=None):
     for p_key, p_info in PRESETS.items():
         aliases = p_info.get("alias", [p_key])
         if any(a in query_clean for a in aliases) or any(a in query_clean.lower() for a in aliases):
-            # 1. 优先检查当前音色的专属 SoulX-Singer 高保真预置翻唱
+            # 1. 优先检查当前音色的专属 SoulX-Singer 带伴奏预置翻唱
+            soulx_bgm = os.path.join(SONGS_DIR, f"{p_key}_{voice}_soulx_bgm.wav")
+            if os.path.exists(soulx_bgm):
+                print(f"[SOULX BGM PRESET] 命中 SoulX-Singer 带立体声伴奏翻唱《{p_info['title']}》（音色: {voice}）")
+                print(f"[OUTPUT_COVER] {soulx_bgm}")
+                return soulx_bgm
+
+            # 2. 检查纯清唱 SoulX 预置翻唱
             soulx_preset = os.path.join(SONGS_DIR, f"{p_key}_{voice}_soulx_cover.wav")
             if os.path.exists(soulx_preset):
                 print(f"[SOULX PRESET] 命中 SoulX-Singer 高保真翻唱《{p_info['title']}》（音色: {voice}）")
                 print(f"[OUTPUT_COVER] {soulx_preset}")
                 return soulx_preset
 
-            # 2. 检查当前音色的专属传统预置翻唱
+            # 3. 检查当前音色的专属传统预置翻唱
             voice_preset = os.path.join(SONGS_DIR, f"{p_key}_{voice}_cover.wav")
             if os.path.exists(voice_preset):
                 print(f"[PRESET] 命中预置歌曲《{p_info['title']}》（音色: {voice}）")
@@ -393,19 +404,24 @@ def dynamic_sing_flow(song_query, voice=None):
                 print(f"[OUTPUT_COVER] {p_info['output']}")
                 return p_info["output"]
 
-            # 若存在干声音频，则现场快速生成并缓存该音色版本
+            # 若存在干声音频与伴奏，现场快速生成并缓存该音色版本
             if "vocal" in p_info and os.path.exists(p_info["vocal"]):
-                print(f"[PRESET] 命中预置曲目《{p_info['title']}》，正在为音色【{voice}】生成翻唱...")
+                print(f"[PRESET] 命中预置曲目《{p_info['title']}》，正在为音色【{voice}】生成带伴奏翻唱...")
                 singer = DaFeiYuSoVitsSinger(voice=voice)
-                singer.convert(vocal_path=p_info["vocal"], output_path=soulx_preset, key_offset="auto")
-                print(f"[OUTPUT_COVER] {soulx_preset}")
-                return soulx_preset
+                singer.convert(vocal_path=p_info["vocal"], output_path=soulx_bgm, inst_path=p_info.get("inst"), key_offset="auto")
+                print(f"[OUTPUT_COVER] {soulx_bgm}")
+                return soulx_bgm
 
     os.makedirs(CACHE_DIR, exist_ok=True)
     
-    # 2. 检查动态缓存 (优先 SoulX 缓存)
+    # 2. 检查动态缓存 (优先带伴奏 SoulX 缓存)
     safe_name = re.sub(r'[^\w\u4e00-\u9fa5]+', '_', query_clean).strip('_')
     safe_hash = hashlib.md5(f"{query_clean}_{voice}".encode('utf-8', errors='ignore')).hexdigest()[:8]
+    cached_soulx_bgm = os.path.join(CACHE_DIR, f"{safe_name or 'song'}_{safe_hash}_{voice}_soulx_bgm.wav")
+    if os.path.exists(cached_soulx_bgm):
+        print(f"[SOULX BGM CACHE] 命中 SoulX-Singer 带伴奏缓存翻唱: {cached_soulx_bgm} (音色: {voice})")
+        print(f"[OUTPUT_COVER] {cached_soulx_bgm}")
+        return cached_soulx_bgm
     cached_soulx = os.path.join(CACHE_DIR, f"{safe_name or 'song'}_{safe_hash}_{voice}_soulx_cover.wav")
     if os.path.exists(cached_soulx):
         print(f"[SOULX CACHE] 命中 SoulX-Singer 缓存翻唱音频: {cached_soulx} (音色: {voice})")
@@ -507,9 +523,9 @@ def dynamic_sing_flow(song_query, voice=None):
         print(f"[UVR5 ERROR] {sub_res.stderr}")
         raise RuntimeError("UVR5 音轨分离失败")
 
-    # 6. 优先 SoulX-Singer 零样本高保真转换 (纯清唱模式，使用当前同步音色)
+    # 6. 优先 SoulX-Singer 零样本高保真转换 (带立体声伴奏混音，使用当前同步音色)
     singer = DaFeiYuSoVitsSinger(voice=voice)
-    singer.convert(vocal_path=vocal_stem, output_path=cached_soulx, key_offset="auto")
+    singer.convert(vocal_path=vocal_stem, output_path=cached_soulx_bgm, inst_path=inst_stem, key_offset="auto")
 
     # 7. 清理临时过程文件，仅保留最终 cover
     for f in [downloaded_mp3, temp_clip_wav, vocal_stem, inst_stem]:
@@ -517,8 +533,8 @@ def dynamic_sing_flow(song_query, voice=None):
             try: os.remove(f)
             except Exception: pass
 
-    print(f"[OUTPUT_COVER] {cached_soulx}")
-    return cached_soulx
+    print(f"[OUTPUT_COVER] {cached_soulx_bgm}")
+    return cached_soulx_bgm
 
 
 def main():

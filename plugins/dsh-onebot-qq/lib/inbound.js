@@ -137,13 +137,12 @@ export class InboundPipeline {
             ? inbound.segments.filter(s => s.type === 'text').map(s => s.data.text ?? '').join('')
             : (inbound.raw || '');
 
-        // 核心修复：管理员（老大）在群聊中直接喊肥鱼名字（如「肥鱼」、「大肥鱼」、「开心飞鱼」、「肥鱼本鱼」、「鲸鲸」等），
-        // 判定为显式呼叫唤醒，无需按 @ 键也能立即回复！
-        const adminCallingBot = isAdmin && /(肥鱼|飞鱼|鲸鲸|呆鱼)/i.test(textContent);
+        // 群聊唤醒准则：老大在群聊中 @ 肥鱼、引用回复肥鱼、或者喊肥鱼昵称时唤醒回复；未呼叫时安静吃瓜不打扰老大与群友聊天
+        const botNamePattern = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼)/i;
+        const adminCalledByName = isAdmin && botNamePattern.test(textContent);
 
-        // 群聊限制：非管理员群成员必须 @ 肥鱼（或回复肥鱼消息）才唤醒回复；管理员直接呼叫肥鱼时立即响应
         const requireMentionForThisMessage = kind === 'group' && this.ctx.config.requireMention;
-        const isExplicitMention = adminCallingBot
+        const isExplicitMention = adminCalledByName
             || detectExplicitMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ);
 
         let mentioned = isExplicitMention || detectMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ);
@@ -184,9 +183,9 @@ export class InboundPipeline {
                 }
             }
         }
-        if (adminCallingBot) {
+        if (adminCalledByName) {
             mentioned = true;
-            this.ctx.log('info', `[管理员呼叫] 检测到管理员 ${userId} 在群 ${groupId} 直接喊肥鱼 ("${textContent.trim()}"), 立即唤醒回复！`);
+            this.ctx.log('info', `[老大呼叫] 检测到老大在群 ${groupId} 喊肥鱼昵称 ("${textContent.trim()}"), 唤醒回复！`);
         }
         if (requireMentionForThisMessage && !mentioned) {
             const chimeProb = typeof this.ctx.config.randomChimeProbability === 'number'
