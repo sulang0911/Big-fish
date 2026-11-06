@@ -1,8 +1,6 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
-import { searchDouyinMeme } from './browser-meme.js';
-import { browseDouyinFeed } from './browser-douyin.js';
+import { join, basename } from 'node:path';
+import { readFileSync, existsSync, promises as fs } from 'node:fs';
 
 function getDeepSeekApiKey() {
     if (process.env.DEEPSEEK_API_KEY) return process.env.DEEPSEEK_API_KEY;
@@ -17,86 +15,134 @@ function getDeepSeekApiKey() {
     return '';
 }
 
+/**
+ * 从本地质检表情包库中匹配大肥鱼表情包（纯本地，秒回，无需启动浏览器）
+ */
+export async function getLocalMemeBase64(keyword = '') {
+    const memesDir = 'D:\\deepseek-harness\\memes';
+    const otherDir = 'D:\\deepseek-harness\\memes\\other_memes';
+
+    const mainFiles = (await fs.readdir(memesDir).catch(() => []))
+        .filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f))
+        .map(f => join(memesDir, f));
+    const otherFiles = (await fs.readdir(otherDir).catch(() => []))
+        .filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f))
+        .map(f => join(otherDir, f));
+    const allFiles = [...mainFiles, ...otherFiles];
+    if (allFiles.length === 0) return null;
+
+    const kw = (keyword || '').toLowerCase().trim();
+    const synonyms = {
+        '发呆': ['呆萌', '思考', '趴桌'],
+        '无聊': ['趴桌', '摸鱼', '慵懒'],
+        '暗中观察': ['呆萌', '思考', '打招呼'],
+        '吃瓜': ['喝茶', '呆萌', '微笑'],
+        '傲娇': ['叉腰', '哼', '自豪'],
+        '干饭': ['白米饭', '满足', '得意'],
+        '震惊': ['惊讶', '目瞪口呆'],
+        '哭': ['悲伤', '难过', '流泪']
+    };
+    const searchTerms = [kw, ...(synonyms[kw] || [])].filter(Boolean);
+
+    for (const term of searchTerms) {
+        const matches = allFiles.filter(f => basename(f).toLowerCase().includes(term));
+        if (matches.length > 0) {
+            const pick = matches[Math.floor(Math.random() * matches.length)];
+            const buf = await fs.readFile(pick);
+            return buf.toString('base64');
+        }
+    }
+
+    // 默认回退：优先从正版大肥鱼系列表情包中挑选
+    const dafeiyuFiles = mainFiles.filter(f => basename(f).startsWith('dafeiyu_'));
+    const pool = dafeiyuFiles.length > 0 ? dafeiyuFiles : allFiles;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    const buf = await fs.readFile(pick);
+    return buf.toString('base64');
+}
+
+/**
+ * 群聊冷场主动冒泡调度器
+ * 当群内持续冷场（默认 2 小时）无人发言时，由大肥鱼在活跃时段（09:00~23:00）主动冒泡，发一条沙雕搞怪文案与表情包活跃气氛。
+ * 严禁发抖音视频与链接。
+ */
 export class IdleDouyinScheduler {
     constructor(bridge, options = {}) {
         this.bridge = bridge;
         this.enabled = options.enabled ?? true;
-        this.minHours = options.intervalMinHours ?? 1.0; // 默认最少 1.0 小时
-        this.maxHours = options.intervalMaxHours ?? 1.5; // 默认最多 1.5 小时
-        this.startHour = options.activeStartHour ?? 9;   // 早上 9 点后才发
-        this.endHour = options.activeEndHour ?? 23;     // 晚上 23 点后不发
-        this.targetChat = options.targetChat || 'private:2536218596';
+        this.idleHours = options.idleHours ?? 2.0;       // 冷场 2.0 小时
+        this.startHour = options.startHour ?? 9;        // 早上 9 点后才发
+        this.endHour = options.endHour ?? 23;          // 晚上 23 点后不发
+        // 目标群聊列表（默认六胃帝皇玩 group:927066977）
+        const targets = options.targetChats || (options.targetChat ? [options.targetChat] : ['group:927066977']);
+        this.targetChats = Array.isArray(targets) ? targets : [targets];
+        this.lastActivityMap = new Map();
+        this.startTime = Date.now();
         this.timer = null;
-        this.lastUserMessageTime = Date.now();
+        this.isProcessing = false;
     }
 
-    notifyUserActivity() {
-        this.lastUserMessageTime = Date.now();
+    notifyUserActivity(chatId) {
+        const now = Date.now();
+        if (chatId) {
+            this.lastActivityMap.set(chatId, now);
+        }
     }
 
     start() {
         if (!this.enabled) return;
-        this.scheduleNext(true); // 首次启动安排一个初始间隔
+        this.stop();
+        // 每 2 分钟轮询一次各群聊冷场状态
+        this.timer = setInterval(async () => {
+            try {
+                await this.checkAllChats();
+            } catch (err) {
+                console.error('[dsh-onebot] 群聊冷场巡检异常:', err.message);
+            }
+        }, 120_000);
+
+        console.log(`[dsh-onebot] 群聊冷场冒泡调度器已启动（监听群聊: ${this.targetChats.join(', ')}，冷场阈值: ${this.idleHours} 小时，活跃时段: ${this.startHour}:00~${this.endHour}:00）`);
     }
 
     stop() {
         if (this.timer) {
-            clearTimeout(this.timer);
+            clearInterval(this.timer);
             this.timer = null;
         }
     }
 
-    scheduleNext(isFirst = false) {
-        if (this.timer) clearTimeout(this.timer);
-        // 首次启动等待 0.5 ~ 1.0 小时；后续等待 1.0 ~ 1.5 小时 (minHours ~ maxHours)
-        const hours = isFirst 
-            ? 0.5 + Math.random() * 0.5 
-            : this.minHours + Math.random() * (this.maxHours - this.minHours);
-        const ms = Math.floor(hours * 3600 * 1000);
-        console.log(`[dsh-onebot] 下次检查刷抖音闲聊将在 ${(hours).toFixed(1)} 小时后触发（老大没找聊天时刷视频）`);
-        
-        this.timer = setTimeout(async () => {
-            try {
-                await this.triggerOnce();
-            } catch (err) {
-                console.error('[dsh-onebot] 自动刷抖音触发异常:', err);
-            } finally {
-                this.scheduleNext();
-            }
-        }, ms);
-    }
-
-    async fetchTrendingTopic() {
-        try {
-            const res = await fetch('https://top.baidu.com/api/board?platform=wise&tab=realtime', {
-                headers: { 'User-Agent': 'Mozilla/5.0' },
-                signal: AbortSignal.timeout(6000)
-            });
-            const json = await res.json();
-            const list = json.data?.cards?.[0]?.content?.[0]?.content?.map(x => x.word).filter(Boolean) || [];
-            // 过滤掉严肃政治类新闻，留下生活、沙雕、趣闻、网络热议
-            const funWords = list.filter(w => !/国会|民主党|最高检|中央|会议|政策|外长|军事|总统|疫情/.test(w));
-            if (funWords.length > 0) {
-                return funWords[Math.floor(Math.random() * funWords.length)];
-            }
-        } catch {}
-        return null;
-    }
-
-    async generateModelThought(videoInfo, trendTopic) {
-        const apiKey = getDeepSeekApiKey();
-        if (!apiKey) {
-            console.warn('[dsh-onebot] 未找到 DEEPSEEK_API_KEY，无法让模型自主思考');
-            return null;
+    async checkAllChats() {
+        if (this.isProcessing) return;
+        const currentHour = new Date().getHours();
+        if (currentHour < this.startHour || currentHour >= this.endHour) {
+            return;
         }
 
-        let topicDesc = '';
-        if (videoInfo && videoInfo.title) {
-            topicDesc = `你刚才在后台静默刷抖音，刷到了这个真实短视频：【${videoInfo.title}】（作者：${videoInfo.author}，链接：${videoInfo.url}）`;
-        } else if (trendTopic) {
-            topicDesc = `你刚才在抖音刷到了关于【${trendTopic}】的热门短视频或讨论`;
-        } else {
-            topicDesc = `你刚才在抖音随便刷了会儿短视频（比如沙雕动物、搞笑翻车、解压视频、美食偷吃等）`;
+        const now = Date.now();
+        const thresholdMs = this.idleHours * 3600 * 1000;
+
+        for (const chatId of this.targetChats) {
+            const lastTime = this.lastActivityMap.get(chatId) || this.startTime;
+            const idleMs = now - lastTime;
+            if (idleMs >= thresholdMs) {
+                console.log(`[dsh-onebot] 检测到 ${chatId} 已冷场 ${(idleMs / 3600000).toFixed(1)} 小时（>= ${this.idleHours}h），准备主动冒泡整活！`);
+                this.isProcessing = true;
+                try {
+                    await this.triggerOnce(chatId);
+                } finally {
+                    // 无论成功与否，重置该聊天的计时器，避免持续刷屏
+                    this.lastActivityMap.set(chatId, Date.now());
+                    this.isProcessing = false;
+                }
+            }
+        }
+    }
+
+    async generateModelThought(chatId) {
+        const apiKey = getDeepSeekApiKey();
+        if (!apiKey) {
+            console.warn('[dsh-onebot] 未找到 DEEPSEEK_API_KEY，无法让模型自主生成搞怪文案');
+            return null;
         }
 
         try {
@@ -111,15 +157,15 @@ export class IdleDouyinScheduler {
                     messages: [
                         {
                             role: 'system',
-                            content: `你是「大肥鱼」，陪伴在老大身边的小随从兼生活搭子。你在后台刷短视频摸鱼，现在主动给老大发一两条 QQ 消息搭话分享。\n【要求：像真人一样随性打字】\n1. 语言极其生活化自然，每次1~2句，像真人给朋友发微信/QQ，绝不要机器人套话（严禁“好的”、“遵命”、“分享如下”）。\n2. 拒绝公式化口癖（不要每句开头都加“哼”、“才不是”，不要打括号描写动作）。\n3. 称呼随性自然，不用把“老大”当成每句话的打卡前缀。\n4. 如果刷到具体视频，随口吐槽两句并附带视频链接让老大看。\n5. 如果觉得适合配表情包，可以在末尾附带 [表情:搜索关键词]（如 [表情:猫猫搞笑] 或 [表情:笑哭]），直接输出你要发送的消息内容。`
+                            content: `你是群聊里的「肥鱼本鱼」（大肥鱼），一个傲娇可爱、爱吃白米饭、喜欢摸鱼整活的Q版小蓝鲸团宠。\n现在群聊里已经安静冷场超过 2 个小时了，群友们都在潜水摸鱼。你主动在群里冒个泡，打破安静，发一条简短搞怪的文案活跃气氛。\n【核心要求】\n1. 绝对不要发抖音短视频或视频链接！绝不发抖音！\n2. 语言简短随性（1~2句话），像真人发群聊一样自然搞怪、接地气，绝不要长篇大论或机器人套话（严禁“大家好”、“系统通知”、“欢迎发言”等机械格式）。\n3. 文案风格：沙雕搞怪、反向催水群、发呆无聊、求白米饭加餐、傲娇吐槽、或者无厘头冷幽默（例如催干饭、问是不是断网了、自称尾巴要长蘑菇了等）。\n4. 严禁使用括号动作描写（如（摇尾巴）、（探头）），真人 QQ 聊天绝不打括号描述自己！\n5. 可在末尾带上 [表情:搜索词]（例如 [表情:暗中观察]、[表情:摸鱼]、[表情:吃瓜]、[表情:傲娇]、[表情:发呆]），系统会自动配上对应的沙雕大肥鱼表情包发到群里。直接输出你要发送的内容即可。`
                         },
                         {
                             role: 'user',
-                            content: `【大肥鱼后台自主活动】${topicDesc}，你自己想想怎么主动跟老大搭话分享。`
+                            content: `【群聊冷场活跃】群聊已经冷场安静了 ${this.idleHours} 个小时，请发一句可爱的搞怪文案打破冷场。`
                         }
                     ],
-                    max_tokens: 150,
-                    temperature: 0.85
+                    max_tokens: 120,
+                    temperature: 0.95
                 }),
                 signal: AbortSignal.timeout(15000)
             });
@@ -139,73 +185,42 @@ export class IdleDouyinScheduler {
 
             return { messageText, memeKeyword };
         } catch (err) {
-            console.error('[dsh-onebot] 模型自主思考调用失败:', err.message);
+            console.error('[dsh-onebot] 模型自主生成搞怪文案失败:', err.message);
             return null;
         }
     }
 
-    async triggerOnce() {
-        if (!this.enabled) return;
+    async triggerOnce(chatId = this.targetChats[0]) {
+        if (!chatId) return;
 
-        // 1. 检查作息时间（深夜不打扰）
-        const currentHour = new Date().getHours();
-        if (currentHour < this.startHour || currentHour >= this.endHour) {
-            console.log(`[dsh-onebot] 当前时间 ${currentHour}:00 处于休息时段，跳过自动发消息。`);
-            return;
-        }
-
-        // 2. 检查老大最近是否有对话（如果老大 30 分钟内聊过天，不打断正常对话）
-        const idleMins = (Date.now() - this.lastUserMessageTime) / 60000;
-        if (idleMins < 30) {
-            console.log(`[dsh-onebot] 老大 ${idleMins.toFixed(0)} 分钟前刚聊过天，暂不主动插话，等待下次闲暇。`);
-            return;
-        }
-
-        console.log(`[dsh-onebot] 老大已有 ${idleMins.toFixed(0)} 分钟没找大肥鱼聊天，大肥鱼开始去后台刷短视频！`);
-
-        // 3. 真实启动无头浏览器在后台摸鱼刷抖音
-        let videoInfo = null;
-        try {
-            videoInfo = await browseDouyinFeed();
-        } catch (e) {
-            console.warn('[dsh-onebot] 真实刷视频跳过:', e.message);
-        }
-
-        let trend = null;
-        if (!videoInfo || !videoInfo.title) {
-            trend = await this.fetchTrendingTopic();
-        }
-
-        const thought = await this.generateModelThought(videoInfo, trend);
+        const thought = await this.generateModelThought(chatId);
         if (!thought || !thought.messageText) {
-            console.warn('[dsh-onebot] 大肥鱼自主思考未产出有效消息，跳过本次。');
+            console.warn('[dsh-onebot] 大肥鱼搞怪文案生成为空，跳过本次。');
             return;
         }
 
         const { messageText, memeKeyword } = thought;
-        console.log(`[dsh-onebot] 大肥鱼模型自主思考完毕: "${messageText}" (表情需求: ${memeKeyword || '无'})`);
+        console.log(`[dsh-onebot] 大肥鱼搞怪文案就绪: "${messageText}" (表情需求: ${memeKeyword || '默认'})`);
 
-        // 4. 配图逻辑：优先抖音表情包，其次视频截图帧
+        // 获取本地匹配的正版大肥鱼表情包
         let imageBase64 = null;
-        if (memeKeyword) {
-            try {
-                const meme = await searchDouyinMeme(memeKeyword);
-                if (meme && meme.base64) imageBase64 = meme.base64;
-            } catch {}
-        }
-        if (!imageBase64 && videoInfo?.screenshotBase64 && Math.random() < 0.5) {
-            imageBase64 = videoInfo.screenshotBase64;
+        try {
+            imageBase64 = await getLocalMemeBase64(memeKeyword);
+        } catch (e) {
+            console.warn('[dsh-onebot] 读取本地表情包异常:', e.message);
         }
 
         if (imageBase64) {
-            await this.bridge.sendSegments(this.targetChat, [
+            await this.bridge.sendSegments(chatId, [
                 { type: 'text', data: { text: messageText } },
                 { type: 'image', data: { file: `base64://${imageBase64}` } }
             ]);
+            console.log(`[dsh-onebot] 已向 ${chatId} 成功发送冷场冒泡搞怪文案 + 表情包！`);
             return;
         }
 
         // 纯文本发送
-        await this.bridge.sendToChat(this.targetChat, messageText);
+        await this.bridge.sendToChat(chatId, messageText);
+        console.log(`[dsh-onebot] 已向 ${chatId} 成功发送冷场冒泡搞怪纯文本！`);
     }
 }

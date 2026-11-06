@@ -210,6 +210,10 @@ export const Config = z.object({
         .description('注入队列轮询间隔（毫秒，W1；最小 500）'),
     logLevel: z.union([z.const('debug'), z.const('info'), z.const('warn'), z.const('error')]).default('info')
         .description('控制台日志级别门槛（debug < info < warn < error）：低于该级别的日志不输出。debug=全部输出（含「session 事件早退」等调试行）；info=常规信息（启动、连接建立、meta 事件等，默认）；warn=仅警告与错误；error=仅错误'),
+    idleGroupChats: z.array(z.string()).default(['group:927066977'])
+        .description('群聊冷场主动冒泡监听目标列表（如 group:927066977）'),
+    idleHours: z.number().default(2.0)
+        .description('群聊冷场触发阈值（小时，默认 2.0 小时）'),
 });
 /** D4a: the deprecated config names kept for one release, mapped onto their
  * renamed fields. */
@@ -425,9 +429,18 @@ export function apply(ctx, config) {
         log,
     });
     const targetChat = policy.adminUsers?.length > 0 ? `private:${policy.adminUsers[0]}` : 'private:2536218596';
-    const douyinScheduler = new IdleDouyinScheduler(bridge, { targetChat });
+    const idleGroupChats = config.idleGroupChats?.length > 0 ? config.idleGroupChats : ['group:927066977'];
+    const douyinScheduler = new IdleDouyinScheduler(bridge, { 
+        targetChat,
+        targetChats: idleGroupChats,
+        idleHours: config.idleHours ?? 2.0
+    });
     connection.onMessage = (event) => {
-        douyinScheduler.notifyUserActivity();
+        const messageType = event.message_type;
+        const groupId = event.group_id;
+        const userId = event.user_id;
+        const chatId = messageType === 'group' && groupId ? `group:${groupId}` : (userId ? `private:${userId}` : null);
+        douyinScheduler.notifyUserActivity(chatId);
         void bridge.handleInbound(event);
     };
     // W3/T4 (P3): connection faults mint QQ-CONN-… references through the
