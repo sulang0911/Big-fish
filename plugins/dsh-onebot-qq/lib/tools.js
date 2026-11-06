@@ -12,7 +12,7 @@ import { fileToBase64, isUrl } from './media.js';
 import { splitChatId } from './chat.js';
 import { parseMessage, cqUnescape } from './cq.js';
 import { searchDouyinMeme } from './browser-meme.js';
-import { browseDouyinFeed, searchDouyin } from './browser-douyin.js';
+import { browseDouyinFeed, searchDouyin, browseFavoriteSite } from './browser-douyin.js';
 import { describeImage, describeImageBase64 } from './vision.js';
 function padWavSilence(wavBuf, padMs = 250) {
     if (wavBuf.length < 44 || wavBuf.toString('ascii', 0, 4) !== 'RIFF') return wavBuf;
@@ -645,30 +645,27 @@ export function registerTools(ctx, bridge, connection, limits) {
                 }
             }
 
-            if (typeof a.keyword === 'string' && a.keyword.trim() !== '') {
-                const kw = a.keyword.trim().toLowerCase();
-                const isGeneral = ['大肥鱼', '肥鱼', '开心飞鱼', '飞鱼', '表情包'].includes(kw);
-                if (!isGeneral) {
-                    const matched = foundFiles.filter(f => {
-                        const name = path.basename(f).toLowerCase();
-                        if (name.includes(kw)) return true;
-                        const matchMeta = indexData.find(it => it.file === path.basename(f));
-                        if (matchMeta && (matchMeta.emotion?.includes(kw) || matchMeta.desc?.includes(kw))) return true;
-                        return false;
-                    });
-                    if (matched.length > 0) {
-                        targetFile = matched[Math.floor(Math.random() * matched.length)];
-                    }
+            const rawKw = typeof a.keyword === 'string' ? a.keyword.trim() : '';
+            const kw = rawKw.toLowerCase();
+            const isGeneral = !kw || ['大肥鱼', '肥鱼', '开心飞鱼', '飞鱼', '表情包', '随机'].includes(kw);
+
+            if (!isGeneral) {
+                const matched = foundFiles.filter(f => {
+                    const name = path.basename(f).toLowerCase();
+                    if (name.includes(kw)) return true;
+                    const matchMeta = indexData.find(it => it.file === path.basename(f));
+                    if (matchMeta && (matchMeta.emotion?.toLowerCase().includes(kw) || matchMeta.desc?.toLowerCase().includes(kw))) return true;
+                    return false;
+                });
+                if (matched.length > 0) {
+                    targetFile = matched[Math.floor(Math.random() * matched.length)];
                 }
             }
-            // 如果本地关键词未直接命中，但本地已有大肥鱼表情包，优先从本地正版大肥鱼表情包库挑选，绝不乱发
-            if (!targetFile && foundFiles.length > 0) {
-                targetFile = foundFiles[Math.floor(Math.random() * foundFiles.length)];
-            }
-            // 只有本地完全没有任何表情包时，才自发前往抖音搜索爬取
-            if (!targetFile) {
+
+            // 当出现了本地表情包库尚未覆盖的新心情（!isGeneral && !targetFile），或本地完全无图时，立即去抖音搜索爬取新表情包填补空缺！
+            if (!targetFile && (!isGeneral || foundFiles.length === 0)) {
                 try {
-                    const crawlRes = await searchDouyinMeme(a.keyword || '大肥鱼 表情包');
+                    const crawlRes = await searchDouyinMeme(rawKw || '大肥鱼 表情包');
                     if (crawlRes && crawlRes.base64) {
                         const messageId = await bridge.sendSegments(chatId, [
                             { type: 'image', data: { file: `base64://${crawlRes.base64}` } },
@@ -676,11 +673,18 @@ export function registerTools(ctx, bridge, connection, limits) {
                         try {
                             visualDescription = await describeImageBase64(crawlRes.base64);
                         } catch {}
-                        return { sent: true, meme: crawlRes.filename, fromDouyin: true, messageId: messageId ?? null, visualDescription };
+                        return { sent: true, meme: crawlRes.filename, fromDouyin: crawlRes.source === 'douyin_real_verified', messageId: messageId ?? null, visualDescription };
                     }
                 } catch (e) {
-                    return { sent: false, error: '本地无表情包且从抖音抓取失败: ' + e.message };
+                    if (foundFiles.length === 0) {
+                        return { sent: false, error: '本地无表情包且从抖音抓取失败: ' + e.message };
+                    }
                 }
+            }
+
+            // 若未指定具体新心情，或抖音爬取超时降级时，从本地库挑选
+            if (!targetFile && foundFiles.length > 0) {
+                targetFile = foundFiles[Math.floor(Math.random() * foundFiles.length)];
             }
             const buf = await fs.promises.readFile(targetFile);
             const b64 = buf.toString('base64');
@@ -948,6 +952,43 @@ export function registerTools(ctx, bridge, connection, limits) {
                 messageId: messageId ?? null,
                 visualDescription
             };
+        },
+    }));
+    register(defineTool({
+        name: 'qq_surf_favorite_site',
+        description: '大肥鱼自己打开浏览器去逛喜欢的网站（如B站、小红书、下厨房、微博热搜、知乎、抖音，或任意网址）。当老大没空陪你玩、让你「自己去玩 / 自己逛网站」、或者你觉得无聊想自己上网冲浪时调用！如果遇到需要登录的网站，会自动把登录界面/二维码截屏发给老大并在电脑桌面打开浏览器窗口请老大帮忙登录。',
+        parameters: {
+            site: {
+                type: 'string',
+                description: '想逛的网站名称或网址（如 "B站"、"小红书"、"下厨房"、"微博"、"知乎"；留空则大肥鱼随机挑一个最喜欢的网站）',
+            },
+            chat_id: {
+                type: 'string',
+                description: '目标会话；省略时默认当前会话',
+            },
+        },
+        output: {
+            schema: { type: 'json' },
+            render: (_args, value) => {
+                const v = value;
+                if (!v.triggered && !v.success) return [{ type: 'text', text: v.reason || v.error || '正在逛网站中' }];
+                if (v.needsLogin) {
+                    return [{ type: 'text', text: `逛【${v.siteName}】时发现需要登录，已将登录二维码/窗口截图发给老大并在桌面打开了浏览器窗口请求老大登录` }];
+                }
+                return [{ type: 'text', text: `已自己打开浏览器逛完【${v.siteName}】，看到内容：${(v.headlines || []).join('、')}` }];
+            },
+        },
+        isConcurrencySafe: () => true,
+        execute: async (args, exec) => {
+            const chatId = resolveChat(bridge, exec, args.chat_id);
+            if (bridge.feiyu) {
+                return await bridge.feiyu.triggerSelfSurfWeb({
+                    chatId,
+                    reason: 'llm_tool',
+                    siteHint: args.site || '',
+                });
+            }
+            return await browseFavoriteSite({ siteHint: args.site || '' });
         },
     }));
     register(defineTool({

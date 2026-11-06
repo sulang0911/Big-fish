@@ -479,7 +479,11 @@ export class ChatBridge {
             getChat: chatId => bridge.chats.get(chatId),
             hasChat: chatId => bridge.chats.has(chatId),
             resetChat: chatId => bridge.resetChat(chatId),
-            handleFishCommand: (chatId, arg) => bridge.feiyu?.handleFishCommand(chatId, arg),
+            handleFishCommand: (chatId, arg, sender) => bridge.feiyu?.handleFishCommand(chatId, arg, {
+                userId: sender?.userId ?? '',
+                nickname: sender?.nickname ?? '',
+                isAdmin: classifyUserRole(sender?.userId ?? '', bridge.deps.policy.adminUsers) === 'admin',
+            }),
             dispatchFollowup: (chatId, text, role, nickname) => bridge.dispatchFollowup(chatId, text, role, nickname),
             // T3 (P2): /stop 也显式终止该聊天的超时补发跟踪（其他聊天不受影响）。
             stopDeferredTracking: chatId => bridge.deferred.cancelChat(chatId),
@@ -947,7 +951,7 @@ export class ChatBridge {
         agentCtx.systemPrompt.section({
             name: 'channel:dafeiyu-v3-prefix',
             order: 10,
-            text: buildCachedSystemPromptPrefix(this.feiyu?.memoryManager),
+            text: () => buildCachedSystemPromptPrefix(this.feiyu?.memoryManager),
         });
         agentCtx.systemPrompt.section({
             name: 'channel:dsh-onebot',

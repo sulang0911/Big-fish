@@ -58,7 +58,18 @@ export async function searchDouyinMeme(keyword = '傲娇') {
     const kw = (keyword || '').toLowerCase().trim();
     const isGeneral = !kw || ['大肥鱼', '肥鱼', '开心飞鱼', '飞鱼', '表情包'].includes(kw);
 
-    // 1. 优先从本地已质检的正版大肥鱼表情包库中匹配
+    // 1. 优先从本地已质检的正版大肥鱼表情包库与 index.json 索引中精确匹配该心情
+    let indexData = [];
+    const indexPath = path.join(memesDir, 'index.json');
+    if (fs.existsSync(indexPath)) {
+        try {
+            indexData = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+            if (!Array.isArray(indexData)) indexData = [];
+        } catch {
+            indexData = [];
+        }
+    }
+
     if (localFiles.length > 0) {
         if (isGeneral) {
             const pickName = localFiles[Math.floor(Math.random() * localFiles.length)];
@@ -74,7 +85,14 @@ export async function searchDouyinMeme(keyword = '傲娇') {
                 source: 'local_verified'
             };
         }
-        const matched = localFiles.filter(f => f.toLowerCase().includes(kw));
+        const matched = localFiles.filter(f => {
+            if (f.toLowerCase().includes(kw)) return true;
+            const meta = indexData.find(it => it.file === f);
+            if (meta && ((meta.emotion && meta.emotion.toLowerCase().includes(kw)) || (meta.desc && meta.desc.toLowerCase().includes(kw)))) {
+                return true;
+            }
+            return false;
+        });
         if (matched.length > 0) {
             const pickName = matched[Math.floor(Math.random() * matched.length)];
             const pickPath = path.join(memesDir, pickName);
@@ -91,10 +109,11 @@ export async function searchDouyinMeme(keyword = '傲娇') {
         }
     }
 
-    // 2. 本地未命中特定情绪时，前往真实抖音搜索并经 minicpm-v 视觉质检
+    // 2. 本地未命中该新心情时，主动前往抖音搜索爬取「大肥鱼 <心情> 表情包」并经视觉质检后入库填补空缺
     try {
+        console.log(`[dsh-onebot] 本地表情包库暂无「${keyword}」心情，正在前往抖音搜索获取新表情包填补空缺...`);
         const searchKw = keyword.includes('大肥鱼') ? keyword : `大肥鱼 ${keyword} 表情包`;
-        const dyRes = await searchDouyin(searchKw, { saveMemes: true });
+        const dyRes = await searchDouyin(searchKw, { saveMemes: true, emotionTag: keyword });
         if (dyRes.success && dyRes.savedFiles && dyRes.savedFiles.length > 0) {
             const sampleName = dyRes.savedFiles[0];
             const samplePath = path.join(memesDir, sampleName);

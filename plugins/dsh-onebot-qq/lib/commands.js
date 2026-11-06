@@ -31,9 +31,9 @@ export const COMMANDS = [
     { name: 'plan', adminOnly: true, group: '输出', help: '[off|内容] 宿主计划模式', handler: (ctx, chatId, arg) => handlePlanCommand(ctx, chatId, arg) },
     { name: 'permission', adminOnly: true, group: '会话', help: '[w|f|预设名|序号] 切换权限预设（w=工作区可写+需审批，f=全盘+免审批）', handler: (ctx, chatId, arg) => handlePermissionCommand(ctx, chatId, arg) },
     { name: 'goal', adminOnly: true, group: '其他', help: '[目标|clear] 目标记录', handler: (ctx, chatId, arg) => handleGoalCommand(ctx, chatId, arg) },
-    { name: 'fish', adminOnly: true, group: '查询', help: '[status|mem|tick] 大肥鱼 v3.0 生理状态/三层记忆/主动破冰测试（零 Token 检视）', handler: async (ctx, chatId, arg) => {
+    { name: 'fish', adminOnly: false, group: '查询', help: '[hi|feed|status|mem|tick] 大肥鱼互动与状态面板（群友可用 hi 打招呼 / feed 投喂）', handler: async (ctx, chatId, arg, sender) => {
             if (typeof ctx.handleFishCommand === 'function') {
-                await ctx.handleFishCommand(chatId, arg);
+                await ctx.handleFishCommand(chatId, arg, sender);
             } else {
                 await ctx.sendToChat(chatId, '⚠️ 大肥鱼 v3.0 SocialArbiter 尚未挂载。');
             }
@@ -127,14 +127,14 @@ export async function tryHandleCommand(ctx, chatId, text, userId, nickname) {
     const first = (normalized.split(/\s+/, 1)[0] ?? '').trim();
     if (!/^\/[A-Za-z][A-Za-z0-9_-]*$/.test(first))
         return false;
-    if (!ctx.isAdmin(userId)) {
-        await ctx.sendToChat(chatId, '该命令仅管理员可用。');
-        return true;
-    }
     const name = first.slice(1).toLowerCase();
     ctx.log('debug', 'slash /' + name + ' for ' + chatId);
     const command = COMMANDS.find(c => c.name === name || c.aliases?.includes(name));
     if (command === undefined) {
+        if (!ctx.isAdmin(userId)) {
+            await ctx.sendToChat(chatId, '该命令仅管理员可用。');
+            return true;
+        }
         const suggestions = suggestCommands(name);
         if (suggestions.length > 0) {
             const names = suggestions.map(s => '/' + s);
@@ -147,6 +147,10 @@ export async function tryHandleCommand(ctx, chatId, text, userId, nickname) {
             return true;
         }
         return false;
+    }
+    if (command.adminOnly !== false && !ctx.isAdmin(userId)) {
+        await ctx.sendToChat(chatId, '该命令仅管理员可用。');
+        return true;
     }
     await command.handler(ctx, chatId, normalized.slice(first.length).trim(), { userId, nickname: nickname ?? '' });
     return true;

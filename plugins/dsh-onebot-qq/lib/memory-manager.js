@@ -165,11 +165,11 @@ export class MemoryManager {
         return profile;
     }
 
-    updateAffection(userId, delta = 0) {
-        const profile = this.getUserProfile(userId);
+    updateAffection(userId, delta = 0, fallbackNickname = '') {
+        const profile = this.getUserProfile(userId, fallbackNickname);
         if (!profile) return 50;
-        const d = Math.max(-5, Math.min(5, Math.round(Number(delta) || 0)));
-        profile.affection = Math.max(0, Math.min(100, (profile.affection ?? 50) + d));
+        const d = Math.max(-10, Math.min(10, Math.round((Number(delta) || 0) * 10) / 10));
+        profile.affection = Math.max(0, Math.min(100, Math.round(((profile.affection ?? 50) + d) * 10) / 10));
         if (String(userId) === this.masterQQ) {
             profile.relationship_tag = '首席饲主/老大';
             profile.affection = Math.max(60, profile.affection); // 老大保底亲密度
@@ -390,8 +390,9 @@ export class MemoryManager {
         return this.getUserProfile(userId, fallbackNickname);
     }
 
-    applyAffectionDelta(userId, delta = 0) {
-        return this.updateAffection(userId, delta);
+    applyAffectionDelta(userId, delta = 0, fallbackNickname = '') {
+        this.updateAffection(userId, delta, fallbackNickname);
+        return this.getUserProfile(userId, fallbackNickname);
     }
 
     addEpisodicMemory(entry = {}) {

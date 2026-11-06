@@ -143,12 +143,14 @@ export class InboundPipeline {
             ? feiyu.notifyUserActivity(chatId, textContent, userId, inbound.nickname)
             : undefined;
 
-        // 群聊唤醒准则：老大在群聊中 @ 肥鱼、引用回复肥鱼、或者喊肥鱼昵称时唤醒回复；未呼叫时安静吃瓜不打扰老大与群友聊天
+        // 群聊唤醒准则：老大在群聊中 @ 肥鱼、引用回复肥鱼、或者喊肥鱼昵称时唤醒回复；或者任何人使用公开 /fish 互动命令时放行至命令路由
         const botNamePattern = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼)/i;
         const adminCalledByName = isAdmin && botNamePattern.test(textContent);
+        const isPublicFishCommand = /^\s*(?:@\d+\s*)?\/fish(?:\s|$)/i.test(inbound.text || textContent);
 
         const requireMentionForThisMessage = kind === 'group' && this.ctx.config.requireMention;
         const isExplicitMention = adminCalledByName
+            || isPublicFishCommand
             || detectExplicitMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ);
 
         let mentioned = isExplicitMention || detectMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ);

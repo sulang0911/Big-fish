@@ -11,10 +11,13 @@ import { dirname, join } from 'node:path';
 
 const INNER_LIFE_PATH = join(homedir(), '.dsh', 'storages', 'dsh-persona-dafeiyu', 'inner_life.json');
 
-const FEEDING_PATTERN = /(投喂|给.*吃|请.*吃|小鱼干|白米饭|大米饭|五花肉|红烧肉|鸡腿|奶茶|零食|夜宵|加餐|猫粮|鱼食|烤肉|火锅|煲仔饭)/i;
-
 function clamp(val, min, max) {
-    return Math.max(min, Math.min(max, Math.round(Number(val) || 0)));
+    const rounded = Math.round((Number(val) || 0) * 10) / 10;
+    return Math.max(min, Math.min(max, rounded));
+}
+
+function randFloat(min, max) {
+    return Math.round((min + Math.random() * (max - min)) * 10) / 10;
 }
 
 /**
@@ -162,11 +165,18 @@ export class DriveEngine {
                 this.state.wokenUpAt = 0;
                 this.state.energy = Math.max(this.state.energy, 85);
             }
-            // 饭点 (12:00 / 18:00 前后) 饥饿加速下降
-            const hungerDrop = mealMode ? 1.2 : 0.25;
+            // 饭点 (12:00 / 18:00 前后) 饥饿加速下降，均带自然随机波动
+            const hungerDrop = mealMode ? randFloat(0.6, 1.2) : randFloat(0.1, 0.25);
             this.state.hunger = clamp(this.state.hunger - hungerDrop, 0, 100);
-            this.state.boredom = clamp(this.state.boredom + 0.5, 0, 100);
-            this.state.energy = clamp(this.state.energy - 0.15, 20, 100);
+            // 无聊度适度上升：每分钟 +0.2 ~ +0.4（平均 +0.3/分钟，约每小时 +18 点，约 2.5~3 小时累积到高无聊度）
+            this.state.boredom = clamp(this.state.boredom + randFloat(0.2, 0.4), 0, 100);
+            // 午休时段 (13:00~14:00) 打盹回精力，其余白天时段平缓消耗 (-0.05 ~ -0.1/分钟，每小时约 -4.5)
+            const hour = now.getHours();
+            if (hour === 13 && this.state.energy < 85) {
+                this.state.energy = clamp(this.state.energy + randFloat(0.3, 0.6), 0, 100);
+            } else {
+                this.state.energy = clamp(this.state.energy - randFloat(0.05, 0.1), 15, 100);
+            }
             this._recomputeMood();
         }
 
@@ -227,11 +237,10 @@ export class DriveEngine {
     }
 
     /**
-     * 当收到用户消息时触发：检测深夜吵醒与投喂关键词
+     * 当收到用户消息时触发：检测深夜吵醒（饱食度仅通过 /fish feed 投喂增加，普通聊天不再凭空加饱食度）
      */
     onUserMessage(userText = '', now = new Date()) {
-        const text = String(userText || '');
-        let fed = false;
+        const text = String(userText || '').trim();
         let wokenUp = false;
 
         if (isSleepWindow(now)) {
@@ -241,35 +250,39 @@ export class DriveEngine {
             wokenUp = true;
         }
 
-        if (FEEDING_PATTERN.test(text)) {
-            this.state.hunger = clamp(this.state.hunger + 25, 0, 100);
-            fed = true;
+        // 非 /fish 指令的普通聊天随机缓解 2.0 ~ 5.0 无聊度
+        if (!/^\/fish(?:\s|$)/i.test(text)) {
+            this.state.boredom = clamp(this.state.boredom - randFloat(2.0, 5.0), 0, 100);
         }
-
-        // 每次有人陪聊，无聊度自然降低
-        this.state.boredom = clamp(this.state.boredom - 15, 0, 100);
         if (!wokenUp) {
             this._recomputeMood();
         }
         this.save();
-        return { fed, wokenUp, wokeUpFromSleep: wokenUp, state: this.getSnapshot() };
+        return { fed: false, wokenUp, wokeUpFromSleep: wokenUp, state: this.getSnapshot() };
     }
 
     /**
-     * 应用 LLM 输出的 stat_delta ({ affection, boredom, hunger })
+     * 应用 LLM 或互动指令输出的 stat_delta ({ affection, boredom, hunger, energy })
      */
     applyStatDelta(statDelta = {}) {
         if (!statDelta || typeof statDelta !== 'object') return this.getSnapshot();
         if (statDelta.hunger !== undefined) {
-            const dh = clamp(statDelta.hunger, 0, 30);
+            const dh = clamp(statDelta.hunger, -30, 50);
             this.state.hunger = clamp(this.state.hunger + dh, 0, 100);
         }
         if (statDelta.boredom !== undefined) {
-            const db = clamp(statDelta.boredom, -40, 10);
+            const db = clamp(statDelta.boredom, -50, 20);
             this.state.boredom = clamp(this.state.boredom + db, 0, 100);
+        }
+        if (statDelta.energy !== undefined) {
+            const de = clamp(statDelta.energy, -25, 35);
+            this.state.energy = clamp(this.state.energy + de, 0, 100);
         }
         this._recomputeMood();
         this.save();
+        if (typeof this.onStateChange === 'function') {
+            try { this.onStateChange(this.getSnapshot()); } catch {}
+        }
         return this.getSnapshot();
     }
 
@@ -281,6 +294,9 @@ export class DriveEngine {
             mood: this.state.mood,
             sleeping: isSleepWindow() && !this.isWokenUpGrumpy(),
             wokenUpGrumpy: this.isWokenUpGrumpy(),
+            current_obsession: this.state.current_obsession,
+            recent_discoveries: this.state.recent_discoveries,
+            diary: this.state.diary,
             updatedAt: this.state.updatedAt,
         };
     }

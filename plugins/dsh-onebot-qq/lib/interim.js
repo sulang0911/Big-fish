@@ -1,5 +1,6 @@
 import { renderTextImage } from './t2i/index.js';
 import { describeError } from './errors.js';
+import { looksLikeActionJson, parseActionResponse } from './action-protocol.js';
 /** Spacing between recall delete_msg calls (NapCat recallMsg is slow; bursting
  * them pushes borderline-late recalls over the server timeout). */
 const RECALL_SPACING_MS = 60;
@@ -166,7 +167,17 @@ export class InterimTracker {
     }
     /** Render this turn's interims into one t2i image (summary card, before final). */
     async sendInterimSummary(chatId, buf) {
-        const body = buf.filter(item => item.text.trim() !== '').map((item, index) => (index + 1) + '. ' + item.text.trim()).join('\n\n');
+        const body = buf
+            .map(item => {
+                const raw = item.text.trim();
+                if (looksLikeActionJson(raw)) {
+                    return parseActionResponse(raw).messages.join(' ');
+                }
+                return raw;
+            })
+            .filter(text => text !== '')
+            .map((text, index) => (index + 1) + '. ' + text)
+            .join('\n\n');
         if (body === '')
             return;
         let png;

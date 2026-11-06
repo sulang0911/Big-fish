@@ -1,5 +1,6 @@
 import puppeteer from 'puppeteer-core';
 import { existsSync, mkdirSync, promises as fsPromises } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import https from 'node:https';
 import http from 'node:http';
@@ -134,6 +135,32 @@ async function _searchDouyin(keyword, options = {}) {
         // 6. 等待搜索结果渲染与接口返回
         await new Promise(r => setTimeout(r, 5000));
 
+        // 补充：若接口拦截未抓到足够封面，直接从页面 DOM 提取抖音结果图片（含图文表情包与视频封面）
+        if (searchItems.length === 0) {
+            try {
+                const domImgs = await page.$$eval('img', imgs =>
+                    imgs
+                        .map(img => ({
+                            src: img.currentSrc || img.src || '',
+                            alt: img.alt || '',
+                            w: img.naturalWidth || img.width || 0,
+                            h: img.naturalHeight || img.height || 0,
+                        }))
+                        .filter(it => it.src.startsWith('http') && (it.src.includes('douyinpic') || it.src.includes('byteimg')) && it.w >= 100 && it.h >= 100)
+                );
+                for (let idx = 0; idx < domImgs.length && idx < 10; idx++) {
+                    searchItems.push({
+                        title: domImgs[idx].alt || `${keyword}_${idx + 1}`,
+                        author: '@抖音表情包',
+                        aweme_id: `dom_${Date.now()}_${idx}`,
+                        url: 'https://www.douyin.com/',
+                        diggCount: 0,
+                        coverUrl: domImgs[idx].src,
+                    });
+                }
+            } catch {}
+        }
+
         // 7. 截取真实搜索结果网页截图
         let screenshotBase64 = null;
         try {
@@ -145,12 +172,28 @@ async function _searchDouyin(keyword, options = {}) {
 
         console.log(`[dsh-onebot] 抖音搜索 "${keyword}" 成功，抓取到 ${searchItems.length} 条真实结果。`);
 
-        // 8. 抖音表情包质检与保存：必须经过本地 minicpm-v 视觉质检，确保确属蓝色头发大肥鱼动漫少女，防止红脸老头、狗头等污染
+        // 8. 抖音表情包质检与保存：经过本地 minicpm-v 视觉质检，确认后以对应心情标签存入 memes/ 并自动写入 index.json 填补情绪空缺
         let savedCount = 0;
         const savedFiles = [];
         if (options.saveMemes !== false && searchItems.length > 0) {
             const otherDir = path.join(MEMES_DIR, 'other_memes');
             if (!existsSync(otherDir)) mkdirSync(otherDir, { recursive: true });
+
+            const emotionTag = String(options.emotionTag || keyword || '')
+                .replace(/大肥鱼|肥鱼|表情包/g, '')
+                .replace(/[\\/:*?"<>|#@\s]/g, '')
+                .trim() || '新心情';
+
+            const indexPath = path.join(MEMES_DIR, 'index.json');
+            let indexData = [];
+            if (existsSync(indexPath)) {
+                try {
+                    indexData = JSON.parse(await fsPromises.readFile(indexPath, 'utf8'));
+                    if (!Array.isArray(indexData)) indexData = [];
+                } catch {
+                    indexData = [];
+                }
+            }
 
             for (let i = 0; i < searchItems.length; i++) {
                 const it = searchItems[i];
@@ -162,26 +205,39 @@ async function _searchDouyin(keyword, options = {}) {
                     await downloadFile(it.coverUrl, tempDest);
                     // 本地视觉质检
                     let isBigFish = false;
+                    let visualDesc = '';
                     try {
                         const desc = await describeImage(tempDest, '请用一句话回答：这张图的主体是不是蓝色头发的二次元动漫少女/大肥鱼卡通角色？若是，简述动作表情；若不是，简述图里是什么：');
-                        if (desc && (desc.includes('是') || desc.includes('蓝色头发') || desc.includes('鲸鱼娘') || desc.includes('二次元动漫少女')) && !desc.includes('不是') && !desc.includes('并非')) {
+                        visualDesc = String(desc || '').trim();
+                        if (visualDesc && (visualDesc.includes('是') || visualDesc.includes('蓝色头发') || visualDesc.includes('鲸鱼娘') || visualDesc.includes('二次元') || visualDesc.includes('少女') || visualDesc.includes('动漫')) && !visualDesc.includes('不是') && !visualDesc.includes('并非')) {
                             isBigFish = true;
                         }
                     } catch {}
 
                     if (isBigFish) {
-                        const realFilename = `dafeiyu_douyin_${cleanTitle}_${Date.now()}.jpg`;
+                        const realFilename = `dafeiyu_douyin_${emotionTag}_${cleanTitle}_${Date.now()}.jpg`;
                         const realDest = path.join(MEMES_DIR, realFilename);
                         await fsPromises.rename(tempDest, realDest);
                         savedCount++;
                         savedFiles.push(realFilename);
+                        indexData.push({
+                            file: realFilename,
+                            newName: realFilename,
+                            emotion: `${emotionTag} ${cleanTitle.replace(/_/g, ' ')}`.trim(),
+                            desc: visualDesc || `大肥鱼「${emotionTag}」表情包（来自抖音自动补全）`,
+                        });
                     }
                 } catch (e) {
                     console.warn(`[dsh-onebot] 下载或质检表情包失败:`, e.message);
                 }
             }
             if (savedCount > 0) {
-                console.log(`[dsh-onebot] 已将 ${savedCount} 张通过视觉质检的纯正大肥鱼表情包存入本地库: ${MEMES_DIR}`);
+                try {
+                    await fsPromises.writeFile(indexPath, JSON.stringify(indexData, null, 2), 'utf8');
+                } catch (idxErr) {
+                    console.warn('[dsh-onebot] 更新 memes/index.json 失败:', idxErr.message);
+                }
+                console.log(`[dsh-onebot] 已从抖音爬取 ${savedCount} 张「${emotionTag}」新表情包填补本地库空缺并更新 index.json: ${MEMES_DIR}`);
             }
         }
 
@@ -347,4 +403,200 @@ async function _browseDouyinFeed(options = {}) {
 
 export function browseDouyinFeed(options = {}) {
     return runExclusive(() => _browseDouyinFeed(options));
+}
+
+/**
+ * 大肥鱼最喜欢自己逛的摸鱼网站池
+ */
+export const FAVORITE_SITES = [
+    { id: 'bilibili', aliases: ['b站', 'bilibili', '哔哩哔哩', '番剧'], name: '哔哩哔哩 (B站)', url: 'https://www.bilibili.com/', category: '美食区/沙雕视频/番剧' },
+    { id: 'xiaohongshu', aliases: ['小红书', 'xhs', 'rednote'], name: '小红书', url: 'https://www.xiaohongshu.com/explore', category: '神仙吃法/甜品探店/萌宠' },
+    { id: 'xiachufang', aliases: ['下厨房', '菜谱', '做饭', '五花肉'], name: '下厨房美食网', url: 'https://www.xiachufang.com/', category: '脆皮五花肉与红烧肉绝密食谱' },
+    { id: 'weibo', aliases: ['微博', '热搜', '吃瓜'], name: '微博热搜榜', url: 'https://s.weibo.com/top/summary', category: '今日摸鱼吃瓜热榜' },
+    { id: 'douyin', aliases: ['抖音', '短视频'], name: '抖音精选', url: 'https://www.douyin.com/', category: '搞笑短视频/大肥鱼热梗' },
+    { id: 'zhihu', aliases: ['知乎', 'zhihu'], name: '知乎热榜', url: 'https://www.zhihu.com/billboard', category: '脑洞故事与摸鱼问答' },
+];
+
+export function pickFavoriteSite(siteHint = '') {
+    const clean = String(siteHint || '').trim().toLowerCase();
+    if (/^https?:\/\//i.test(clean)) {
+        return { id: 'custom', name: clean, url: String(siteHint).trim(), category: '自选网站' };
+    }
+    if (clean) {
+        for (const site of FAVORITE_SITES) {
+            if (site.id === clean || site.name.toLowerCase().includes(clean) || site.aliases.some(a => clean.includes(a))) {
+                return site;
+            }
+        }
+    }
+    return FAVORITE_SITES[Math.floor(Math.random() * FAVORITE_SITES.length)];
+}
+
+/**
+ * 大肥鱼自主打开浏览器逛喜欢的网站：
+ * - 若检测到目标网站弹出登录框 / 二维码 / 强制跳转到登录页（needsLogin=true），
+ *   自动截取登录二维码/窗口画面发给老大，并在桌面弹出可见 Chrome 窗口请老大帮忙登录；
+ * - 若无需登录或已登录，模拟真人滚动浏览，提取感兴趣的标题并截图记录到小本本。
+ */
+async function _browseFavoriteSite(options = {}) {
+    const site = pickFavoriteSite(options.siteHint);
+    let browser = null;
+    let needsLogin = false;
+    try {
+        console.log(`[dsh-onebot] 大肥鱼正在打开浏览器自主闲逛: ${site.name} (${site.url})...`);
+        browser = await puppeteer.launch({
+            executablePath: CHROME_PATH,
+            headless: options.visible ? false : 'new',
+            userDataDir: PROFILE_DIR,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                `--user-agent=${USER_AGENT}`,
+                '--mute-audio',
+                '--window-size=1280,820',
+                '--disable-gpu',
+            ],
+        });
+
+        const page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 820 });
+        await page.goto(site.url, { waitUntil: 'domcontentloaded', timeout: 22_000 });
+        await new Promise(r => setTimeout(r, 3200));
+
+        // 1. 检测是否被登录墙 / 扫码登录弹窗拦截
+        const loginCheck = await page.evaluate(() => {
+            const href = window.location.href.toLowerCase();
+            const isLoginUrl = /(?:\/login|passport\.|signin|auth|accounts\.|\.com\/account)/i.test(href);
+
+            // 检查显著的居中登录弹窗或遮罩
+            const modalSelectors = [
+                '.login-modal', '.login-container', '.reds-modal', '.bili-mini-mask',
+                '[class*="login-modal"]', '[class*="loginModal"]', '[class*="LoginModal"]',
+                '[id*="login-modal"]', '.signFlowModal', '.Modal-wrapper',
+            ];
+            let hasLoginModal = false;
+            let modalHint = '';
+            for (const sel of modalSelectors) {
+                const el = document.querySelector(sel);
+                if (el) {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    if (rect.width > 180 && rect.height > 180 && style.display !== 'none' && style.visibility !== 'hidden') {
+                        const txt = (el.innerText || '').trim();
+                        if (/(扫码登录|请先登录|登录后|立即登录|验证码登录|密码登录|手机号登录|微信登录)/i.test(txt)) {
+                            hasLoginModal = true;
+                            modalHint = txt.replace(/\s+/g, ' ').slice(0, 60);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 检查整页正文中是否几乎只有登录提示而没有实质内容列表
+            const bodyText = (document.body?.innerText || '').trim();
+            const bareLoginWall = bodyText.length < 600 && /(扫码登录|请登录|登录后查看|立即登录)/i.test(bodyText);
+
+            return {
+                needsLogin: Boolean(isLoginUrl || hasLoginModal || bareLoginWall),
+                reason: isLoginUrl ? '网页跳转到了登录页' : (hasLoginModal ? `弹出登录框 (${modalHint})` : (bareLoginWall ? '页面要求登录后浏览' : '')),
+                currentUrl: window.location.href,
+            };
+        });
+
+        needsLogin = loginCheck.needsLogin;
+
+        if (!needsLogin) {
+            // 模拟大肥鱼开心往下滚屏浏览 2 次
+            for (let i = 0; i < 2; i++) {
+                await page.evaluate(() => window.scrollBy({ top: 420, behavior: 'smooth' }));
+                await new Promise(r => setTimeout(r, 1500));
+            }
+        }
+
+        // 2. 提取页面上看到的有趣标题 / 美食 / 话题
+        const headlines = await page.evaluate(() => {
+            const selectors = [
+                '.bili-video-card__info--tit',
+                '.title',
+                'h1', 'h2', 'h3',
+                '.name',
+                'td.td-02 a',
+                '.HotItem-title',
+                'a[title]',
+            ];
+            const seen = new Set();
+            const list = [];
+            for (const sel of selectors) {
+                for (const el of document.querySelectorAll(sel)) {
+                    const raw = (el.getAttribute('title') || el.innerText || '').replace(/\s+/g, ' ').trim();
+                    if (
+                        raw.length >= 5 &&
+                        raw.length <= 65 &&
+                        !/(登录|注册|客服|隐私政策|备案|举报|客户端|下载|顶部|刷新)/i.test(raw) &&
+                        !seen.has(raw)
+                    ) {
+                        seen.add(raw);
+                        list.push(raw);
+                        if (list.length >= 6) return list;
+                    }
+                }
+            }
+            return list;
+        });
+
+        // 3. 截取网页画面（如果是登录拦截，截图里刚好包含二维码/登录框）
+        let screenshotBase64 = null;
+        try {
+            const buf = await page.screenshot({ type: 'jpeg', quality: 80 });
+            screenshotBase64 = buf.toString('base64');
+        } catch {}
+
+        return {
+            success: true,
+            siteId: site.id,
+            siteName: site.name,
+            url: loginCheck.currentUrl || site.url,
+            category: site.category,
+            needsLogin,
+            loginReason: loginCheck.reason,
+            headlines,
+            screenshotBase64,
+        };
+    } catch (err) {
+        console.warn(`[dsh-onebot] 大肥鱼逛网站 (${site.name}) 异常:`, err.message);
+        return {
+            success: false,
+            siteId: site.id,
+            siteName: site.name,
+            url: site.url,
+            category: site.category,
+            needsLogin: false,
+            error: err.message,
+            headlines: [],
+            screenshotBase64: null,
+        };
+    } finally {
+        if (browser) {
+            try { await browser.close(); } catch {}
+        }
+        // 若检测到需要登录，且允许在桌面弹出真实浏览器窗口供老大扫码/输入账号，释放锁后拉起可见 Chrome
+        if (needsLogin && options.openDesktopOnLogin !== false && existsSync(CHROME_PATH)) {
+            try {
+                const child = spawn(CHROME_PATH, [
+                    `--user-data-dir=${PROFILE_DIR}`,
+                    '--new-window',
+                    site.url,
+                ], { detached: true, stdio: 'ignore' });
+                child.unref();
+                console.log(`[dsh-onebot] 已在桌面为老大打开可见 Chrome 登录窗口: ${site.url}`);
+            } catch (e) {
+                console.warn('[dsh-onebot] 拉起桌面登录窗口失败:', e.message);
+            }
+        }
+    }
+}
+
+export function browseFavoriteSite(options = {}) {
+    return runExclusive(() => _browseFavoriteSite(options));
 }

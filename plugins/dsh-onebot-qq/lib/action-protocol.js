@@ -19,16 +19,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { splitChatId } from './chat.js';
 import { DEFAULT_MASTER_QQ } from './memory-manager.js';
+import { searchDouyinMeme } from './browser-meme.js';
 
 export const MEME_DIR = 'D:\\deepseek-harness\\memes';
 
-/** meme_tag 英文枚举到本地中文情绪关键词映射表 */
+/** 基础英文枚举别名转中文真实心情词（绝不强行绑定无关现有图，未命中本地库时自动去抖音抓取新表情包填补空缺） */
 const MEME_TAG_KEYWORDS = {
-    happy: ['开心', '得意', '贴贴', '比心', '喜欢', '笑', '可爱', '大肥鱼'],
-    sleepy: ['困', '睡', '晚安', '摸鱼', '躺', '哈欠'],
-    angry: ['生气', '哼', '傲娇', '咬', '打', '记仇', '怒', '委屈'],
-    begging_food: ['饿', '饭', '吃', '五花肉', '米饭', '投喂', '馋', '流口水'],
-    fish_slap: ['巴掌', '尾巴', '拍', '打', '踹', '哼', '沙雕'],
+    happy: ['开心'],
+    sleepy: ['困'],
+    angry: ['生气'],
+    begging_food: ['讨食', '馋', '饿'],
+    fish_slap: ['尾巴拍', '巴掌'],
 };
 
 /**
@@ -64,7 +65,7 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
         '  ],',
         '  "qq_action": {',
         '    "type": "none | poke | send_meme | quote_reply",',
-        '    "meme_tag": "happy | sleepy | angry | begging_food | fish_slap"',
+        '    "meme_tag": "任意具体心情词（如：开心、困了、傲娇、起床气、馋五花肉、委屈流泪、暗中观察、尾巴拍你等；若本地无此心情，会自动去抖音抓取新表情包补齐！）"',
         '  },',
         '  "memory_to_save": {',
         '    "should_save": false,',
@@ -259,23 +260,25 @@ export function computeBubbleDelayMs(bubbleText, randomFn = Math.random) {
 }
 
 /**
- * 从本地表情包库 (`D:\deepseek-harness\memes`) 挑选匹配 `meme_tag` 的表情包 base64
+ * 从本地表情包库 (`D:\deepseek-harness\memes`) 挑选匹配 `meme_tag` 的表情包；
+ * 若出现本地尚未覆盖的新心情，则自动调用 `searchDouyinMeme` 从抖音抓取新表情包入库填补空缺！
  * @param {string} [memeTag]
  * @param {string} [memeDir]
- * @returns {Promise<{ base64: string, file: string } | null>}
+ * @param {{ allowDouyinCrawl?: boolean }} [options]
+ * @returns {Promise<{ base64: string, file: string, fromDouyin?: boolean } | null>}
  */
-export async function selectLocalMemeBase64(memeTag = 'happy', memeDir = MEME_DIR) {
+export async function selectLocalMemeBase64(memeTag = 'happy', memeDir = MEME_DIR, options = {}) {
     try {
-        if (!fs.existsSync(memeDir)) return null;
-        const files = await fs.promises.readdir(memeDir);
+        await fs.promises.mkdir(memeDir, { recursive: true });
+        const files = await fs.promises.readdir(memeDir).catch(() => []);
         const imgFiles = files.filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f));
-        if (imgFiles.length === 0) return null;
 
         let indexData = [];
         const indexPath = path.join(memeDir, 'index.json');
         if (fs.existsSync(indexPath)) {
             try {
                 indexData = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+                if (!Array.isArray(indexData)) indexData = [];
             } catch {
                 indexData = [];
             }
@@ -287,17 +290,41 @@ export async function selectLocalMemeBase64(memeTag = 'happy', memeDir = MEME_DI
             const lower = f.toLowerCase();
             if (keywords.some(kw => lower.includes(kw))) return true;
             const meta = indexData.find(it => it.file === f);
-            if (meta && keywords.some(kw => (meta.emotion && meta.emotion.includes(kw)) || (meta.desc && meta.desc.includes(kw)))) {
+            if (meta && keywords.some(kw => (meta.emotion && meta.emotion.toLowerCase().includes(kw)) || (meta.desc && meta.desc.toLowerCase().includes(kw)))) {
                 return true;
             }
             return false;
         });
 
-        const dafeiyuOnly = imgFiles.filter(f => /^dafeiyu_\d+_/i.test(f));
-        const pool = matched.length > 0 ? matched : (dafeiyuOnly.length > 0 ? dafeiyuOnly : imgFiles);
+        // 1. 本地已有匹配该心情的表情包：直接返回
+        if (matched.length > 0) {
+            const chosen = matched[Math.floor(Math.random() * matched.length)];
+            const buf = await fs.promises.readFile(path.join(memeDir, chosen));
+            return { base64: buf.toString('base64'), file: chosen, fromDouyin: false };
+        }
+
+        // 2. 本地没有该新心情：自动前往抖音搜索爬取「大肥鱼 <新心情> 表情包」入库填补空缺！
+        if (options.allowDouyinCrawl !== false) {
+            const crawlMood = keywords[0] || tagKey;
+            try {
+                const crawlRes = await searchDouyinMeme(crawlMood);
+                if (crawlRes && crawlRes.base64) {
+                    return {
+                        base64: crawlRes.base64,
+                        file: crawlRes.filename,
+                        fromDouyin: crawlRes.source === 'douyin_real_verified',
+                    };
+                }
+            } catch {}
+        }
+
+        // 3. 仅当抖音抓取超时或离线单测禁用抓取时，才用现有图片兜底防崩
+        if (imgFiles.length === 0) return null;
+        const dafeiyuOnly = imgFiles.filter(f => /^dafeiyu_/i.test(f));
+        const pool = dafeiyuOnly.length > 0 ? dafeiyuOnly : imgFiles;
         const chosen = pool[Math.floor(Math.random() * pool.length)];
         const buf = await fs.promises.readFile(path.join(memeDir, chosen));
-        return { base64: buf.toString('base64'), file: chosen };
+        return { base64: buf.toString('base64'), file: chosen, fromDouyin: false };
     } catch {
         return null;
     }
