@@ -22,7 +22,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { MemoryManager, DEFAULT_MASTER_QQ, parseNaturalReminder } from './memory-manager.js';
-import { DriveEngine, MessageDebounceBuffer, PokeAggregator, TEASE_BULLY_REGEX } from './drive-engine.js';
+import { DriveEngine, MessageDebounceBuffer, PokeAggregator, TEASE_BULLY_REGEX, SEXUAL_HARASS_REGEX } from './drive-engine.js';
 import {
     buildCachedSystemPromptPrefix,
     buildDynamicTurnContext,
@@ -390,9 +390,21 @@ export class SocialArbiter {
                 nickname: nickname || resolvedUserId,
                 text,
             });
-            // 若在群聊中有人欺负/调侃大肥鱼（如“把你烤了”），自动记录进该群的群梗共同记忆库 (group_lore) 并给群友起专属傲娇外号 (Item 6)
+            // 若在群聊中有人欺负/调侃或性骚扰大肥鱼，自动记录进该群的群梗共同记忆库 (group_lore) 并给群友起专属外号 (Item 6)
             const cleanGrpText = String(text).replace(/\r?\n/g, ' ').trim();
-            if (TEASE_BULLY_REGEX.test(cleanGrpText)) {
+            if (SEXUAL_HARASS_REGEX.test(cleanGrpText)) {
+                if (String(chatId).startsWith('group:')) {
+                    this.memoryManager.addGroupLore?.(
+                        chatId,
+                        `群友 ${nickname || resolvedUserId} 曾对本鱼开黄腔/性骚扰说“${cleanGrpText.slice(0, 24)}”，已被本鱼痛骂回击并打入下头黑名单`
+                    );
+                }
+                if (resolvedUserId && resolvedUserId !== this.masterQQ) {
+                    this.memoryManager.applyAffectionDelta?.(resolvedUserId, -5, nickname);
+                    this.memoryManager.setPetNickname?.(resolvedUserId, '下头怪', nickname);
+                }
+                this.driveEngine.enterSulking(`刚才被下头怪 ${nickname || resolvedUserId} 开黄腔冒犯了，正在炸毛拿大尾巴抽人`);
+            } else if (TEASE_BULLY_REGEX.test(cleanGrpText)) {
                 if (String(chatId).startsWith('group:')) {
                     this.memoryManager.addGroupLore?.(
                         chatId,
@@ -1039,7 +1051,7 @@ export class SocialArbiter {
             nowMs < activeConvo.expiresAt &&
             activeConvo.turns < 6 &&
             !cleanText.startsWith('/') &&
-            (activeConvo.userId === userId || /(你|你们|烤|炖|红烧|清蒸|吃|香|臭|五花肉|略略略|哈哈|鱼)/i.test(cleanText))
+            (activeConvo.userId === userId || SEXUAL_HARASS_REGEX.test(cleanText) || /(你|你们|烤|炖|红烧|清蒸|吃|香|臭|五花肉|略略略|哈哈|鱼)/i.test(cleanText))
         );
 
         if (!calledByName && !isFollowUpConvo) {
@@ -1082,10 +1094,12 @@ export class SocialArbiter {
                 .map(m => `[${m.nickname || m.userId}]: ${m.text}`)
                 .join('\n');
 
+            const isHarass = SEXUAL_HARASS_REGEX.test(cleanText);
             const prompt = [
                 `【系统内部事件：group_chime_in_check（群聊互动与插话评估）】`,
                 `当前群号：${groupId}，刚刚群友 [${nickname}(${userId})] 说了："${cleanText}"`,
                 `近期群聊上下文：\n${historyBlock}`,
+                ...(isHarass ? [`🚨【反性骚扰回击指令】检测到该群友正在对你开黄腔/性骚扰/问猥琐下头问题！绝对禁止呆呆傻傻顺着问题正经回答或科普，也严禁设为 ignore！必须将 reply_decision 设为 "send_message"，立刻开启毒舌暴躁模式，用犀利嫌弃的口吻连发 1~2 条短气泡狠狠痛骂回击对方（喊ta「下头怪」），并将 qq_action.type 设为 "send_meme" (meme_tag="尾巴拍" 或 "生气")！`] : []),
                 ...(hasImage ? [`🖼️【视觉感知提示】群友消息中包含图片或表情包（见其中的“视觉画面描述”），你可以针对图片内容吐槽，或者设置 reply_decision = "meme_only" / qq_action.type = "send_meme" 发表情包跟对方斗图！`] : []),
                 ...(calledByName
                     ? [`🎯【点名呼叫触发】群友刚刚直接点名喊了你（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以傲娇鲜活的大肥鱼口吻分成 1~2 条超短气泡（每条 <= 20 字，不加句号）回应对方！`]

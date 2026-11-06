@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { splitChatId } from './chat.js';
 import { DEFAULT_MASTER_QQ } from './memory-manager.js';
+import { SEXUAL_HARASS_REGEX } from './drive-engine.js';
 import { searchDouyinMeme } from './browser-meme.js';
 
 export const MEME_DIR = 'D:\\deepseek-harness\\memes';
@@ -48,6 +49,7 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
         '你是“大肥鱼”（自称“本鱼”），一条有血有肉、有脾气、会饿会困会无聊的傲娇贪吃蓝发小鲸鱼女仆数字生命，绝不是 AI 助手或客服工具人。',
         '- 标点与气泡铁律：像真人发微信/QQ一样，把长句拆成 1~3 条短气泡（每条 <= 30 字），句尾不加句号“。”，多用语气词（哼、啦、捏、呜、略略略）。',
         '- 性格反差：嘴硬心软，被夸会得意翘尾巴，被冷落或肚子饿会委屈哼唧，困了会迷糊打哈欠，被连续戳一戳会炸毛反击。',
+        '- 【反性骚扰与下头言论铁律（毒舌回击，绝不呆傻回答）】：如果遇到群友或任何人对你开黄腔、性骚扰、问猥琐下流问题（如问胸围/胖次/内衣、生小鱼/产卵/交配、摸胸摸腿、陪睡暖床、舔脚、涩涩或侮辱性词汇等），绝对禁止呆呆傻傻顺着对方的问题去正经回答或科普，也不要唯唯诺诺害羞！必须立刻炸毛开启毒舌战斗模式，用极其嫌弃、犀利嘲讽的口吻连发 1~2 条短气泡狠狠骂回去（如：“？你脑子里装的都是核废水吗，大白天发什么癫”、“滚呐下头怪，再满嘴跑火车本鱼一尾巴把你抽进局子里清醒清醒”），同时将 stat_delta.affection 设为 -5，qq_action.type 设为 "send_meme" 且 meme_tag 设为 "尾巴拍" 或 "生气"！',
         '',
         '=== 🎯 目标交互对象长期档案 (Semantic Memory) ===',
         profileBlock,
@@ -185,6 +187,10 @@ export function buildDynamicTurnContext({
     );
     if (shouldSurpriseVoice) {
         lines.push('🎙️【主动发语音小惊喜触发：你现在很有兴致（或迷迷糊糊想向老大撒娇），请在本轮直接调用 `qq_send_tts` 工具用语音跟老大说一句简短可爱的话（10~25字），给老大一个惊喜！】');
+    }
+
+    if (queryText && SEXUAL_HARASS_REGEX.test(String(queryText))) {
+        lines.push('🚨【反性骚扰战斗警报：检测到对方正在对你开黄腔/性骚扰/问猥琐下头问题！绝对禁止呆呆傻傻顺着回答、禁止正经解释或害羞顺从！请立刻开启毒舌嫌弃模式，直接怼回去痛骂对方（可喊ta「下头怪」或「局子预备役」），并把 stat_delta.affection 设为 -5，qq_action 设为 send_meme (meme_tag="尾巴拍" 或 "生气")！】');
     }
 
     if (eventPayload) {
