@@ -514,9 +514,15 @@ export class SocialArbiter {
             }
 
             this.driveEngine.applyStatDelta({ boredom: -this.randFloat(6, 14) });
+            const forceVoice = /(发语音|说句语音|用语音|语音说|讲句语音|听你声音|语音哄|发条语音)/i.test(cleanText);
+            const snap = this.driveEngine.getState();
+            const baseVoiceProb = isGroup ? 0.25 : 0.30;
+            const voiceProbability = (snap.sulking || snap.wokenUpGrumpy || snap.hunger < 25) ? 0.42 : baseVoiceProb;
             await this.dispatcher.dispatch(chatId, action, {
                 userId,
                 replyToMessageId: messageId,
+                forceVoice,
+                voiceProbability,
             });
             return true;
         } catch (err) {
@@ -1149,10 +1155,15 @@ export class SocialArbiter {
                 this.groupCooldownUntilMap.set(chatId, this.now() + groupCooldownMs);
             }
             this.driveEngine.applyStatDelta({ boredom: -this.randFloat(8, 16) });
+            const forceVoice = /(发语音|说句语音|用语音|语音说|讲句语音|听你声音|语音哄|发条语音)/i.test(cleanText);
+            const snap = this.driveEngine.getState();
+            const voiceProbability = (snap.sulking || snap.wokenUpGrumpy || snap.hunger < 25) ? 0.38 : 0.25;
 
             await this.dispatcher.dispatch(chatId, action, {
                 userId,
                 replyToMessageId: inbound.messageId,
+                forceVoice,
+                voiceProbability,
             });
             return true;
         } catch (err) {

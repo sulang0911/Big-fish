@@ -14,6 +14,7 @@ import { parseMessage, cqUnescape } from './cq.js';
 import { searchDouyinMeme } from './browser-meme.js';
 import { browseDouyinFeed, searchDouyin, browseFavoriteSite } from './browser-douyin.js';
 import { describeImage, describeImageBase64 } from './vision.js';
+import { formatTextAndParamsForTts } from './action-protocol.js';
 function padWavSilence(wavBuf, padMs = 250) {
     if (wavBuf.length < 44 || wavBuf.toString('ascii', 0, 4) !== 'RIFF') return wavBuf;
     const byteRate = wavBuf.readUInt32LE(28);
@@ -422,14 +423,16 @@ export function registerTools(ctx, bridge, connection, limits) {
             const chatId = resolveChat(bridge, exec, a.chat_id);
             const ttsUrl = 'http://127.0.0.1:9880/tts';
             const activeVoice = getActiveVoice();
+            const feiyuState = bridge.feiyu?.driveEngine?.getSnapshot ? bridge.feiyu.driveEngine.getSnapshot() : null;
+            const formatted = formatTextAndParamsForTts(a.text, '', feiyuState);
+            const finalText = formatted?.text || a.text;
             const payload = {
-                text: a.text,
+                text: finalText,
                 text_lang: 'zh',
                 ref_audio_path: activeVoice.ref_audio,
                 prompt_text: activeVoice.prompt_text,
                 prompt_lang: 'zh',
-                text_split_method: 'cut2',
-                fragment_interval: 0.3
+                ...(formatted?.ttsParams || { text_split_method: 'cut5', fragment_interval: 0.25 }),
             };
             const response = await fetch(ttsUrl, {
                 method: 'POST',

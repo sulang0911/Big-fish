@@ -406,7 +406,7 @@ export class InboundPipeline {
         const needsHeavyAgentTools = hasNonImageMedia
             || inbound.forwardId !== undefined
             || Boolean(activityRes?.wokeUpFromSleep)
-            || /(打开浏览器|去逛|搜索|搜一下|查一下|百度|谷歌|截图|截个图|看下桌面|看下屏幕|执行|运行|写代码|改代码|看下文件|创建文件|删除文件|发语音|说句语音|用语音说|语音哄|查天气)/i.test(content);
+            || /(打开浏览器|去逛|搜索|搜一下|查一下|百度|谷歌|截图|截个图|看下桌面|看下屏幕|执行|运行|写代码|改代码|看下文件|创建文件|删除文件|切换音色|换.*音色|换.*声音|什么音色|音色库|唱.*歌|点歌|来首歌|查天气)/i.test(content);
 
         if (kind === 'private' && plain && !isChatBusy && feiyu?.debounceBuffer) {
             feiyu.debounceBuffer.push(
