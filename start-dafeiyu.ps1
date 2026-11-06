@@ -3,7 +3,7 @@ $BaseDir = $PSScriptRoot
 if (-not $BaseDir) { $BaseDir = "D:\deepseek-harness" }
 
 Write-Host "===================================================" -ForegroundColor Cyan
-Write-Host "     正在启动大肥鱼 (QQ + 语音 + 视觉 + 大脑)    " -ForegroundColor Cyan
+Write-Host "   正在启动大肥鱼 (QQ + 语音 + 视觉 + 大脑 + 守护)  " -ForegroundColor Cyan
 Write-Host "===================================================" -ForegroundColor Cyan
 
 # 1. 检查并启动 NapCat QQ (3001)
@@ -14,7 +14,7 @@ if (-not $conn3001) {
         $napcatDir = Join-Path $BaseDir "NapCat"
     }
     if (Test-Path $napcatDir) {
-        Write-Host "[1/4] 正在启动 NapCat QQ (无弹窗静默模式)..." -ForegroundColor Yellow
+        Write-Host "[1/5] 正在启动 NapCat QQ (无弹窗静默模式)..." -ForegroundColor Yellow
         Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "launcher.bat", "-q", "2163178914") -WorkingDirectory $napcatDir -WindowStyle Hidden
         
         $waited = 0
@@ -22,14 +22,14 @@ if (-not $conn3001) {
         while ($waited -lt 60) {
             $conn3001 = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue
             if ($conn3001) {
-                Write-Host "[1/4] NapCat QQ 已就绪并登录 (端口: 3001)。" -ForegroundColor Green
+                Write-Host "[1/5] NapCat QQ 已就绪并登录 (端口: 3001)。" -ForegroundColor Green
                 break
             }
             $qrPath = Join-Path $napcatDir "cache\qrcode.png"
             if (-not $openedQR -and (Test-Path $qrPath)) {
                 $qrAge = (Get-Date) - (Get-Item $qrPath).LastWriteTime
                 if ($qrAge.TotalSeconds -lt 120) {
-                    Write-Host "[1/4] 检测到 QQ 需要扫码，已为你打开浏览器扫码页面..." -ForegroundColor Yellow
+                    Write-Host "[1/5] 检测到 QQ 需要扫码，已为你打开浏览器扫码页面..." -ForegroundColor Yellow
                     $loginHtml = Join-Path $BaseDir "qq-login.html"
                     Start-Process $loginHtml
                     $openedQR = $true
@@ -39,10 +39,10 @@ if (-not $conn3001) {
             $waited += 2
         }
     } else {
-        Write-Host "[1/4] 未找到 NapCat 目录，请先配置 NapCat！" -ForegroundColor Red
+        Write-Host "[1/5] 未找到 NapCat 目录，请先配置 NapCat！" -ForegroundColor Red
     }
 } else {
-    Write-Host "[1/4] NapCat QQ 已在运行中 (端口: 3001)。" -ForegroundColor Green
+    Write-Host "[1/5] NapCat QQ 已在运行中 (端口: 3001)。" -ForegroundColor Green
 }
 
 # 2. 检查并启动 GPT-SoVITS 语音服务 (9880)
@@ -66,15 +66,15 @@ if (-not $conn9880) {
     
     if ($sovitsDir) {
         $pythonExe = Join-Path $sovitsDir "runtime\python.exe"
-        Write-Host "[2/4] 正在启动 GPT-SoVITS 语音服务 (无弹窗静默模式)..." -ForegroundColor Yellow
+        Write-Host "[2/5] 正在启动 GPT-SoVITS 语音服务 (无弹窗静默模式)..." -ForegroundColor Yellow
         Start-Process -FilePath $pythonExe -ArgumentList @("api_v2.py", "-a", "127.0.0.1", "-p", "9880", "-c", "GPT_SoVITS/configs/tts_infer.yaml") -WorkingDirectory $sovitsDir -WindowStyle Hidden
         Start-Sleep -Seconds 3
-        Write-Host "[2/4] GPT-SoVITS 语音服务已启动 (端口: 9880)。" -ForegroundColor Green
+        Write-Host "[2/5] GPT-SoVITS 语音服务已启动 (端口: 9880)。" -ForegroundColor Green
     } else {
-        Write-Host "[2/4] 提示: 未检测到本地 GPT-SoVITS 目录，语音服务跳过。" -ForegroundColor DarkYellow
+        Write-Host "[2/5] 提示: 未检测到本地 GPT-SoVITS 目录，语音服务跳过。" -ForegroundColor DarkYellow
     }
 } else {
-    Write-Host "[2/4] GPT-SoVITS 语音服务已在运行中 (端口: 9880)。" -ForegroundColor Green
+    Write-Host "[2/5] GPT-SoVITS 语音服务已在运行中 (端口: 9880)。" -ForegroundColor Green
 }
 
 # 3. 检查并启动 Ollama 本地视觉服务 (11434)
@@ -85,14 +85,14 @@ if (-not $conn11434) {
         $ollamaExe = "C:\Users\25362\AppData\Local\Programs\Ollama\ollama.exe"
     }
     if (Test-Path $ollamaExe) {
-        Write-Host "[3/4] 正在启动 Ollama 本地视觉服务 (端口: 11434)..." -ForegroundColor Yellow
+        Write-Host "[3/5] 正在启动 Ollama 本地视觉服务 (端口: 11434)..." -ForegroundColor Yellow
         Start-Process -FilePath $ollamaExe -ArgumentList "serve" -WindowStyle Hidden
         
         $waited = 0
         while ($waited -lt 15) {
             $conn11434 = Get-NetTCPConnection -LocalPort 11434 -State Listen -ErrorAction SilentlyContinue
             if ($conn11434) {
-                Write-Host "[3/4] Ollama 本地视觉服务已就绪 (端口: 11434)。" -ForegroundColor Green
+                Write-Host "[3/5] Ollama 本地视觉服务已就绪 (端口: 11434)。" -ForegroundColor Green
                 break
             }
             Start-Sleep -Seconds 1
@@ -100,7 +100,7 @@ if (-not $conn11434) {
         }
     }
 } else {
-    Write-Host "[3/4] Ollama 本地视觉服务已在运行中 (端口: 11434)。" -ForegroundColor Green
+    Write-Host "[3/5] Ollama 本地视觉服务已在运行中 (端口: 11434)。" -ForegroundColor Green
 }
 
 # 4. 检查并启动 DeepSeek Harness (3080)
@@ -115,24 +115,44 @@ if (-not $conn3080) {
     if (Test-Path $dshBin) {
         $nodeExe = (Get-Command "node.exe" -ErrorAction SilentlyContinue).Source
         if (-not $nodeExe) { $nodeExe = "C:\Program Files\nodejs\node.exe" }
-        Write-Host "[4/4] 正在启动大肥鱼大脑 DSH (无弹窗静默模式)..." -ForegroundColor Yellow
+        Write-Host "[4/5] 正在启动大肥鱼大脑 DSH (无弹窗静默模式)..." -ForegroundColor Yellow
         Start-Process -FilePath $nodeExe -ArgumentList @($dshBin, "web", "--no-open") -WorkingDirectory $BaseDir -WindowStyle Hidden
         
         $waited = 0
         while ($waited -lt 20) {
             $conn3080 = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue
             if ($conn3080) {
-                Write-Host "[4/4] 大肥鱼大脑 DSH 已就绪 (端口: 3080)。" -ForegroundColor Green
+                Write-Host "[4/5] 大肥鱼大脑 DSH 已就绪 (端口: 3080)。" -ForegroundColor Green
                 break
             }
             Start-Sleep -Seconds 1
             $waited += 1
         }
     } else {
-        Write-Host "[4/4] 未找到 DSH 依赖，请在 $BaseDir 执行 npm install！" -ForegroundColor Red
+        Write-Host "[4/5] 未找到 DSH 依赖，请在 $BaseDir 执行 npm install！" -ForegroundColor Red
     }
 } else {
-    Write-Host "[4/4] 大肥鱼大脑 DSH 已在运行中 (端口: 3080)。" -ForegroundColor Green
+    Write-Host "[4/5] 大肥鱼大脑 DSH 已在运行中 (端口: 3080)。" -ForegroundColor Green
+}
+
+# 5. 检查并启动 Watchdog 防掉线看门狗
+$dshHomeDir = Join-Path $env:USERPROFILE ".dsh"
+$pidFile = Join-Path $dshHomeDir "watchdog.pid"
+$watchdogAlive = $false
+if (Test-Path $pidFile) {
+    $wdPid = (Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+    if ($wdPid -and (Get-Process -Id $wdPid -ErrorAction SilentlyContinue)) {
+        $watchdogAlive = $true
+    }
+}
+if (-not $watchdogAlive) {
+    $watchdogScript = Join-Path $BaseDir "watchdog-dafeiyu.ps1"
+    if (Test-Path $watchdogScript) {
+        Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $watchdogScript) -WorkingDirectory $BaseDir -WindowStyle Hidden
+        Write-Host "[5/5] 后台防掉线看门狗 (Watchdog) 已启动。" -ForegroundColor Green
+    }
+} else {
+    Write-Host "[5/5] 后台防掉线看门狗 (Watchdog) 已在守护中。" -ForegroundColor Green
 }
 
 Write-Host "===================================================" -ForegroundColor Cyan

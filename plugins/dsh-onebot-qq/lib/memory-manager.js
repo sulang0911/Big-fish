@@ -99,6 +99,78 @@ export function resolveRelativeDatesFromQuery(queryText, nowMs = Date.now()) {
     return results;
 }
 
+/**
+ * 从自然语言对话中识别“定时提醒/约定备忘”（如“30分钟后提醒我干活”、“过半小时喊我起床”、“今晚8点提醒我打深渊”）
+ * @param {string} text
+ * @param {number} [nowMs]
+ * @returns {{ dueAtMs: number, delayMinutes: number, task: string } | null}
+ */
+export function parseNaturalReminder(text, nowMs = Date.now()) {
+    const clean = String(text || '').replace(/^@\S+\s*/, '').trim();
+    if (!clean || clean.startsWith('/')) return null;
+    if (!/(提醒我|喊我|叫我|通知我|记得叫|别忘了叫)/.test(clean)) return null;
+
+    const cnNum = { '半': 0.5, '一': 1, '两': 2, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10, '十五': 15, '二十': 20, '三十': 30 };
+    const toNumber = s => {
+        if (!s) return NaN;
+        if (cnNum[s] !== undefined) return cnNum[s];
+        return Number(s);
+    };
+
+    // 1. 匹配相对时长：“过半小时提醒我XX”、“30分钟后叫我XX”、“2小时后喊我XX”、“1个半小时后提醒我XX”
+    const relHalfHour = clean.match(/(?:过|等)?\s*([一两二三四五1-5])\s*个半小时(?:后|之后|以后)?\s*(?:提醒我|喊我|叫我|通知我|记得叫我?)(.+)/);
+    if (relHalfHour) {
+        const hrs = toNumber(relHalfHour[1]) + 0.5;
+        const task = relHalfHour[2].replace(/^[去把一下个，,。！!~～\s]+|[。！!~～呢吧啦呀]+$/g, '').trim() || '办正事';
+        const delayMinutes = Math.round(hrs * 60);
+        return { dueAtMs: nowMs + delayMinutes * 60_000, delayMinutes, task };
+    }
+
+    const relMatch = clean.match(/(?:过|等)?\s*(\d+(?:\.\d+)?|半|一|两|二|三|四|五|六|七|八|九|十|十五|二十|三十)\s*(?:个)?(分钟|分|小时|钟头|秒)(?:后|之后|以后)?\s*(?:提醒我|喊我|叫我|通知我|记得叫我?)(.+)/);
+    if (relMatch) {
+        const val = toNumber(relMatch[1]);
+        const unit = relMatch[2];
+        const task = relMatch[3].replace(/^[去把一下个，,。！!~～\s]+|[。！!~～呢吧啦呀]+$/g, '').trim() || '办正事';
+        if (Number.isFinite(val) && val > 0) {
+            const multMs = unit === '秒' ? 1000 : (unit === '小时' || unit === '钟头') ? 3600_000 : 60_000;
+            const deltaMs = Math.min(24 * 3600_000, Math.max(10_000, Math.round(val * multMs)));
+            return {
+                dueAtMs: nowMs + deltaMs,
+                delayMinutes: Math.max(1, Math.round(deltaMs / 60_000)),
+                task,
+            };
+        }
+    }
+
+    // 2. 匹配具体时刻：“今晚8点提醒我打深渊”、“下午4点半叫我开会”、“20:30提醒我喝水”
+    const clockMatch = clean.match(/(今晚|今天|早上|上午|中午|下午|晚上|夜里|凌晨)?\s*(\d{1,2}|一|两|二|三|四|五|六|七|八|九|十|十一|十二)(?:点|:|：)(\d{1,2}|半)?(?:分)?\s*(?:提醒我|喊我|叫我|通知我|记得叫我?)(.+)/);
+    if (clockMatch) {
+        const period = clockMatch[1] || '';
+        let hour = toNumber(clockMatch[2]);
+        const minRaw = clockMatch[3];
+        const minute = minRaw === '半' ? 30 : (minRaw ? Number(minRaw) : 0);
+        const task = clockMatch[4].replace(/^[去把一下个，,。！!~～\s]+|[。！!~～呢吧啦呀]+$/g, '').trim() || '办正事';
+        if (Number.isFinite(hour) && hour >= 0 && hour <= 23) {
+            if ((/下午|晚上|今晚|夜里/.test(period) || (!period && hour <= 11 && new Date(nowMs).getHours() >= 12)) && hour < 12) {
+                hour += 12;
+            }
+            const target = new Date(nowMs);
+            target.setHours(hour, minute, 0, 0);
+            if (target.getTime() <= nowMs) {
+                target.setTime(target.getTime() + 86_400_000);
+            }
+            const deltaMs = target.getTime() - nowMs;
+            return {
+                dueAtMs: target.getTime(),
+                delayMinutes: Math.max(1, Math.round(deltaMs / 60_000)),
+                task,
+            };
+        }
+    }
+
+    return null;
+}
+
 function extractBigrams(text) {
     const clean = String(text || '').replace(/[\s\p{P}]/gu, '').toLowerCase();
     const set = new Set();
@@ -204,11 +276,26 @@ export class MemoryManager {
                     updated_at INTEGER NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    nickname TEXT NOT NULL,
+                    task TEXT NOT NULL,
+                    due_at INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    triggered INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(triggered, due_at ASC);
+
                 CREATE TABLE IF NOT EXISTS kv_meta (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL
                 );
             `);
+            try {
+                this.db.exec("ALTER TABLE user_profiles ADD COLUMN pet_nickname TEXT NOT NULL DEFAULT ''");
+            } catch {}
 
             // 首次启动时将旧版 JSON 中的 users 与 episodic 平滑同步至 SQLite，并从 SQLite 加载最新状态
             this._syncStateWithSqliteOnBoot();
@@ -269,6 +356,7 @@ export class MemoryManager {
                 ...(this.state.users[row.user_id] || {}),
                 user_id: row.user_id,
                 nickname: row.nickname,
+                pet_nickname: row.pet_nickname || this.state.users[row.user_id]?.pet_nickname || '',
                 affection: row.affection,
                 relationship_tag: row.relationship_tag,
                 known_facts: facts,
@@ -353,10 +441,11 @@ export class MemoryManager {
         if (!this.db) return;
         try {
             const upsertUser = this.db.prepare(`
-                INSERT INTO user_profiles (user_id, nickname, affection, relationship_tag, known_facts_json, last_interaction_time, last_interaction_ts, last_late_night_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO user_profiles (user_id, nickname, pet_nickname, affection, relationship_tag, known_facts_json, last_interaction_time, last_interaction_ts, last_late_night_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     nickname = excluded.nickname,
+                    pet_nickname = excluded.pet_nickname,
                     affection = excluded.affection,
                     relationship_tag = excluded.relationship_tag,
                     known_facts_json = excluded.known_facts_json,
@@ -369,6 +458,7 @@ export class MemoryManager {
                 upsertUser.run(
                     String(uid),
                     String(u.nickname || uid),
+                    String(u.pet_nickname || ''),
                     Number(u.affection ?? 55),
                     String(u.relationship_tag || '群友/饭票候选'),
                     JSON.stringify(Array.isArray(u.known_facts) ? u.known_facts : []),
@@ -764,6 +854,7 @@ export class MemoryManager {
         const rawUncompressed = this.db.prepare('SELECT COUNT(*) AS c FROM raw_interaction_logs WHERE compressed = 0').get()?.c || 0;
         const userCount = this.db.prepare('SELECT COUNT(*) AS c FROM user_profiles').get()?.c || 0;
         const groupLoreCount = this.db.prepare('SELECT COUNT(*) AS c FROM group_lore').get()?.c || 0;
+        const reminderPendingCount = this.db.prepare('SELECT COUNT(*) AS c FROM reminders WHERE triggered = 0').get()?.c || 0;
         return {
             sqliteEnabled: true,
             dbPath: this.dbPath,
@@ -773,6 +864,7 @@ export class MemoryManager {
             rawTotal,
             rawUncompressed,
             groupLoreCount,
+            reminderPendingCount,
         };
     }
 
@@ -823,6 +915,58 @@ export class MemoryManager {
         if (loreList.length === 0) return '';
         const lines = loreList.slice(0, 6).map((item, i) => `  ${i + 1}. ${item}`);
         return `【本群共同记忆与群梗黑话 (Group Shared Lore)】\n${lines.join('\n')}`;
+    }
+
+    // ── 2.8 Reminders (鱼脑定时备忘录) ────────────────────────────────────────
+    addReminder({ chatId, userId, nickname, task, dueAtMs, delayMinutes }) {
+        if (!this.db || !task) return null;
+        const now = this.now();
+        const due = Number(dueAtMs) || (now + (Math.max(1, Number(delayMinutes) || 10) * 60_000));
+        const cleanTask = String(task).replace(/\r?\n/g, ' ').trim().slice(0, 100);
+        const cId = String(chatId || `private:${userId || this.masterQQ}`);
+        const uId = String(userId || this.masterQQ);
+        const nick = String(nickname || uId);
+
+        // 防止 10 秒内重复写入完全相同的提醒
+        const dup = this.db.prepare(`
+            SELECT id FROM reminders WHERE chat_id = ? AND task = ? AND triggered = 0 AND ABS(due_at - ?) < 60000
+        `).get(cId, cleanTask, due);
+        if (dup) return dup;
+
+        const info = this.db.prepare(`
+            INSERT INTO reminders (chat_id, user_id, nickname, task, due_at, created_at, triggered)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        `).run(cId, uId, nick, cleanTask, due, now);
+        return {
+            id: Number(info.lastInsertRowid),
+            chat_id: cId,
+            user_id: uId,
+            nickname: nick,
+            task: cleanTask,
+            due_at: due,
+        };
+    }
+
+    popDueReminders(nowMs = this.now()) {
+        if (!this.db) return [];
+        const rows = this.db.prepare(`
+            SELECT * FROM reminders WHERE triggered = 0 AND due_at <= ? ORDER BY due_at ASC LIMIT 10
+        `).all(nowMs);
+        if (rows.length > 0) {
+            const stmt = this.db.prepare('UPDATE reminders SET triggered = 1 WHERE id = ?');
+            for (const r of rows) {
+                stmt.run(r.id);
+            }
+        }
+        return rows;
+    }
+
+    getPendingReminders(chatId = '') {
+        if (!this.db) return [];
+        if (chatId) {
+            return this.db.prepare('SELECT * FROM reminders WHERE triggered = 0 AND chat_id = ? ORDER BY due_at ASC').all(String(chatId));
+        }
+        return this.db.prepare('SELECT * FROM reminders WHERE triggered = 0 ORDER BY due_at ASC').all();
     }
 
     // ── 3. Semantic Memory (QQ 用户专属档案) ─────────────────────────────────
@@ -893,6 +1037,20 @@ export class MemoryManager {
             profile.known_facts = profile.known_facts.slice(0, 15);
             this.save();
         }
+    }
+
+    setPetNickname(userId, petNickname, fallbackNickname = '') {
+        const clean = String(petNickname || '').replace(/[\r\n"“”'‘’「」【】]/g, '').trim().slice(0, 14);
+        if (!clean) return null;
+        const profile = this.getUserProfile(userId, fallbackNickname);
+        if (!profile) return null;
+        if (String(userId) === this.masterQQ) {
+            profile.pet_nickname = '老大';
+        } else {
+            profile.pet_nickname = clean;
+        }
+        this.save();
+        return profile.pet_nickname;
     }
 
     // ── 4. Episodic Memory (长期情景记忆与指数衰减检索) ────────────────────────
@@ -1158,12 +1316,16 @@ export class MemoryManager {
         if (typeof this.llmReflector === 'function') {
             try {
                 const profile = this.getUserProfile(uid);
-                const mergedFacts = await this.llmReflector(uid, profile, [
+                const res = await this.llmReflector(uid, profile, [
                     ...(profile?.known_facts || []),
                     ...userMems.slice(0, 10).map(m => m.summary),
                 ]);
+                const mergedFacts = Array.isArray(res) ? res : res?.known_facts;
                 if (Array.isArray(mergedFacts) && mergedFacts.length > 0 && profile) {
                     profile.known_facts = mergedFacts.map(f => String(f).trim()).filter(Boolean).slice(0, 10);
+                    if (res?.pet_nickname && uid !== this.masterQQ) {
+                        profile.pet_nickname = String(res.pet_nickname).trim().slice(0, 12);
+                    }
                     this.state.lastReflectionAt = now;
                     this.save();
                     return true;
@@ -1211,10 +1373,14 @@ export class MemoryManager {
         const facts = Array.isArray(profile.known_facts) && profile.known_facts.length > 0
             ? profile.known_facts.map((f, i) => `  ${i + 1}. ${f}`).join('\n')
             : '  （暂未收录特殊偏好，待聊天中发掘）';
+        const petNickLine = profile.pet_nickname && profile.user_id !== this.masterQQ
+            ? `- 本鱼给ta起的专属外号 (pet_nickname): 「${profile.pet_nickname}」（聊天时可自然喊这个专属外号调侃ta！）`
+            : '';
         return [
             `【目标 QQ 用户长期画像 (Semantic Memory)】`,
             `- 用户 QQ: ${profile.user_id}`,
             `- 称呼/昵称: ${profile.nickname}`,
+            ...(petNickLine ? [petNickLine] : []),
             `- 关系定位: ${profile.relationship_tag}`,
             `- 当前好感度 (affection): ${profile.affection}/100`,
             `- 长期事实与习惯 (known_facts):\n${facts}`,

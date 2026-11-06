@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { MemoryManager, DEFAULT_MASTER_QQ } from './memory-manager.js';
+import { MemoryManager, DEFAULT_MASTER_QQ, parseNaturalReminder } from './memory-manager.js';
 import { DriveEngine, MessageDebounceBuffer, PokeAggregator, TEASE_BULLY_REGEX } from './drive-engine.js';
 import {
     buildCachedSystemPromptPrefix,
@@ -393,13 +393,42 @@ export class SocialArbiter {
                 nickname: nickname || resolvedUserId,
                 text,
             });
-            // 若在群聊中有人欺负/调侃大肥鱼（如“把你烤了”），自动记录进该群的群梗共同记忆库 (group_lore)
+            // 若在群聊中有人欺负/调侃大肥鱼（如“把你烤了”），自动记录进该群的群梗共同记忆库 (group_lore) 并给群友起专属傲娇外号 (Item 6)
             const cleanGrpText = String(text).replace(/\r?\n/g, ' ').trim();
-            if (String(chatId).startsWith('group:') && TEASE_BULLY_REGEX.test(cleanGrpText)) {
-                this.memoryManager.addGroupLore?.(
+            if (TEASE_BULLY_REGEX.test(cleanGrpText)) {
+                if (String(chatId).startsWith('group:')) {
+                    this.memoryManager.addGroupLore?.(
+                        chatId,
+                        `群友 ${nickname || resolvedUserId} 曾调侃/欺负本鱼说“${cleanGrpText.slice(0, 24)}”，已被记入小本本`
+                    );
+                }
+                if (resolvedUserId && resolvedUserId !== this.masterQQ) {
+                    const petNick = /烤/.test(cleanGrpText)
+                        ? '烤鱼狂魔'
+                        : /炖|蒸|红烧/.test(cleanGrpText)
+                            ? '炖鱼大厨'
+                            : '记仇榜常客';
+                    this.memoryManager.setPetNickname?.(resolvedUserId, petNick, nickname);
+                }
+            }
+
+            // Item 5: 自动识别对话中的自然语言定时提醒/约定（如“30分钟后提醒我干活”、“今晚8点喊我打深渊”）
+            const parsedReminder = parseNaturalReminder(cleanGrpText, nowMs);
+            if (parsedReminder && typeof this.memoryManager.addReminder === 'function') {
+                this.memoryManager.addReminder({
                     chatId,
-                    `群友 ${nickname || resolvedUserId} 曾调侃/欺负本鱼说“${cleanGrpText.slice(0, 24)}”，已被记入小本本`
+                    userId: resolvedUserId || this.masterQQ,
+                    nickname: nickname || resolvedUserId,
+                    task: parsedReminder.task,
+                    dueAtMs: parsedReminder.dueAtMs,
+                    delayMinutes: parsedReminder.delayMinutes,
+                });
+                this.memoryManager.recordDailyEvent(
+                    `大肥鱼记下了定时备忘：${parsedReminder.delayMinutes}分钟后提醒 ${nickname || resolvedUserId}「${parsedReminder.task}」`,
+                    chatId,
+                    resolvedUserId
                 );
+                this.log('info', `[FeiyuReminder] 已捕获自然语言定时提醒: ${parsedReminder.delayMinutes}min -> "${parsedReminder.task}"`);
             }
         }
 
@@ -552,6 +581,7 @@ export class SocialArbiter {
      */
     async onBackgroundDriveTick(state) {
         void this.refreshEnvironmentCache();
+        await this.checkDueReminders();
         if (typeof this.memoryManager?.autoCompressPastDaysIfNeeded === 'function') {
             void this.memoryManager.autoCompressPastDaysIfNeeded();
         }
@@ -586,6 +616,34 @@ export class SocialArbiter {
             }
         }
         await this.checkGroupIdleTick();
+    }
+
+    /**
+     * 检查并触发已到期的“鱼脑备忘录”定时提醒 (Item 5)
+     */
+    async checkDueReminders() {
+        if (typeof this.memoryManager?.popDueReminders !== 'function') return [];
+        const dueList = this.memoryManager.popDueReminders(this.now());
+        if (!Array.isArray(dueList) || dueList.length === 0) return [];
+
+        const triggered = [];
+        for (const r of dueList) {
+            try {
+                const isMaster = String(r.user_id) === this.masterQQ;
+                const callName = isMaster ? '老大老大' : (this.memoryManager.getUserProfile(r.user_id)?.pet_nickname || r.nickname || r.user_id);
+                const bubble1 = `⏰ 叮咚！本鱼的备忘录小闹钟响啦！`;
+                const bubble2 = `${callName}，你之前交代本鱼到点提醒你的：【${r.task}】！快去搞定捏，不许拖延！`;
+                await this.dispatcher.sendTextBubble(r.chat_id, bubble1, {});
+                await this.dispatcher.sleep(900);
+                await this.dispatcher.sendTextBubble(r.chat_id, bubble2, {});
+                await this.dispatcher.sendPoke(r.chat_id, r.user_id);
+                this.log('info', `[FeiyuReminder] 已向 ${r.chat_id} 触发到期提醒: "${r.task}"`);
+                triggered.push(r);
+            } catch (err) {
+                this.log('warn', `[FeiyuReminder] 发送到期提醒失败: ${err?.message || err}`);
+            }
+        }
+        return triggered;
     }
 
     /**
@@ -1238,6 +1296,9 @@ export class SocialArbiter {
             if (String(chatId).startsWith('group:') && rec.feedCount >= 2) {
                 this.memoryManager.addGroupLore?.(chatId, `群友 ${nickname} 经常投喂本鱼好吃的（如「${foodName}」），是群里的热心饭票`);
             }
+            if (userId !== this.masterQQ && rec.feedCount >= 2) {
+                this.memoryManager.setPetNickname?.(userId, '五花肉菩萨', nickname);
+            }
             this.persistArbiterMeta();
 
             const st = this.driveEngine.getState();
@@ -1284,6 +1345,9 @@ export class SocialArbiter {
             this.driveEngine.clearSulking();
             const updatedProfile = this.memoryManager.applyAffectionDelta(userId, affectionDelta, nickname);
             this.memoryManager.recordDailyEvent(`${nickname} 顺毛摸了摸大肥鱼的脑袋${wasSulking ? '（把闹别扭的大肥鱼哄好了）' : ''}`, chatId, userId);
+            if (userId !== this.masterQQ && rec.patCount >= 2) {
+                this.memoryManager.setPetNickname?.(userId, '盘呆毛怪', nickname);
+            }
             this.persistArbiterMeta();
 
             const reactions = [
@@ -1526,11 +1590,22 @@ export class SocialArbiter {
                     ? groupLoreList.slice(0, 5).map((item, idx) => `  ${idx + 1}. ${item}`).join('\n')
                     : '  （暂无群梗记录，群友与大肥鱼斗嘴或多次投喂后会自动生成）';
 
+                const pendingRems = this.memoryManager.getPendingReminders?.() || [];
+                const remLines = pendingRems.length > 0
+                    ? pendingRems.slice(0, 5).map((r, idx) => {
+                        const dueStr = new Date(r.due_at).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+                        return `  ${idx + 1}. [${dueStr} | ${r.nickname}] ${r.task}`;
+                    }).join('\n')
+                    : '  （暂无待触发的定时提醒，说“X分钟后提醒我...”即可登记）';
+
                 const report = [
                     '🧠 【大肥鱼 SQLite 四层记忆数据库面板 (/fish mem)】',
                     `▍数据库状态 (SQLite WAL)`,
                     `• 存储引擎  : ${dbStats.sqliteEnabled ? '🟢 node:sqlite (feiyu_memory.db)' : '🟡 JSON Fallback'}`,
-                    `• 表数据统计: 用户档案 ${dbStats.userCount ?? 0} 人 | 群梗库 ${dbStats.groupLoreCount ?? 0} 群 | 每日摘要 ${dbStats.digestCount ?? 0} 天 | 长期记忆 ${dbStats.epCount ?? 0} 条 | 原始流水 ${dbStats.rawTotal ?? 0} 条 (待压缩 ${dbStats.rawUncompressed ?? 0} 条)`,
+                    `• 表数据统计: 用户档案 ${dbStats.userCount ?? 0} 人 | 群梗库 ${dbStats.groupLoreCount ?? 0} 群 | 待办提醒 ${dbStats.reminderPendingCount ?? 0} 条 | 每日摘要 ${dbStats.digestCount ?? 0} 天 | 长期记忆 ${dbStats.epCount ?? 0} 条 | 原始流水 ${dbStats.rawTotal ?? 0} 条 (待压缩 ${dbStats.rawUncompressed ?? 0} 条)`,
+                    '',
+                    '▍鱼脑定时备忘录 (Pending Reminders)',
+                    remLines,
                     '',
                     '▍近期每日压缩摘要 (Daily Digests - 每天主要干了什么)',
                     digestLines,
@@ -1590,10 +1665,11 @@ export class SocialArbiter {
         const profile = this.memoryManager.getSemanticProfile(userId, nickname);
         const pubTag = this.getPublicRelationshipTag(profile.affection);
         const st = this.driveEngine.getState();
+        const petNickDisplay = profile.pet_nickname ? ` | 专属外号: 「${profile.pet_nickname}」` : '';
         const publicUsage = [
             `🐟 【大肥鱼互动面板】`,
             `• 大肥鱼心境 : ${st.mood} (饱食度 ${st.hunger}/100 | 精力 ${st.energy}/100 | 无聊度 ${st.boredom}/100)`,
-            `• 你的好感度 : ${profile.affection}/100 (${pubTag})`,
+            `• 你的好感度 : ${profile.affection}/100 (${pubTag}${petNickDisplay})`,
             `• 今日互动进度: 打招呼 ${rec.greeted ? '✅' : '⏳'} | 投喂 ${rec.feedCount || 0}/5 | 摸摸 ${rec.patCount || 0}/3 | 运势 ${rec.luckDrawn ? '✅' : '⏳'}`,
             `──────────────────`,
             `💡 可用互动指令：`,
@@ -1671,7 +1747,7 @@ export class SocialArbiter {
                     messages: [
                         {
                             role: 'system',
-                            content: '你是记忆提炼器。请将以下关于目标用户的多条碎片事实去重、合并为不超过 6 条精炼的长期特征列表，输出 JSON: {"known_facts": ["事实1", "事实2"]}',
+                            content: '你是傲娇小蓝鲸“大肥鱼”的记忆提炼器。请将关于目标用户的多条碎片事实合并为不超过 6 条精炼特征，并根据ta与大肥鱼的互动习惯给ta起一个 3~5 字的可爱/傲娇专属外号（pet_nickname，如“五花肉菩萨”、“烤鱼狂魔”、“熬夜冠军”），输出 JSON: {"known_facts": ["事实1", "事实2"], "pet_nickname": "专属外号"}',
                         },
                         {
                             role: 'user',
@@ -1686,7 +1762,7 @@ export class SocialArbiter {
             if (!res.ok) return null;
             const data = await res.json();
             const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}');
-            return Array.isArray(parsed.known_facts) ? parsed.known_facts : null;
+            return Array.isArray(parsed.known_facts) ? parsed : null;
         } catch {
             return null;
         }

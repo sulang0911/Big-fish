@@ -162,9 +162,20 @@ export function buildDynamicTurnContext({
         if (epText) lines.push(epText);
     }
 
+    // 注入大肥鱼近期自主上网冲浪刷到的新鲜事（Item 7: 冲浪成果带货进私聊/群聊话题库）
+    const snap = driveEngine?.getSnapshot ? driveEngine.getSnapshot() : null;
+    const discoveries = Array.isArray(snap?.recent_discoveries)
+        ? snap.recent_discoveries
+            .map(d => (typeof d === 'string' ? d : (d?.title || d?.summary || '')))
+            .filter(Boolean)
+            .slice(0, 3)
+        : [];
+    if (discoveries.length > 0) {
+        lines.push(`【本鱼近期上网冲浪刷到的新鲜事 (无聊或找话题时可自然拿出来跟对方分享吐槽)】\n  - ${discoveries.join('\n  - ')}`);
+    }
+
     // 偶发主动发语音撒娇/吐槽（与老大私聊且精力充沛或刚被吵醒时小概率触发）
     const isMasterPrivate = String(chatId || '') === `private:${DEFAULT_MASTER_QQ}` || String(userId) === String(DEFAULT_MASTER_QQ);
-    const snap = driveEngine?.getSnapshot ? driveEngine.getSnapshot() : null;
     const shouldSurpriseVoice = forceVoiceSurprise || (
         isMasterPrivate &&
         String(chatId || '').startsWith('private:') &&
@@ -307,6 +318,14 @@ export function parseActionResponse(rawText) {
         hunger: Number.isFinite(Number(rawDelta.hunger)) ? Number(rawDelta.hunger) : 0,
     };
 
+    const rawReminder = parsed.reminder && typeof parsed.reminder === 'object' ? parsed.reminder : null;
+    const reminder = rawReminder && rawReminder.task && Number(rawReminder.delay_minutes) > 0
+        ? {
+            delay_minutes: Math.round(Number(rawReminder.delay_minutes)),
+            task: String(rawReminder.task).trim(),
+        }
+        : null;
+
     return {
         isStructured: true,
         inner_thought: typeof parsed.inner_thought === 'string' ? parsed.inner_thought.trim() : '',
@@ -315,6 +334,7 @@ export function parseActionResponse(rawText) {
         qq_action,
         memory_to_save,
         stat_delta,
+        reminder,
     };
 }
 
@@ -517,6 +537,15 @@ export class MessageDispatcher {
                 if (typeof this.memoryManager.maybeTriggerReflection === 'function') {
                     void this.memoryManager.maybeTriggerReflection(userId);
                 }
+            }
+            if (action.reminder && action.reminder.task && typeof this.memoryManager.addReminder === 'function') {
+                this.memoryManager.addReminder({
+                    chatId,
+                    userId,
+                    task: action.reminder.task,
+                    delayMinutes: action.reminder.delay_minutes,
+                });
+                this.log('info', `[FeiyuReminder] 已通过 Action 协议设定 ${action.reminder.delay_minutes} 分钟后提醒: ${action.reminder.task}`);
             }
         }
 
