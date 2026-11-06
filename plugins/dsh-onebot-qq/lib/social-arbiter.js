@@ -115,7 +115,7 @@ export class SocialArbiter {
         this.masterChatId = options.targetChat || `private:${this.masterQQ}`;
         this.groupChats = Array.isArray(options.targetChats) && options.targetChats.length > 0
             ? options.targetChats
-            : ['group:927066977'];
+            : ['group:434137389'];
         this.idleHours = options.idleHours ?? 2.0;
         this.groupLastActivityMap = new Map();
         this.groupIdleThresholdMap = new Map();
@@ -339,9 +339,6 @@ export class SocialArbiter {
     notifyUserActivity(chatId, text = '', userId = '', nickname = '') {
         if (!chatId) return { fed: false, wokeUpFromSleep: false };
         const nowMs = this.now();
-        if (String(chatId).startsWith('group:') && !this.groupChats.includes(chatId)) {
-            this.groupChats.push(chatId);
-        }
         this.groupLastActivityMap.set(chatId, nowMs);
         this.groupIdleThresholdMap.set(chatId, this.rollGroupIdleThresholdMs());
         const resolvedUserId = userId || (chatId.startsWith('private:') ? chatId.slice(8) : '');
@@ -1584,7 +1581,7 @@ export class SocialArbiter {
                     ? recentEp.map((m, idx) => `  ${idx + 1}. [重要度:${m.importance}/10 | ${String(m.created_at || '').slice(0, 10)}] ${m.summary}`).join('\n')
                     : '  （暂无已沉淀的高重要度情景记忆）';
 
-                const primaryGroup = this.groupChats[0] || 'group:927066977';
+                const primaryGroup = this.groupChats[0] || 'group:434137389';
                 const groupLoreList = this.memoryManager.getGroupLore?.(primaryGroup) || [];
                 const loreLines = groupLoreList.length > 0
                     ? groupLoreList.slice(0, 5).map((item, idx) => `  ${idx + 1}. ${item}`).join('\n')
