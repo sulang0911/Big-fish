@@ -149,6 +149,10 @@ export function buildDynamicTurnContext({
 
     if (memoryManager) {
         lines.push(memoryManager.formatSemanticProfileForPrompt(userId, nickname));
+        if (typeof memoryManager.formatTemporaryAndDailyMemoryForPrompt === 'function') {
+            const tempAndDaily = memoryManager.formatTemporaryAndDailyMemoryForPrompt(chatId);
+            if (tempAndDaily) lines.push(tempAndDaily);
+        }
         const retrieved = memoryManager.retrieveEpisodicMemories(queryText, 3, userId);
         const epText = memoryManager.formatEpisodicMemoriesForPrompt(retrieved);
         if (epText) lines.push(epText);

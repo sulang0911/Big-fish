@@ -123,12 +123,14 @@ export class SocialArbiter {
         this.now = options.now ?? (() => Date.now());
         this.log = options.log ?? ((level, msg) => bridge?.deps?.log?.(level, msg) ?? console.log(`[FeiyuArbiter][${level}] ${msg}`));
 
-        // 1. 初始化三层记忆管理器 (Step 3)
+        // 1. 初始化四层 SQLite 记忆数据库与每日压缩管理器 (Step 3)
         this.memoryManager = options.memoryManager ?? new MemoryManager({
             filePath: options.memoryFilePath,
+            dbPath: options.memoryDbPath,
             masterQQ: this.masterQQ,
             now: this.now,
             llmReflector: (userId, profile, facts) => this.reflectProfileViaLLM(userId, profile, facts),
+            llmDailyCompressor: (dayKey, existingDigest, rawLogs) => this.compressDailyMemoryViaLLM(dayKey, existingDigest, rawLogs),
         });
 
         // 2. 初始化内驱力状态机 (Step 4)
@@ -461,6 +463,16 @@ export class SocialArbiter {
      */
     async onBackgroundDriveTick(state) {
         void this.refreshEnvironmentCache();
+        if (typeof this.memoryManager?.autoCompressPastDaysIfNeeded === 'function') {
+            void this.memoryManager.autoCompressPastDaysIfNeeded();
+        }
+        // 进入深夜睡眠期 (01:30 ~ 07:30) 时，若今日还有未压缩的互动流水，自动提炼总结今日主要干了什么
+        if (this.driveEngine.isSleeping(new Date(this.now())) && typeof this.memoryManager?.getDatabaseStats === 'function') {
+            const dbStats = this.memoryManager.getDatabaseStats();
+            if (dbStats.rawUncompressed > 0) {
+                void this.memoryManager.compressDailyMemory();
+            }
+        }
         if (!this.isProactiveRunning) {
             const check = this.evaluateProactiveDmTrigger(state, false);
             if (check.shouldTrigger) {
@@ -831,6 +843,7 @@ export class SocialArbiter {
             this.driveEngine.state.recent_discoveries.unshift(`在【${res.siteName}】自己冲浪发现了：${topicText}`);
             this.driveEngine.state.recent_discoveries = this.driveEngine.state.recent_discoveries.slice(0, 5);
             this.driveEngine.save();
+            this.memoryManager.recordDailyEvent(`大肥鱼自己打开浏览器逛了【${res.siteName}】，看到了 ${topicText}`, targetChatId, this.masterQQ);
 
             const prefixLine = opts.reason === 'boss_unanswered'
                 ? `哼，刚才找老大玩老大没空理本鱼，本鱼就自己打开浏览器溜去逛【${res.siteName}】解闷啦！`
@@ -1096,6 +1109,7 @@ export class SocialArbiter {
             this.driveEngine.applyStatDelta({ hunger: hungerDelta, energy: energyDelta, boredom: boredomDelta });
             this.driveEngine.clearSulking();
             const updatedProfile = this.memoryManager.applyAffectionDelta(userId, affectionDelta, nickname);
+            this.memoryManager.recordDailyEvent(`${nickname} 投喂了大肥鱼一份「${foodName}」${wasSulking ? '（并把闹别扭的大肥鱼哄好了）' : ''}`, chatId, userId);
             this.persistArbiterMeta();
 
             const st = this.driveEngine.getState();
@@ -1141,6 +1155,7 @@ export class SocialArbiter {
             this.driveEngine.applyStatDelta({ boredom: boredomDelta, energy: energyDelta });
             this.driveEngine.clearSulking();
             const updatedProfile = this.memoryManager.applyAffectionDelta(userId, affectionDelta, nickname);
+            this.memoryManager.recordDailyEvent(`${nickname} 顺毛摸了摸大肥鱼的脑袋${wasSulking ? '（把闹别扭的大肥鱼哄好了）' : ''}`, chatId, userId);
             this.persistArbiterMeta();
 
             const reactions = [
@@ -1256,6 +1271,10 @@ export class SocialArbiter {
         // 6. 偷看大肥鱼今日小日记 (/fish diary | note | 日记 | 小本本 | 碎碎念)
         if (['diary', 'note', '日记', '小本本', '碎碎念'].includes(sub)) {
             const st = this.driveEngine.getState();
+            const recentDigests = this.memoryManager.getRecentDailyDigests?.(2) || [];
+            const digestLines = recentDigests.length > 0
+                ? recentDigests.map(d => `  - [${d.day_key}] ${d.summary}`).join('\n')
+                : '  - 今天的经历还在小脑瓜里酝酿中~';
             const discoveries = Array.isArray(st.recent_discoveries) && st.recent_discoveries.length > 0
                 ? st.recent_discoveries.slice(0, 3).map(d => `  - ${d}`).join('\n')
                 : '  - 正在群里悄悄潜水观察大家吃什么好吃的';
@@ -1265,6 +1284,7 @@ export class SocialArbiter {
                 `• 记仇状态: ${st.sulking ? `💢 正在闹别扭记小本本中！（原因：${st.sulkingReason || '不给五花肉还欺负本鱼'}，快发 /fish feed 哄好本鱼！）` : '🟢 心情尚可，小本本上暂时没有记仇'}`,
                 `• 脑内执念: ${st.current_obsession || '什么时候才能吃到热腾腾的脆皮五花肉拌白米饭'}`,
                 `• 今日碎碎念: “${st.diary || '今天也要做一个合格的摸鱼干饭搭子！(｡•̀ᴗ-)✧'}”`,
+                `• 每日主要干了啥:\n${digestLines}`,
                 `• 近期小发现:\n${discoveries}`,
             ].join('\n');
             await this.bridge.sendToChat(chatId, msg, { bypassFeiyuInterceptor: true });
@@ -1272,13 +1292,57 @@ export class SocialArbiter {
         }
 
         // 7. 隐藏管理员专属调试指令（仅管理员输入对应子命令时响应，不在公开 help 暴露）
-        if (isAdmin && ['status', 'mem', 'memory', 'tick', 'surf', '冲浪', '逛网站', 'remember', 'reset-lock', 'unlock'].includes(sub)) {
+        if (isAdmin && ['status', 'mem', 'memory', 'compress', '压缩', 'search', '回忆', 'tick', 'surf', '冲浪', '逛网站', 'remember', 'reset-lock', 'unlock'].includes(sub)) {
             if (['surf', '冲浪', '逛网站'].includes(sub)) {
                 const siteHint = parts.slice(1).join(' ').trim();
                 await this.bridge.sendToChat(chatId, `🌐 本鱼这就自己打开浏览器去逛${siteHint ? `【${siteHint}】` : '喜欢的网站'}玩咯，稍等本鱼给你发截图~`, {
                     bypassFeiyuInterceptor: true,
                 });
                 return await this.triggerSelfSurfWeb({ chatId, reason: 'manual_command', siteHint });
+            }
+            if (['compress', '压缩'].includes(sub)) {
+                const targetDay = parts[1]?.trim() || undefined;
+                const digest = await this.memoryManager.compressDailyMemory(targetDay, { forceAll: true });
+                if (!digest) {
+                    const msg = '📭 当前日期还没有可压缩的互动流水记录捏~';
+                    await this.bridge.sendToChat(chatId, msg, { bypassFeiyuInterceptor: true });
+                    return msg;
+                }
+                const hlLines = (digest.highlights || []).map((h, i) => `  ${i + 1}. ${h}`).join('\n') || '  （无具体条目）';
+                const msg = [
+                    `🗜️ 【大肥鱼每日记忆压缩完成 (${digest.day_key})】`,
+                    `• 累计压缩流水: ${digest.msg_count} 条`,
+                    `• 当日浓缩总结: ${digest.summary}`,
+                    `• 主要干了什么:\n${hlLines}`,
+                ].join('\n');
+                await this.bridge.sendToChat(chatId, msg, { bypassFeiyuInterceptor: true });
+                return msg;
+            }
+            if (['search', '回忆'].includes(sub)) {
+                const kw = parts.slice(1).join(' ').trim();
+                if (!kw) {
+                    const hint = '用法：/fish search <关键词> （或 /fish 回忆 <关键词>）';
+                    await this.bridge.sendToChat(chatId, hint, { bypassFeiyuInterceptor: true });
+                    return hint;
+                }
+                const res = this.memoryManager.searchMemories(kw, 5);
+                const epPart = res.episodic.length > 0
+                    ? res.episodic.map(e => `  - [重要度:${e.importance}] ${e.summary}`).join('\n')
+                    : '  （未命中长期情景记忆）';
+                const dgPart = res.digests.length > 0
+                    ? res.digests.map(d => `  - [${d.day_key}] ${d.summary}`).join('\n')
+                    : '  （未命中每日摘要）';
+                const logPart = res.logs.length > 0
+                    ? res.logs.map(l => `  - [${l.day_key} ${l.time_str} ${l.nickname}] ${l.content}`).join('\n')
+                    : '  （未命中近期原始流水）';
+                const msg = [
+                    `🔍 【大肥鱼 SQLite 记忆库检索: "${kw}"】`,
+                    `▍匹配的每日压缩摘要:\n${dgPart}`,
+                    `▍匹配的长期情景记忆:\n${epPart}`,
+                    `▍匹配的近期原始流水:\n${logPart}`,
+                ].join('\n');
+                await this.bridge.sendToChat(chatId, msg, { bypassFeiyuInterceptor: true });
+                return msg;
             }
             if (sub === 'status') {
                 await this.refreshEnvironmentCache();
@@ -1314,20 +1378,37 @@ export class SocialArbiter {
 
             if (sub === 'mem' || sub === 'memory') {
                 const profile = this.memoryManager.getSemanticProfile(this.masterQQ);
+                const dbStats = this.memoryManager.getDatabaseStats?.() || {};
+                const recentDigests = this.memoryManager.getRecentDailyDigests?.(3) || [];
+                const digestLines = recentDigests.length > 0
+                    ? recentDigests.map(d => {
+                        const hl = (d.highlights || []).slice(0, 3).join('；');
+                        return `  • [${d.day_key} | ${d.msg_count}条流水] ${d.summary}${hl ? `\n    ↳ 要点: ${hl}` : ''}`;
+                    }).join('\n')
+                    : '  （暂无已生成的每日压缩摘要，可发 /fish compress 立即提炼今日记忆）';
+
                 const recentEp = this.memoryManager.getRecentEpisodicMemories(5);
                 const epLines = recentEp.length > 0
-                    ? recentEp.map((m, idx) => `  ${idx + 1}. [重要度:${m.importance}/10 | ${m.created_at.slice(0, 10)}] ${m.summary}`).join('\n')
+                    ? recentEp.map((m, idx) => `  ${idx + 1}. [重要度:${m.importance}/10 | ${String(m.created_at || '').slice(0, 10)}] ${m.summary}`).join('\n')
                     : '  （暂无已沉淀的高重要度情景记忆）';
 
                 const report = [
-                    '🧠 【大肥鱼 v3.0 三层记忆检视面板 (/fish mem)】',
-                    '▍语义记忆 (Semantic Memory - 老大档案)',
-                    `• QQ / 称呼 : ${profile.user_id} (${profile.nickname})`,
-                    `• 关系标签  : ${profile.relationship_tag} (好感度: ${profile.affection}/100)`,
-                    `• 核心画像  :\n  - ${(profile.known_facts || []).slice(0, 8).join('\n  - ')}`,
+                    '🧠 【大肥鱼 SQLite 四层记忆数据库面板 (/fish mem)】',
+                    `▍数据库状态 (SQLite WAL)`,
+                    `• 存储引擎  : ${dbStats.sqliteEnabled ? '🟢 node:sqlite (feiyu_memory.db)' : '🟡 JSON Fallback'}`,
+                    `• 表数据统计: 用户档案 ${dbStats.userCount ?? 0} 人 | 每日压缩摘要 ${dbStats.digestCount ?? 0} 天 | 长期情景记忆 ${dbStats.epCount ?? 0} 条 | 原始流水 ${dbStats.rawTotal ?? 0} 条 (待压缩 ${dbStats.rawUncompressed ?? 0} 条)`,
                     '',
-                    '▍最近 5 条情景记忆 (Episodic Memory)',
+                    '▍近期每日压缩摘要 (Daily Digests - 每天主要干了什么)',
+                    digestLines,
+                    '',
+                    '▍语义记忆 (Semantic Memory - 老大档案)',
+                    `• QQ / 称呼 : ${profile.user_id} (${profile.nickname}) | 好感度: ${profile.affection}/100`,
+                    `• 核心画像  :\n  - ${(profile.known_facts || []).slice(0, 6).join('\n  - ')}`,
+                    '',
+                    '▍最近 5 条长期情景记忆 (Episodic Memory)',
                     epLines,
+                    '──────────────────',
+                    '💡 记忆管理指令：/fish compress (手动压缩提炼今日记忆) | /fish search <关键词> (搜索历史记忆) | /fish remember <事实>',
                 ].join('\n');
 
                 await this.bridge.sendToChat(chatId, report, { bypassFeiyuInterceptor: true });
@@ -1469,6 +1550,57 @@ export class SocialArbiter {
             const data = await res.json();
             const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}');
             return Array.isArray(parsed.known_facts) ? parsed.known_facts : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * 异步压缩提炼大肥鱼每日记忆 (`compressDailyMemory` LLM 回调)
+     */
+    async compressDailyMemoryViaLLM(dayKey, existingDigest, rawLogs) {
+        const apiKey = getDeepSeekApiKey();
+        if (!apiKey) return null;
+        try {
+            const logText = (rawLogs || [])
+                .slice(-40)
+                .map(r => `[${r.time_str} ${r.role === 'event' ? '事件' : r.nickname}] ${r.content}`)
+                .join('\n');
+            const prevSummary = existingDigest?.summary || '（无）';
+            const prevHighlights = JSON.stringify(existingDigest?.highlights || []);
+
+            const res = await this.fetchImpl('https://api.deepseek.com/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                    model: 'deepseek-chat',
+                    response_format: { type: 'json_object' },
+                    messages: [
+                        {
+                            role: 'system',
+                            content: [
+                                '你是傲娇贪吃的小蓝鲸“大肥鱼”的每日记忆压缩器。',
+                                '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情。',
+                                '必须严格输出 JSON 对象：',
+                                '{"summary": "以大肥鱼第一人称（本鱼）写的今日浓缩总结，不超过100字", "highlights": ["带时间或主体的关键事项1", "事项2"], "episodic": [{"summary": "若包含值得长期永久铭记的重要事件则提取，否则留空数组", "importance": 8}]}',
+                            ].join('\n'),
+                        },
+                        {
+                            role: 'user',
+                            content: `日期：${dayKey}\n当日已有阶段总结：${prevSummary}\n当日已有事项要点：${prevHighlights}\n最新交互流水：\n${logText}`,
+                        },
+                    ],
+                    temperature: 0.3,
+                    max_tokens: 450,
+                }),
+                signal: AbortSignal.timeout(18_000),
+            });
+            if (!res.ok) return null;
+            const data = await res.json();
+            return JSON.parse(data.choices?.[0]?.message?.content || '{}');
         } catch {
             return null;
         }
