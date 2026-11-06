@@ -66,18 +66,18 @@ export class DriveEngine {
             hunger: 80,
             energy: 85,
             boredom: 25,
-            mood: '元气满满想干饭',
+            mood: '元气满满摸鱼中',
             sleeping: false,
             wokenUpAt: 0,
             sulking: false,
             sulkingReason: '',
             sulkingSince: 0,
-            current_obsession: '正在琢磨怎样能吃到外脆里嫩的脆皮五花肉，还有怎样多摸鱼陪伴老大',
+            current_obsession: '正在研究怎么在群里优雅摸鱼，顺便看看大家都在聊什么好玩的新梗',
             recent_discoveries: [
-                '刚学习了一道秘制红烧肉绝密配方，据说拌大米饭能连吃三大碗！',
+                '刚刷到几个超好笑的沙雕萌宠视频，笑得鱼尾巴直拍桌子',
                 '巡检了电脑系统，显卡温度稳定清爽，状态极佳',
             ],
-            diary: '今天也要做一个合格的生活搭子！(｡•̀ᴗ-)✧',
+            diary: '今天也要做一个机灵可爱的摸鱼搭子！(｡•̀ᴗ-)✧',
             updatedAt: new Date().toISOString(),
         };
         if (initialOverride && typeof initialOverride === 'object' && Object.keys(initialOverride).length > 0) {
@@ -272,9 +272,9 @@ export class DriveEngine {
             ? ' ⚠️【生物钟警告：你刚刚在深夜 01:30~07:30 熟睡中被吵醒，迷迷糊糊带着强烈起床气，说话要揉眼睛抱怨困！】'
             : '';
         const sulkNote = snap.sulking
-            ? ` 💢【小脾气警告：你当前正在闹别扭记小本本（原因：${snap.sulkingReason || '刚才被欺负或冷落了'}）！回复必须表现得气鼓鼓、傲娇简短（如“哼，刚才还欺负本鱼，不理你了！”或委屈讨要投喂），除非对方温柔哄你或给你好吃的才消气！】`
+            ? ` 💢【小脾气警告：你当前正在闹别扭记小本本（原因：${snap.sulkingReason || '刚才被欺负或冷落了'}）！回复必须表现得气鼓鼓、傲娇简短（如“哼，刚才还欺负本鱼，不理你了！”），除非对方温柔哄你或道歉才消气！】`
             : '';
-        return `【当前时间与大肥鱼实时内在生理状态 (InternalState)】时间=${nowStr} | 饱食度(hunger)=${snap.hunger}/100 | 精力(energy)=${snap.energy}/100 | 无聊度(boredom)=${snap.boredom}/100 | 心境(mood)=${snap.mood}${wokeNote}${sulkNote}`;
+        return `【当前时间与大肥鱼实时内在生理状态 (InternalState)】时间=${nowStr} | 精力(energy)=${snap.energy}/100 | 无聊度(boredom)=${snap.boredom}/100 | 心境(mood)=${snap.mood}${snap.hunger < 20 ? ` | 饱食度(hunger)=${snap.hunger}/100(极度饥饿)` : ''}${wokeNote}${sulkNote}`;
     }
 
     _recomputeMood() {

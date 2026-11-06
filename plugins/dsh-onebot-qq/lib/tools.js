@@ -533,7 +533,7 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_sing_song',
-        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 SoulX-Singer 零样本高保真歌声大模型翻唱合成器（采用 Whisper 语音音素解耦 + DiffLlama Flow Matching 条件流匹配逆扩散 + Vocos 神经声码器，真正还原可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜等角色的真实歌声发音与共鸣，已搭载原声立体声伴奏混音）。当老大或任何人让你唱歌、点歌或唱某首歌副歌时，必须且只能调用此工具生成 24 秒黄金副歌翻唱音频！若点忧伤/伤感/抒情/慢歌传 song_name="小幸运"；若点古风/中国风传 song_name="青花瓷"；若点欢快/甜歌或未指定风格传 song_name="爱你"；若指定具体歌名则直接传歌名。严禁借口“版权限制”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
+        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 SoulX-Singer 零样本高保真歌声大模型翻唱合成器（采用 Whisper 语音音素解耦 + DiffLlama Flow Matching 条件流匹配逆扩散 + Vocos 神经声码器，真正还原可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜等角色的真实歌声发音与共鸣，已搭载原声立体声伴奏混音）。当老大或任何人让你唱歌、点歌或唱某首歌副歌时，必须且只能调用此工具生成 24 秒黄金副歌翻唱音频！若点忧伤/伤感/抒情/慢歌传 song_name="小幸运"；若点古风/中国风传 song_name="青花瓷"；若点欢快/甜歌或未指定风格传 song_name="爱你"；若指定具体歌名则直接传歌名。严禁借口“版权限制”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！',
         parameters: {
             song_name: { type: 'string', required: true, description: '歌曲名称或点歌风格（忧伤/伤感/抒情传 "小幸运"，古风传 "青花瓷"，甜歌/默认传 "爱你"，或传具体歌名）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },

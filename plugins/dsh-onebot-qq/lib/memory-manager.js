@@ -888,6 +888,8 @@ export class MemoryManager {
         const gid = String(groupIdOrChatId).replace(/^group:/i, '').trim();
         const clean = String(loreFact).replace(/\r?\n/g, ' ').trim().slice(0, 120);
         if (!gid || !clean) return false;
+        // 拒绝将单纯讨要五花肉/白米饭的口水话写入群梗库，防止回音室死循环
+        if (/(五花肉|白米饭|拌饭|加餐)/.test(clean)) return false;
 
         try {
             const existing = this.getGroupLore(gid);

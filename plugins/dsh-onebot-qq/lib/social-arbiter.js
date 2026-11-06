@@ -485,7 +485,7 @@ export class SocialArbiter {
                 ...(historyBlock ? [`近期对话上下文：\n${historyBlock}`] : []),
                 `回复准则：`,
                 `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
-                `2. 以傲娇、贪吃、鲜活的小蓝鲸“大肥鱼”口吻，拆分为 1~3 条简短自然的气泡（每条 <= 25 字，句尾绝不加句号），像真人秒回微信/QQ一样有灵气！`,
+                `2. 以傲娇、机灵、鲜活的小蓝鲸“大肥鱼”口吻，拆分为 1~3 条简短自然的气泡（每条 <= 25 字，句尾绝不加句号），像真人秒回微信/QQ一样有灵气！除非对方主动聊美食，否则严禁强行扯五花肉或白米饭！`,
                 ...(hasImage ? [`3. 对方消息中包含图片/表情包（见“视觉画面描述”），请结合图片画面内容进行流口水、吐槽或配表情包斗图！`] : []),
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
@@ -1124,7 +1124,7 @@ export class SocialArbiter {
                         : [
                             `当前你的无聊度为 ${boredom}/100${boredom >= 65 ? '（你现在挺无聊的，很想找群友搭话吐槽！）' : ''}。`,
                             `判断准则：`,
-                            `1. 如果群友在聊美食（尤其五花肉/白米饭/夜宵）、晒美食图/搞笑图、聊游戏、摸鱼、提到了本鱼/老大，或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），输出 1~2 条超短沙雕/傲娇吐槽（每条 <= 20 字，不加句号）。`,
+                            `1. 如果群友在聊游戏、摸鱼、日常趣事、晒图、美食，或者提到了本鱼/老大，又或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），输出 1~2 条超短沙雕/傲娇吐槽（每条 <= 20 字，不加句号；非美食话题严禁提五花肉或白米饭）。`,
                             `2. 如果话题严肃、或者插话会显得突兀打扰别人，请务必将 reply_decision 设为 "ignore"，保持高冷潜水！`,
                         ]),
                 buildDynamicTurnContext({
