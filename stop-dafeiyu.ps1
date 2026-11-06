@@ -20,9 +20,13 @@ foreach ($port in $ports) {
     }
 }
 
-# 2. 清理可能残留的 NapCat 进程
+# 2. 清理可能残留的 NapCat 进程与 DSH 残留文件锁
 Get-Process -Name "NapCatWinBootMain" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process -Name "QQ" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*NapCat*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+$dshHomeDir = Join-Path $env:USERPROFILE ".dsh"
+if (Test-Path $dshHomeDir) {
+    Get-ChildItem -Path $dshHomeDir -Filter ".credentials.yaml.lock*" -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host "===================================================" -ForegroundColor Green
 Write-Host "       大肥鱼及其所有后台服务已停止，显存已释放！   " -ForegroundColor Green

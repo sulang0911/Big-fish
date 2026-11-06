@@ -106,6 +106,11 @@ if (-not $conn11434) {
 # 4. 检查并启动 DeepSeek Harness (3080)
 $conn3080 = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue
 if (-not $conn3080) {
+    # 清理上次强制停止可能残留的 credentials 文件锁，防止启动 30 秒后因锁超时自动掉线退出
+    $dshHomeDir = Join-Path $env:USERPROFILE ".dsh"
+    if (Test-Path $dshHomeDir) {
+        Get-ChildItem -Path $dshHomeDir -Filter ".credentials.yaml.lock*" -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    }
     $dshBin = Join-Path $BaseDir "node_modules\@deepseek-ai\dsh\lib\bin.js"
     if (Test-Path $dshBin) {
         $nodeExe = (Get-Command "node.exe" -ErrorAction SilentlyContinue).Source
