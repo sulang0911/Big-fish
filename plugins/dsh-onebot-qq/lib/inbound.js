@@ -141,11 +141,12 @@ export class InboundPipeline {
             : (inbound.raw || '');
 
         const feiyu = this.ctx.feiyu?.();
+        const activityText = textContent.trim() ? textContent : (inbound.text || '');
         const activityRes = feiyu
-            ? feiyu.notifyUserActivity(chatId, textContent, userId, inbound.nickname)
+            ? feiyu.notifyUserActivity(chatId, activityText, userId, inbound.nickname)
             : undefined;
         if (feiyu && inbound.messageId !== undefined && typeof feiyu.maybeReactEmojiToMessage === 'function') {
-            void feiyu.maybeReactEmojiToMessage(inbound.messageId, textContent, isAdmin, kind);
+            void feiyu.maybeReactEmojiToMessage(inbound.messageId, activityText, isAdmin, kind);
         }
 
         // 群聊唤醒准则：老大在群聊中喊肥鱼执行工具任务时走完整 Agent 通道；日常喊肥鱼名字闲聊则交由下方 evaluateGroupLurkAndChime 走灵动多气泡秒回通道
