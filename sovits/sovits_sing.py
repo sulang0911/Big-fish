@@ -425,16 +425,19 @@ def dynamic_sing_flow(song_query, voice=None):
     cached_soulx_bgm = os.path.join(CACHE_DIR, f"{safe_name or 'song'}_{safe_hash}_{voice}_soulx_bgm.wav")
     if os.path.exists(cached_soulx_bgm):
         print(f"[SOULX BGM CACHE] 命中 SoulX-Singer 带伴奏缓存翻唱: {cached_soulx_bgm} (音色: {voice})")
+        print(f"[SONG_TITLE] {query_clean}")
         print(f"[OUTPUT_COVER] {cached_soulx_bgm}")
         return cached_soulx_bgm
     cached_soulx = os.path.join(CACHE_DIR, f"{safe_name or 'song'}_{safe_hash}_{voice}_soulx_cover.wav")
     if os.path.exists(cached_soulx):
         print(f"[SOULX CACHE] 命中 SoulX-Singer 缓存翻唱音频: {cached_soulx} (音色: {voice})")
+        print(f"[SONG_TITLE] {query_clean}")
         print(f"[OUTPUT_COVER] {cached_soulx}")
         return cached_soulx
     cached_cover = os.path.join(CACHE_DIR, f"{safe_name or 'song'}_{safe_hash}_{voice}_cover.wav")
     if os.path.exists(cached_cover):
         print(f"[CACHE] 命中缓存翻唱音频: {cached_cover} (音色: {voice})")
+        print(f"[SONG_TITLE] {query_clean}")
         print(f"[OUTPUT_COVER] {cached_cover}")
         return cached_cover
 
@@ -541,6 +544,7 @@ def dynamic_sing_flow(song_query, voice=None):
             try: os.remove(f)
             except Exception: pass
 
+    print(f"[SONG_TITLE] {song_title}")
     print(f"[OUTPUT_COVER] {cached_soulx_bgm}")
     return cached_soulx_bgm
 

@@ -465,6 +465,11 @@ export class SocialArbiter {
         const cleanText = String(text || '').trim();
         if (!cleanText) return false;
 
+        // 严禁在纯文本插话通道拦截点歌/唱歌/换音色/画画请求（此类必须走完整 Agent 工具流调用 qq_sing_song / qq_switch_voice / qq_generate_image）
+        if (/(唱歌|点歌|唱首|唱个|唱一首|唱支|来首歌|来一首|哼一首|给我唱|用.*声音唱|用.*音色唱|唱《|(?:^|[，。！？\s]|肥鱼|飞鱼|本鱼|声音|音色)唱(?!反调|衰|高调|双簧|白脸|红脸|黑脸)\S+|我的歌呢|歌呢|怎么不唱|还没唱|画画|画个|画张|画一只|画幅|生成图片|生图|自拍|自画像|什么音色|音色库|(?:切换|换成?|改用|变成).*(?:芭芭拉|可莉|芙宁娜|胡桃|神里|绫华|雷电|将军|八重|神子|迪奥娜|纳西妲|音色|声音))/i.test(cleanText)) {
+            return false;
+        }
+
         try {
             const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
             const historyBlock = recentMsgs
@@ -1042,6 +1047,11 @@ export class SocialArbiter {
         const { chatId, groupId, userId, nickname, text } = inbound;
         const cleanText = String(text || '').trim();
         if (!cleanText) return false;
+
+        // 严禁在纯文本插话通道拦截点歌/唱歌/换音色/画画请求（此类必须走完整 Agent 工具流调用 qq_sing_song / qq_switch_voice / qq_generate_image）
+        if (/(唱歌|点歌|唱首|唱个|唱一首|唱支|来首歌|来一首|哼一首|给我唱|用.*声音唱|用.*音色唱|唱《|(?:^|[，。！？\s]|肥鱼|飞鱼|本鱼|声音|音色)唱(?!反调|衰|高调|双簧|白脸|红脸|黑脸)\S+|我的歌呢|歌呢|怎么不唱|还没唱|画画|画个|画张|画一只|画幅|生成图片|生图|自拍|自画像|什么音色|音色库|(?:切换|换成?|改用|变成).*(?:芭芭拉|可莉|芙宁娜|胡桃|神里|绫华|雷电|将军|八重|神子|迪奥娜|纳西妲|音色|声音))/i.test(cleanText)) {
+            return false;
+        }
 
         const nowMs = this.now();
         // 记录最近 60 秒内的群消息时间戳（用于判断热聊刷屏）
