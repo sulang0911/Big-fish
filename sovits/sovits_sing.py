@@ -143,11 +143,11 @@ PRESETS = {
         "inst": os.path.join(SONGS_DIR, "xiaoxingyun_instrument_24s.wav"),
         "output": os.path.join(SONGS_DIR, "xiaoxingyun_klee_soulx_bgm.wav"),
         "f0_up_key": 0,
-        "alias": ["小幸运", "xiaoxingyun", "田馥甄", "幸运", "我的少女时代", "忧伤", "伤感", "抒情", "难过", "催泪", "慢歌", "安静", "怀念", "青春"],
+        "alias": ["小幸运", "xiaoxingyun", "田馥甄", "幸运", "我的少女时代", "忧伤", "伤感", "抒情", "难过", "催泪", "慢歌", "安静", "怀念", "青春", "悲伤", "失恋", "体面", "后来", "泡沫", "可惜没如果"],
     },
     "nuannuan": {
         "title": "暖暖 - 梁静茹",
-        "alias": ["暖暖", "nuannuan", "梁静茹"],
+        "alias": ["暖暖", "nuannuan", "梁静茹", "治愈", "温暖"],
     },
     "qingtian": {
         "title": "晴天 - 周杰伦",
@@ -155,7 +155,7 @@ PRESETS = {
         "inst": os.path.join(SONGS_DIR, "qingtian_instrument_24s.wav"),
         "output": os.path.join(SONGS_DIR, "qingtian_klee_soulx_bgm.wav"),
         "f0_up_key": 12,
-        "alias": ["晴天", "qingtian"],
+        "alias": ["晴天", "qingtian", "校园"],
     },
     "qinghuaci": {
         "title": "青花瓷 - 周杰伦",
@@ -163,7 +163,7 @@ PRESETS = {
         "inst": os.path.join(SONGS_DIR, "qinghuaci_instrument_24s.wav"),
         "output": os.path.join(SONGS_DIR, "qinghuaci_klee_soulx_bgm.wav"),
         "f0_up_key": 12,
-        "alias": ["青花瓷", "qinghuaci"],
+        "alias": ["青花瓷", "qinghuaci", "古风", "国风", "中国风", "烟雨", "江南"],
     },
 }
 
@@ -381,6 +381,7 @@ def dynamic_sing_flow(song_query, voice=None):
             soulx_bgm = os.path.join(SONGS_DIR, f"{p_key}_{voice}_soulx_bgm.wav")
             if os.path.exists(soulx_bgm):
                 print(f"[SOULX BGM PRESET] 命中 SoulX-Singer 带立体声伴奏翻唱《{p_info['title']}》（音色: {voice}）")
+                print(f"[SONG_TITLE] {p_info['title']}")
                 print(f"[OUTPUT_COVER] {soulx_bgm}")
                 return soulx_bgm
 
@@ -388,6 +389,7 @@ def dynamic_sing_flow(song_query, voice=None):
             soulx_preset = os.path.join(SONGS_DIR, f"{p_key}_{voice}_soulx_cover.wav")
             if os.path.exists(soulx_preset):
                 print(f"[SOULX PRESET] 命中 SoulX-Singer 高保真翻唱《{p_info['title']}》（音色: {voice}）")
+                print(f"[SONG_TITLE] {p_info['title']}")
                 print(f"[OUTPUT_COVER] {soulx_preset}")
                 return soulx_preset
 
@@ -395,12 +397,14 @@ def dynamic_sing_flow(song_query, voice=None):
             voice_preset = os.path.join(SONGS_DIR, f"{p_key}_{voice}_cover.wav")
             if os.path.exists(voice_preset):
                 print(f"[PRESET] 命中预置歌曲《{p_info['title']}》（音色: {voice}）")
+                print(f"[SONG_TITLE] {p_info['title']}")
                 print(f"[OUTPUT_COVER] {voice_preset}")
                 return voice_preset
 
             # 若音色是 klee 且默认 cover 存在
             if voice in ["klee", "dafeiyu"] and os.path.exists(p_info.get("output", "")):
                 print(f"[PRESET] 命中经典预置歌曲《{p_info['title']}》（音色: {voice}）")
+                print(f"[SONG_TITLE] {p_info['title']}")
                 print(f"[OUTPUT_COVER] {p_info['output']}")
                 return p_info["output"]
 
@@ -409,6 +413,7 @@ def dynamic_sing_flow(song_query, voice=None):
                 print(f"[PRESET] 命中预置曲目《{p_info['title']}》，正在为音色【{voice}】生成带伴奏翻唱...")
                 singer = DaFeiYuSoVitsSinger(voice=voice)
                 singer.convert(vocal_path=p_info["vocal"], output_path=soulx_bgm, inst_path=p_info.get("inst"), key_offset="auto")
+                print(f"[SONG_TITLE] {p_info['title']}")
                 print(f"[OUTPUT_COVER] {soulx_bgm}")
                 return soulx_bgm
 
@@ -467,11 +472,14 @@ def dynamic_sing_flow(song_query, voice=None):
         print(f"[WARN] 音乐搜索接口异常: {e}")
 
     if not downloaded_mp3:
-        # 回退到对应音色的经典情歌《爱你》
-        fallback_cover = os.path.join(SONGS_DIR, f"aini_{voice}_soulx_bgm.wav")
+        is_sad = any(w in query_clean for w in ["忧伤", "伤感", "难过", "悲伤", "抒情", "催泪", "慢", "静", "哭", "泪", "遗憾", "痛", "失恋"])
+        fb_key = "xiaoxingyun" if is_sad else "aini"
+        fb_title = PRESETS[fb_key]["title"]
+        fallback_cover = os.path.join(SONGS_DIR, f"{fb_key}_{voice}_soulx_bgm.wav")
         if not os.path.exists(fallback_cover):
-            fallback_cover = PRESETS["aini"]["output"]
-        print(f"[FALLBACK] 未搜索到《{query_clean}》有效音频，回退至经典抒情歌《爱你》（音色: {voice}）")
+            fallback_cover = PRESETS[fb_key]["output"]
+        print(f"[FALLBACK] 未搜索到《{query_clean}》有效音频，回退至《{fb_title}》（音色: {voice}）")
+        print(f"[SONG_TITLE] {fb_title}")
         print(f"[OUTPUT_COVER] {fallback_cover}")
         return fallback_cover
 

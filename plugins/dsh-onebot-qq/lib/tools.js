@@ -7,7 +7,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import fs from 'node:fs';
 import path from 'node:path';
-import { exec as cpExec } from 'node:child_process';
+import { exec as cpExec, execFile as cpExecFile } from 'node:child_process';
 import { fileToBase64, isUrl } from './media.js';
 import { splitChatId } from './chat.js';
 import { parseMessage, cqUnescape } from './cq.js';
@@ -533,27 +533,48 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_sing_song',
-        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 SoulX-Singer 零样本高保真歌声大模型翻唱合成器（采用 Whisper 语音音素解耦 + DiffLlama Flow Matching 条件流匹配逆扩散 + Vocos 神经声码器，彻底告别传统 SVC/RVC 的原唱口音残留与机械破音，真正还原可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜等角色的真实歌声发音与共鸣，已搭载原声立体声伴奏混音）。当老大或任何人让你唱歌、点歌或唱某首歌副歌（如经典抒情歌《爱你》、《小幸运》、《暖暖》、《慢慢喜欢你》或任意歌曲）时，必须且只能调用此工具生成 24 秒黄金副歌翻唱音频！严禁借口“版权限制”或“不能唱原曲副歌”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
+        description: '【唯一唱歌工具】本地已完全授权的大肥鱼专属 SoulX-Singer 零样本高保真歌声大模型翻唱合成器（采用 Whisper 语音音素解耦 + DiffLlama Flow Matching 条件流匹配逆扩散 + Vocos 神经声码器，真正还原可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜等角色的真实歌声发音与共鸣，已搭载原声立体声伴奏混音）。当老大或任何人让你唱歌、点歌或唱某首歌副歌时，必须且只能调用此工具生成 24 秒黄金副歌翻唱音频！若点忧伤/伤感/抒情/慢歌传 song_name="小幸运"；若点古风/中国风传 song_name="青花瓷"；若点欢快/甜歌或未指定风格传 song_name="爱你"；若指定具体歌名则直接传歌名。严禁借口“版权限制”拒绝，绝对严禁调用 qq_send_tts 念歌词或瞎哼童谣！唱完后傲娇地向老大讨要白米饭加餐。',
         parameters: {
-            song_name: { type: 'string', required: true, description: '歌曲名称或点歌内容（如 "爱你"、"小幸运"、"暖暖"、"情歌" 或任意歌名）' },
+            song_name: { type: 'string', required: true, description: '歌曲名称或点歌风格（忧伤/伤感/抒情传 "小幸运"，古风传 "青花瓷"，甜歌/默认传 "爱你"，或传具体歌名）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
         },
-        output: sendOutput(),
+        output: {
+            schema: { type: 'json' },
+            render: (_args, value) => {
+                const v = value;
+                return [{ type: 'text', text: `已发送翻唱语音气泡（演唱曲目：${v.song_title || '经典副歌'}，message_id=${v.messageId ?? 'ok'}）` }];
+            },
+        },
         isConcurrencySafe: () => false,
         execute: async (args, exec) => {
             const a = args;
             if (typeof a.song_name !== 'string' || a.song_name.trim() === '')
                 throw new Error('qq_sing_song: song_name 必填');
             const chatId = resolveChat(bridge, exec, a.chat_id);
-            const songQuery = a.song_name.trim();
+            let songQuery = a.song_name.trim();
+
+            // 结合最近一条用户点歌上下文纠正曲风（防止点忧伤歌时 LLM 惯性传 "爱你"）
+            try {
+                const recentMsgs = bridge.feiyu?.memoryManager?.getWorkingMemory?.(chatId) || [];
+                const lastUserMsg = [...recentMsgs].reverse().find(m => m.role === 'user')?.text || '';
+                const combinedText = `${lastUserMsg} ${songQuery}`;
+                if (/(忧伤|伤感|难过|悲伤|抒情|催泪|慢歌|安静|怀念|失恋|哭|遗憾)/i.test(combinedText) && /^(爱你|情歌|唱歌|来首歌|随便|忧伤.*|伤感.*|抒情.*|慢歌.*)$/i.test(songQuery)) {
+                    songQuery = '小幸运';
+                } else if (/(古风|国风|中国风|烟雨|江南)/i.test(combinedText) && /^(爱你|情歌|唱歌|来首歌|随便|古风.*|中国风.*)$/i.test(songQuery)) {
+                    songQuery = '青花瓷';
+                }
+            } catch { /* ignore */ }
 
             const pyPath = 'D:\\ollama\\GPT-SoVITS-v2pro\\GPT-SoVITS-v2pro-20250604\\runtime\\python.exe';
             const scriptPath = 'D:\\deepseek-harness\\sovits\\sovits_sing.py';
             const safeSongQuery = songQuery.replace(/["'`$\\]/g, ' ').trim() || '爱你';
-            const cmd = `& "${pyPath}" -u "${scriptPath}" --song "${safeSongQuery}"`;
 
             const stdout = await new Promise((resolve, reject) => {
-                cpExec(cmd, { shell: 'powershell.exe', timeout: 120000 }, (err, stdout, stderr) => {
+                cpExecFile(pyPath, ['-u', scriptPath, '--song', safeSongQuery], {
+                    timeout: 120000,
+                    windowsHide: true,
+                    env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+                }, (err, stdout, stderr) => {
                     if (err) return reject(new Error('SoulX-Singer 唱歌生成失败: ' + (stderr || err.message)));
                     resolve(stdout);
                 });
@@ -564,9 +585,11 @@ export function registerTools(ctx, bridge, connection, limits) {
             if (match && match[1]) {
                 coverPath = match[1].trim();
             }
+            const titleMatch = stdout.match(/\[SONG_TITLE\]\s+([^\r\n]+)/);
+            const songTitle = titleMatch && titleMatch[1] ? titleMatch[1].trim() : safeSongQuery;
 
             if (!coverPath || !fs.existsSync(coverPath)) {
-                const fallbackPath = 'D:\\deepseek-harness\\rvc\\songs\\qingtian_dafeiyu_cover.wav';
+                const fallbackPath = 'D:\\deepseek-harness\\rvc\\songs\\xiaoxingyun_barbara_soulx_bgm.wav';
                 if (fs.existsSync(fallbackPath)) {
                     coverPath = fallbackPath;
                 } else {
@@ -585,7 +608,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             const messageId = await bridge.sendSegments(chatId, [
                 { type: 'record', data: { file: await fencedMediaFile(fullPath, limits.maxVoiceBytes, allowedRoots) } },
             ]);
-            return { sent: true, messageId: messageId ?? null };
+            return { sent: true, song_title: songTitle, messageId: messageId ?? null };
         },
     }));
     register(defineTool({
