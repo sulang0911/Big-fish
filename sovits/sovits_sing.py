@@ -135,7 +135,7 @@ PRESETS = {
         "inst": os.path.join(SONGS_DIR, "aini_instrument_24s.wav"),
         "output": os.path.join(SONGS_DIR, "aini_klee_soulx_bgm.wav"),
         "f0_up_key": 0,
-        "alias": ["爱你", "aini", "王心凌", "甜歌", "情歌", "唱首情歌", "唱首歌", "来首歌"],
+        "alias": ["爱你", "aini", "王心凌", "甜歌", "情歌", "唱首情歌", "唱首歌", "来首歌", "欢快", "开心", "活泼", "甜妹", "元气"],
     },
     "xiaoxingyun": {
         "title": "小幸运 - 田馥甄",
@@ -143,7 +143,7 @@ PRESETS = {
         "inst": os.path.join(SONGS_DIR, "xiaoxingyun_instrument_24s.wav"),
         "output": os.path.join(SONGS_DIR, "xiaoxingyun_klee_soulx_bgm.wav"),
         "f0_up_key": 0,
-        "alias": ["小幸运", "xiaoxingyun", "田馥甄", "幸运", "我的少女时代"],
+        "alias": ["小幸运", "xiaoxingyun", "田馥甄", "幸运", "我的少女时代", "忧伤", "伤感", "抒情", "难过", "催泪", "慢歌", "安静", "怀念", "青春"],
     },
     "nuannuan": {
         "title": "暖暖 - 梁静茹",
@@ -371,7 +371,7 @@ def dynamic_sing_flow(song_query, voice=None):
     
     # 0. 泛指点歌处理
     if not query_clean or query_clean in ["随便", "歌", "一首", "来一首", "唱首歌", "唱歌", "听听", "唱歌听听"]:
-        query_clean = "晴天"
+        query_clean = "爱你"
 
     # 1. 优先检查预置歌曲
     for p_key, p_info in PRESETS.items():

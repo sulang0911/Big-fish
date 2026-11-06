@@ -149,10 +149,14 @@ export class InboundPipeline {
             void feiyu.maybeReactEmojiToMessage(inbound.messageId, activityText, isAdmin, kind);
         }
 
-        // 群聊唤醒准则：老大在群聊中喊肥鱼执行工具任务时走完整 Agent 通道；日常喊肥鱼名字闲聊则交由下方 evaluateGroupLurkAndChime 走灵动多气泡秒回通道
+        // 群聊唤醒准则：老大或群友在群聊中喊肥鱼执行工具任务（唱歌/画画/换音色/老大系统指令）时走完整 Agent 通道；日常喊肥鱼名字闲聊则交由下方 evaluateGroupLurkAndChime 走灵动多气泡秒回通道
         const botNamePattern = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼)/i;
-        const toolTaskPattern = /(打开|浏览器|搜索|查一下|看看|截图|发语音|说句|语音|执行|运行|代码|文件|天气|帮我)/i;
-        const adminCalledByName = isAdmin && botNamePattern.test(textContent) && toolTaskPattern.test(textContent);
+        const publicMediaToolPattern = /(唱歌|点歌|唱首|唱个|来首歌|来一首|哼一首|唱支|画画|画个|画张|画一只|生成图片|自拍|自画像|什么音色|音色库)/i;
+        const adminToolPattern = /(打开|浏览器|搜索|查一下|看看|截图|执行|运行|代码|文件|天气|帮我|切换音色|换.*音色|换.*声音)/i;
+        const adminCalledByName = (botNamePattern.test(textContent) || Boolean(feiyu?.isGroupConvoActive?.(chatId))) && (
+            publicMediaToolPattern.test(textContent) ||
+            (isAdmin && adminToolPattern.test(textContent))
+        );
         const isPublicFishCommand = /^\s*(?:@\d+\s*)?\/fish(?:\s|$)/i.test(inbound.text || textContent);
 
         const requireMentionForThisMessage = kind === 'group' && this.ctx.config.requireMention;
@@ -406,7 +410,7 @@ export class InboundPipeline {
         const needsHeavyAgentTools = hasNonImageMedia
             || inbound.forwardId !== undefined
             || Boolean(activityRes?.wokeUpFromSleep)
-            || /(打开浏览器|去逛|搜索|搜一下|查一下|百度|谷歌|截图|截个图|看下桌面|看下屏幕|执行|运行|写代码|改代码|看下文件|创建文件|删除文件|切换音色|换.*音色|换.*声音|什么音色|音色库|唱.*歌|点歌|来首歌|查天气)/i.test(content);
+            || /(打开浏览器|去逛|搜索|搜一下|查一下|百度|谷歌|截图|截个图|看下桌面|看下屏幕|执行|运行|写代码|改代码|看下文件|创建文件|删除文件|切换音色|换.*音色|换.*声音|什么音色|音色库|唱歌|点歌|唱首|唱个|唱支|来首歌|来一首|哼一首|画画|画个|画张|画一只|生成图片|自拍|自画像|查天气)/i.test(content);
 
         if (kind === 'private' && plain && !isChatBusy && feiyu?.debounceBuffer) {
             feiyu.debounceBuffer.push(
