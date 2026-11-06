@@ -598,7 +598,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             }
 
             const rawBuffer = await fs.promises.readFile(coverPath);
-            const buffer = padWavSilence(rawBuffer, 250);
+            const buffer = padWavSilence(rawBuffer, 350);
             const filename = `song_${Date.now()}.wav`;
             const allowedRoots = await mediaRoots(bridge, exec);
             const mediaDir = allowedRoots[0] || bridge.deps?.config?.mediaDir || 'C:\\Users\\25362\\.dsh\\media\\onebot';

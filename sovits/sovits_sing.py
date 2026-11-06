@@ -40,7 +40,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 
 from inference.infer_tool import Svc
 
-MAX_SONG_DURATION = 25.0  # 严格限制最多 25 秒
+MAX_SONG_DURATION = 18.0  # 截取 18s 供 UVR5 分离，混音时自动按乐句换气点对齐精简至 15~17s
 
 # 多音色模型配置字典
 VOICE_MODELS = {
@@ -486,7 +486,7 @@ def dynamic_sing_flow(song_query, voice=None):
         print(f"[OUTPUT_COVER] {fallback_cover}")
         return fallback_cover
 
-    # 4. 截取 25 秒高潮副歌切片
+    # 4. 截取 16~18 秒精华片段（对齐换气低谷 + 预留 0.8s 伴奏前奏铺垫）
     temp_clip_wav = os.path.join(CACHE_DIR, f"temp_{os.getpid()}_clip.wav")
     try:
         y, sr = librosa.load(downloaded_mp3, sr=44100, mono=True)
@@ -495,26 +495,33 @@ def dynamic_sing_flow(song_query, voice=None):
         if total_sec <= MAX_SONG_DURATION:
             clip = y
         else:
-            hop_length = 4410
-            rms = librosa.feature.rms(y=y, frame_length=8820, hop_length=hop_length)[0]
-            frames_len = int(MAX_SONG_DURATION * sr / hop_length)
-            skip_frames = int(15 * sr / hop_length)
+            hop_length = 2205  # 50ms 细粒度能量帧
+            rms = librosa.feature.rms(y=y, frame_length=4410, hop_length=hop_length)[0]
+            frames_len = int(15.0 * sr / hop_length)
+            skip_frames = int(16 * sr / hop_length)
             if len(rms) > frames_len + skip_frames:
                 search_rms = rms[skip_frames:]
                 rolling = np.convolve(search_rms, np.ones(frames_len), mode='valid')
-                best_start = skip_frames + int(np.argmax(rolling))
+                peak_start = skip_frames + int(np.argmax(rolling))
+                # 在高潮起点前 2.2s ~ 后 0.5s 寻找换气低谷，并再往前多留 0.75s 伴奏铺垫
+                win_lo = max(0, peak_start - int(2.2 * sr / hop_length))
+                win_hi = min(len(rms) - 1, peak_start + int(0.5 * sr / hop_length))
+                valley_idx = win_lo + int(np.argmin(rms[win_lo : win_hi + 1]))
+                lead_frames = int(0.75 * sr / hop_length)
+                best_start = max(0, valley_idx - lead_frames)
                 start_sample = best_start * hop_length
             else:
                 start_sample = 0
             clip = y[start_sample : start_sample + target_samples]
 
-        fade_len = int(0.1 * sr)
-        if len(clip) > 2 * fade_len:
-            clip[:fade_len] *= np.linspace(0, 1, fade_len)
-            clip[-fade_len:] *= np.linspace(1, 0, fade_len)
+        in_fade = int(0.6 * sr)
+        out_fade = int(1.5 * sr)
+        if len(clip) > in_fade + out_fade:
+            clip[:in_fade] *= 0.5 * (1.0 - np.cos(np.pi * np.linspace(0, 1, in_fade)))
+            clip[-out_fade:] *= 0.5 * (1.0 + np.cos(np.pi * np.linspace(0, 1, out_fade)))
 
         sf.write(temp_clip_wav, clip, sr)
-        print(f"[CLIP] 副歌切片分析完成 (时长: {len(clip)/sr:.1f}s)")
+        print(f"[CLIP] 乐句对齐切片完成 (时长: {len(clip)/sr:.1f}s)")
     except Exception as e:
         print(f"[WARN] 切片分析失败，直接使用原音频: {e}")
         temp_clip_wav = downloaded_mp3
