@@ -33,6 +33,72 @@ export function toDayKey(tsOrDate = Date.now()) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/**
+ * 从自然语言查询中解析相对日期或指定日期（如“昨天”、“前天”、“大前天”、“3天前”、“上周五”、“11月5日”）
+ * @param {string} queryText
+ * @param {number} [nowMs]
+ * @returns {Array<{ label: string, dayKey: string }>}
+ */
+export function resolveRelativeDatesFromQuery(queryText, nowMs = Date.now()) {
+    const q = String(queryText || '').trim();
+    if (!q) return [];
+    const results = [];
+    const seen = new Set();
+    const addOffset = (label, daysAgo) => {
+        const dayKey = toDayKey(nowMs - daysAgo * 86_400_000);
+        if (!seen.has(dayKey)) {
+            seen.add(dayKey);
+            results.push({ label, dayKey });
+        }
+    };
+
+    if (/(大前天)/.test(q)) addOffset('大前天', 3);
+    if (/(前天|前日)/.test(q) && !/大前天/.test(q)) addOffset('前天', 2);
+    if (/(昨天|昨日|昨晚|昨儿)/.test(q)) addOffset('昨天', 1);
+    if (/(今天|今日|刚才|刚刚|上午|下午|早上)/.test(q)) addOffset('今天', 0);
+
+    const daysAgoMatch = q.match(/(\d+)\s*天前/);
+    if (daysAgoMatch) {
+        const n = Number(daysAgoMatch[1]);
+        if (n >= 1 && n <= 60) addOffset(`${n}天前`, n);
+    }
+
+    const cnDigitMap = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0 };
+    const lastWeekMatch = q.match(/上周([一二三四五六日天])?/);
+    if (lastWeekMatch) {
+        const nowDate = new Date(nowMs);
+        const curDay = nowDate.getDay() || 7; // 1..7
+        if (lastWeekMatch[1] && cnDigitMap[lastWeekMatch[1]] !== undefined) {
+            const targetDay = cnDigitMap[lastWeekMatch[1]] || 7;
+            const daysAgo = curDay + (7 - targetDay);
+            addOffset(`上周${lastWeekMatch[1]}`, daysAgo);
+        } else {
+            addOffset('上周', 7);
+        }
+    }
+
+    const isoMatch = q.match(/(20\d{2})-(\d{1,2})-(\d{1,2})/);
+    if (isoMatch) {
+        const dk = `${isoMatch[1]}-${String(isoMatch[2]).padStart(2, '0')}-${String(isoMatch[3]).padStart(2, '0')}`;
+        if (!seen.has(dk)) {
+            seen.add(dk);
+            results.push({ label: dk, dayKey: dk });
+        }
+    }
+
+    const mdMatch = q.match(/(\d{1,2})月(\d{1,2})[日号]/);
+    if (mdMatch) {
+        const year = new Date(nowMs).getFullYear();
+        const dk = `${year}-${String(mdMatch[1]).padStart(2, '0')}-${String(mdMatch[2]).padStart(2, '0')}`;
+        if (!seen.has(dk)) {
+            seen.add(dk);
+            results.push({ label: `${mdMatch[1]}月${mdMatch[2]}日`, dayKey: dk });
+        }
+    }
+
+    return results;
+}
+
 function extractBigrams(text) {
     const clean = String(text || '').replace(/[\s\p{P}]/gu, '').toLowerCase();
     const set = new Set();
@@ -129,6 +195,12 @@ export class MemoryManager {
                     summary TEXT NOT NULL,
                     highlights_json TEXT NOT NULL DEFAULT '[]',
                     msg_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS group_lore (
+                    group_id TEXT PRIMARY KEY,
+                    lore_json TEXT NOT NULL DEFAULT '[]',
                     updated_at INTEGER NOT NULL
                 );
 
@@ -421,6 +493,7 @@ export class MemoryManager {
             let summary = '';
             let highlights = [];
             let extractedEpisodic = [];
+            let extractedGroupLore = [];
 
             // 1. 优先尝试调用 LLM 进行智能压缩提炼
             if (typeof this.llmDailyCompressor === 'function') {
@@ -433,6 +506,9 @@ export class MemoryManager {
                         }
                         if (Array.isArray(llmRes.episodic)) {
                             extractedEpisodic = llmRes.episodic;
+                        }
+                        if (Array.isArray(llmRes.group_lore)) {
+                            extractedGroupLore = llmRes.group_lore.map(g => String(g).trim()).filter(Boolean);
                         }
                     }
                 } catch (err) {
@@ -475,6 +551,15 @@ export class MemoryManager {
                         summary: `[${dayKey}] ${ep.summary}`,
                         importance: Number(ep.importance),
                     });
+                }
+            }
+
+            // 若压缩过程中提炼出了群梗黑话或群友印象，顺带存入对应群的 group_lore 表
+            if (extractedGroupLore.length > 0) {
+                const groupChats = [...new Set(rawLogs.map(r => r.chat_id).filter(c => String(c).startsWith('group:')))];
+                const targetGroup = groupChats[0] || 'group:927066977';
+                for (const lore of extractedGroupLore) {
+                    this.addGroupLore(targetGroup, lore);
                 }
             }
 
@@ -678,6 +763,7 @@ export class MemoryManager {
         const rawTotal = this.db.prepare('SELECT COUNT(*) AS c FROM raw_interaction_logs').get()?.c || 0;
         const rawUncompressed = this.db.prepare('SELECT COUNT(*) AS c FROM raw_interaction_logs WHERE compressed = 0').get()?.c || 0;
         const userCount = this.db.prepare('SELECT COUNT(*) AS c FROM user_profiles').get()?.c || 0;
+        const groupLoreCount = this.db.prepare('SELECT COUNT(*) AS c FROM group_lore').get()?.c || 0;
         return {
             sqliteEnabled: true,
             dbPath: this.dbPath,
@@ -686,7 +772,57 @@ export class MemoryManager {
             digestCount,
             rawTotal,
             rawUncompressed,
+            groupLoreCount,
         };
+    }
+
+    // ── 2.5 Group Shared Lore (群聊共同记忆与群梗黑话库) ──────────────────────
+    getGroupLore(groupIdOrChatId) {
+        if (!this.db || !groupIdOrChatId) return [];
+        const gid = String(groupIdOrChatId).replace(/^group:/i, '').trim();
+        if (!gid) return [];
+        try {
+            const row = this.db.prepare('SELECT lore_json FROM group_lore WHERE group_id = ?').get(gid);
+            if (!row) return [];
+            const parsed = JSON.parse(row.lore_json || '[]');
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    }
+
+    addGroupLore(groupIdOrChatId, loreFact) {
+        if (!this.db || !groupIdOrChatId || !loreFact) return false;
+        const gid = String(groupIdOrChatId).replace(/^group:/i, '').trim();
+        const clean = String(loreFact).replace(/\r?\n/g, ' ').trim().slice(0, 120);
+        if (!gid || !clean) return false;
+
+        try {
+            const existing = this.getGroupLore(gid);
+            // 去重：若已有高度相似的群梗则更新到最前
+            const filtered = existing.filter(item => item !== clean && computeKeywordMatch(item, clean) < 0.8);
+            filtered.unshift(clean);
+            const updated = filtered.slice(0, 10);
+            this.db.prepare(`
+                INSERT INTO group_lore (group_id, lore_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(group_id) DO UPDATE SET
+                    lore_json = excluded.lore_json,
+                    updated_at = excluded.updated_at
+            `).run(gid, JSON.stringify(updated), this.now());
+            return true;
+        } catch (err) {
+            console.warn('[MemoryManager] 写入 group_lore 失败:', err.message);
+            return false;
+        }
+    }
+
+    formatGroupLoreForPrompt(chatId) {
+        if (!chatId || !String(chatId).startsWith('group:')) return '';
+        const loreList = this.getGroupLore(chatId);
+        if (loreList.length === 0) return '';
+        const lines = loreList.slice(0, 6).map((item, i) => `  ${i + 1}. ${item}`);
+        return `【本群共同记忆与群梗黑话 (Group Shared Lore)】\n${lines.join('\n')}`;
     }
 
     // ── 3. Semantic Memory (QQ 用户专属档案) ─────────────────────────────────
@@ -849,10 +985,53 @@ export class MemoryManager {
             return { mem, score, isDigest: false };
         });
 
-        // 同时检索 SQLite 中的历史每日摘要（当用户询问往日事情时可唤醒对应日期的压缩记忆）
+        // 同时检索 SQLite 中的历史每日摘要（含自然语言相对日期精准回溯，如“昨天/前天/上周” + 关键词匹配）
         if (this.db && queryText) {
+            const matchedDates = resolveRelativeDatesFromQuery(queryText, now);
+            const matchedDayKeys = new Set();
+
+            for (const { label, dayKey } of matchedDates) {
+                matchedDayKeys.add(dayKey);
+                const exactDigest = this.getDailyDigest(dayKey);
+                if (exactDigest) {
+                    const hlText = exactDigest.highlights?.length > 0 ? `（主要事项：${exactDigest.highlights.join('；')}）` : '';
+                    scored.push({
+                        mem: {
+                            id: `date_digest_${dayKey}`,
+                            user_id: uid,
+                            summary: `[${label}(${dayKey}) 记忆回溯] ${exactDigest.summary}${hlText}`,
+                            importance: 9,
+                            created_at: dayKey,
+                        },
+                        score: 0.99,
+                        isDigest: true,
+                    });
+                } else {
+                    // 若该日期尚未生成压缩摘要，直接从 raw_interaction_logs 实时提取当天流水
+                    const dayLogs = this.db.prepare(`
+                        SELECT time_str, nickname, role, content FROM raw_interaction_logs
+                        WHERE day_key = ? ORDER BY ts DESC LIMIT 8
+                    `).all(dayKey).reverse();
+                    if (dayLogs.length > 0) {
+                        const snippet = dayLogs.map(r => `${r.time_str} ${r.nickname}:${r.content.slice(0, 22)}`).join('；');
+                        scored.push({
+                            mem: {
+                                id: `date_raw_${dayKey}`,
+                                user_id: uid,
+                                summary: `[${label}(${dayKey}) 原始记忆回溯] ${snippet}`,
+                                importance: 8,
+                                created_at: dayKey,
+                            },
+                            score: 0.96,
+                            isDigest: true,
+                        });
+                    }
+                }
+            }
+
             const digests = this.getRecentDailyDigests(14);
             for (const d of digests) {
+                if (matchedDayKeys.has(d.day_key)) continue;
                 const combinedText = `${d.day_key} ${d.summary} ${(d.highlights || []).join(' ')}`;
                 const kwScore = computeKeywordMatch(queryText, combinedText);
                 if (kwScore >= 0.25) {

@@ -232,8 +232,30 @@ export class InboundPipeline {
                     }
                 }
             }
-            if (feiyu && await feiyu.evaluateGroupLurkAndChime(inbound)) {
-                return;
+            if (feiyu) {
+                let chimeInbound = inbound;
+                const hasImg = Array.isArray(inbound.media) && inbound.media.some(m => m.kind === 'image');
+                const shouldResolveMediaForChime = (hasImg || inbound.replyId !== undefined) && (
+                    feiyu.isGroupConvoActive?.(chatId) ||
+                    /(肥鱼|飞鱼|大肥鱼|五花肉|好吃|夜宵|烧烤|火锅|奶茶|干饭|饿|图|看)/i.test(textContent)
+                );
+                if (shouldResolveMediaForChime) {
+                    try {
+                        const chimeBody = hasImg && this.ctx.buildBody
+                            ? await this.ctx.buildBody(inbound.text, inbound.media, chatId)
+                            : inbound.text;
+                        const chimeQuote = inbound.replyId !== undefined && this.ctx.expandQuote
+                            ? await this.ctx.expandQuote(inbound.replyId, verifiedQuote)
+                            : '';
+                        const combinedChimeText = [chimeQuote, chimeBody].filter(Boolean).join('\n');
+                        if (combinedChimeText) {
+                            chimeInbound = { ...inbound, text: combinedChimeText };
+                        }
+                    } catch {}
+                }
+                if (await feiyu.evaluateGroupLurkAndChime(chimeInbound)) {
+                    return;
+                }
             }
             const chimeProb = typeof this.ctx.config.randomChimeProbability === 'number'
                 ? this.ctx.config.randomChimeProbability
@@ -375,9 +397,16 @@ export class InboundPipeline {
             final = final + '\n' + dynamicTail;
         }
 
-        // Step 4: 私聊纯文本消息（且当前无运行中回合需立即 steer 时）走 2000ms 滑动防抖缓冲池（最大等待 5000ms）
+        // 轻量级快慢双通道分流器 (Fast/Tool Router)：
+        // 若无需调用重型系统/浏览器/语音工具，统一走 Feiyu 快速拟人多气泡通道 (handleFastChatTurn)，消除私聊/@ 与群插话的回复风格割裂
         const activeChat = this.ctx.getChat(chatId);
         const isChatBusy = activeChat !== undefined && activeChat.busy === true;
+        const hasNonImageMedia = Array.isArray(inbound.media) && inbound.media.some(m => m.kind !== 'image');
+        const needsHeavyAgentTools = hasNonImageMedia
+            || inbound.forwardId !== undefined
+            || Boolean(activityRes?.wokeUpFromSleep)
+            || /(打开浏览器|去逛|搜索|搜一下|查一下|百度|谷歌|截图|截个图|看下桌面|看下屏幕|执行|运行|写代码|改代码|看下文件|创建文件|删除文件|发语音|说句语音|用语音说|语音哄|查天气)/i.test(content);
+
         if (kind === 'private' && plain && !isChatBusy && feiyu?.debounceBuffer) {
             feiyu.debounceBuffer.push(
                 chatId,
@@ -387,9 +416,24 @@ export class InboundPipeline {
                     nickname,
                     text: content,
                     messageId: inbound.messageId,
-                    meta: { role, wokeUpFromSleep: Boolean(activityRes?.wokeUpFromSleep) },
+                    meta: { role, wokeUpFromSleep: Boolean(activityRes?.wokeUpFromSleep), needsHeavyAgentTools },
                 },
                 async (mergedPayload) => {
+                    if (
+                        !mergedPayload.meta?.needsHeavyAgentTools &&
+                        typeof feiyu.handleFastChatTurn === 'function' &&
+                        await feiyu.handleFastChatTurn({
+                            chatId: mergedPayload.chatId,
+                            userId: mergedPayload.userId,
+                            nickname: mergedPayload.nickname,
+                            text: mergedPayload.text,
+                            messageId: mergedPayload.messageId,
+                            isGroup: false,
+                            wokeUpFromSleep: Boolean(mergedPayload.meta?.wokeUpFromSleep),
+                        })
+                    ) {
+                        return;
+                    }
                     const mergedWrapped = wrapUserMessage(mergedPayload.text, mergedPayload.userId, mergedPayload.nickname);
                     const tail = buildDynamicTurnContext({
                         driveEngine: feiyu.driveEngine,
@@ -409,6 +453,24 @@ export class InboundPipeline {
                     await this.ctx.dispatchFollowup(mergedPayload.chatId, mergedFinal, mergedPayload.meta?.role || role, mergedPayload.nickname);
                 }
             );
+            return;
+        }
+
+        if (
+            !needsHeavyAgentTools &&
+            !isChatBusy &&
+            typeof feiyu?.handleFastChatTurn === 'function' &&
+            await feiyu.handleFastChatTurn({
+                chatId,
+                groupId,
+                userId,
+                nickname,
+                text: content,
+                messageId: inbound.messageId,
+                isGroup: kind === 'group',
+                wokeUpFromSleep: Boolean(activityRes?.wokeUpFromSleep),
+            })
+        ) {
             return;
         }
 

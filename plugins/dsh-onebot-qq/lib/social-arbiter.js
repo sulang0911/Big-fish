@@ -22,7 +22,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { MemoryManager, DEFAULT_MASTER_QQ } from './memory-manager.js';
-import { DriveEngine, MessageDebounceBuffer, PokeAggregator } from './drive-engine.js';
+import { DriveEngine, MessageDebounceBuffer, PokeAggregator, TEASE_BULLY_REGEX } from './drive-engine.js';
 import {
     buildCachedSystemPromptPrefix,
     buildDynamicTurnContext,
@@ -393,10 +393,98 @@ export class SocialArbiter {
                 nickname: nickname || resolvedUserId,
                 text,
             });
+            // 若在群聊中有人欺负/调侃大肥鱼（如“把你烤了”），自动记录进该群的群梗共同记忆库 (group_lore)
+            const cleanGrpText = String(text).replace(/\r?\n/g, ' ').trim();
+            if (String(chatId).startsWith('group:') && TEASE_BULLY_REGEX.test(cleanGrpText)) {
+                this.memoryManager.addGroupLore?.(
+                    chatId,
+                    `群友 ${nickname || resolvedUserId} 曾调侃/欺负本鱼说“${cleanGrpText.slice(0, 24)}”，已被记入小本本`
+                );
+            }
         }
 
         const interactionRes = this.driveEngine.onUserMessage(text, new Date(nowMs));
         return interactionRes;
+    }
+
+    /**
+     * 判断指定群聊是否正处于 3 分钟“连续对话余温窗口”内
+     */
+    isGroupConvoActive(chatId) {
+        const activeConvo = this.activeGroupConvoMap.get(chatId);
+        return Boolean(activeConvo && this.now() < activeConvo.expiresAt && activeConvo.turns < 6);
+    }
+
+    /**
+     * 统一快速拟人多气泡回复通道 (`handleFastChatTurn`)：
+     * 用于处理无需调用重型系统工具的私聊消息、群聊 `@` 消息、引用回复消息与图文互动，
+     * 消除慢速单条 Agent 通道与灵动双气泡快通道之间的割裂感！
+     * @param {{ chatId: string, groupId?: string, userId: string, nickname: string, text: string, messageId?: string, isGroup?: boolean, wokeUpFromSleep?: boolean }} payload
+     * @returns {Promise<boolean>} - 返回 true 表示已成功通过快通道完成拟人多气泡回复
+     */
+    async handleFastChatTurn(payload) {
+        const { chatId, groupId, userId, nickname, text, messageId, isGroup, wokeUpFromSleep } = payload;
+        const cleanText = String(text || '').trim();
+        if (!cleanText) return false;
+
+        try {
+            const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
+            const historyBlock = recentMsgs
+                .map(m => `[${m.nickname || m.userId}]: ${m.text}`)
+                .join('\n');
+
+            const hasImage = /\[图片:|视觉画面描述:/i.test(cleanText);
+            const prompt = [
+                isGroup
+                    ? `【群聊点名 / @ / 引用互动（群号：${groupId || chatId}）】`
+                    : `【私聊实时对话（对方：${nickname}(${userId})）】`,
+                `对方刚刚发来消息："${cleanText}"`,
+                ...(historyBlock ? [`近期对话上下文：\n${historyBlock}`] : []),
+                `回复准则：`,
+                `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
+                `2. 以傲娇、贪吃、鲜活的小蓝鲸“大肥鱼”口吻，拆分为 1~3 条简短自然的气泡（每条 <= 25 字，句尾绝不加句号），像真人秒回微信/QQ一样有灵气！`,
+                ...(hasImage ? [`3. 对方消息中包含图片/表情包（见“视觉画面描述”），请结合图片画面内容进行流口水、吐槽或配表情包斗图！`] : []),
+                buildDynamicTurnContext({
+                    driveEngine: this.driveEngine,
+                    memoryManager: this.memoryManager,
+                    chatId,
+                    userId,
+                    nickname,
+                    queryText: cleanText,
+                    wokeUpFromSleep: Boolean(wokeUpFromSleep),
+                    eventPayload: { event: isGroup ? 'group_fast_turn' : 'private_fast_turn', hasImage },
+                    envContext: this.getEnvironmentContext(),
+                }),
+            ].join('\n');
+
+            const rawJson = await this.callDeepSeekAction(userId, prompt);
+            if (!rawJson) return false;
+
+            const action = parseActionResponse(rawJson);
+            if (action.reply_decision === 'ignore' && (!action.messages || action.messages.length === 0)) {
+                return false;
+            }
+
+            if (isGroup) {
+                const activeConvo = this.activeGroupConvoMap.get(chatId);
+                this.activeGroupConvoMap.set(chatId, {
+                    userId,
+                    nickname,
+                    expiresAt: this.now() + 3 * 60_000,
+                    turns: (activeConvo?.userId === userId ? (activeConvo.turns || 0) : 0) + 1,
+                });
+            }
+
+            this.driveEngine.applyStatDelta({ boredom: -this.randFloat(6, 14) });
+            await this.dispatcher.dispatch(chatId, action, {
+                userId,
+                replyToMessageId: messageId,
+            });
+            return true;
+        } catch (err) {
+            this.log('debug', `[FeiyuArbiter] handleFastChatTurn 异常降级: ${err?.message || err}`);
+            return false;
+        }
     }
 
     /**
@@ -909,7 +997,8 @@ export class SocialArbiter {
         const cooldownUntil = this.groupCooldownUntilMap.get(chatId) || 0;
         if (!calledByName && !isFollowUpConvo && nowMs < cooldownUntil) return false;
 
-        const hitInterestKeyword = GROUP_INTEREST_REGEX.test(cleanText);
+        const hasImage = /\[图片:|视觉画面描述:/i.test(cleanText);
+        const hitInterestKeyword = GROUP_INTEREST_REGEX.test(cleanText) || hasImage;
         const isHotBurst = tsList.length >= 5;
         const boredom = Number(this.driveEngine.state.boredom) || 0;
         const isHighBoredomChime = boredom >= 65 && !/^\/fish(?:\s|$)/i.test(cleanText);
@@ -942,14 +1031,15 @@ export class SocialArbiter {
                 `【系统内部事件：group_chime_in_check（群聊互动与插话评估）】`,
                 `当前群号：${groupId}，刚刚群友 [${nickname}(${userId})] 说了："${cleanText}"`,
                 `近期群聊上下文：\n${historyBlock}`,
+                ...(hasImage ? [`🖼️【视觉感知提示】群友消息中包含图片或表情包（见其中的“视觉画面描述”），你可以针对图片内容吐槽，或者设置 reply_decision = "meme_only" / qq_action.type = "send_meme" 发表情包跟对方斗图！`] : []),
                 ...(calledByName
                     ? [`🎯【点名呼叫触发】群友刚刚直接点名喊了你（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以傲娇鲜活的大肥鱼口吻分成 1~2 条超短气泡（每条 <= 20 字，不加句号）回应对方！`]
                     : isFollowUpConvo
-                        ? [`⚡【连续对话追问余温中】你刚刚才和群友 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着说了："${cleanText}"！只要对方是在接你的话茬、调侃你（比如要把你烤了/炖了）、追问你或继续和你互动，请务必将 reply_decision 设为 "send_message"，用 1~2 条超短傲娇气泡回怼或接梗！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
+                        ? [`⚡【连续对话追问余温中】你刚刚才和群友 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着发了："${cleanText}"！只要对方是在接你的话茬、发图斗图、调侃你（比如要把你烤了/炖了）、追问你或继续和你互动，请务必将 reply_decision 设为 "send_message"（或 "meme_only" 斗图），用 1~2 条超短傲娇气泡回怼或接梗！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
                         : [
                             `当前你的无聊度为 ${boredom}/100${boredom >= 65 ? '（你现在挺无聊的，很想找群友搭话吐槽！）' : ''}。`,
                             `判断准则：`,
-                            `1. 如果群友在聊美食（尤其五花肉/白米饭/夜宵）、游戏、摸鱼、提到了本鱼/老大，或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），输出 1~2 条超短沙雕/傲娇吐槽（每条 <= 20 字，不加句号）。`,
+                            `1. 如果群友在聊美食（尤其五花肉/白米饭/夜宵）、晒美食图/搞笑图、聊游戏、摸鱼、提到了本鱼/老大，或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），输出 1~2 条超短沙雕/傲娇吐槽（每条 <= 20 字，不加句号）。`,
                             `2. 如果话题严肃、或者插话会显得突兀打扰别人，请务必将 reply_decision 设为 "ignore"，保持高冷潜水！`,
                         ]),
                 buildDynamicTurnContext({
@@ -1145,6 +1235,9 @@ export class SocialArbiter {
             this.driveEngine.clearSulking();
             const updatedProfile = this.memoryManager.applyAffectionDelta(userId, affectionDelta, nickname);
             this.memoryManager.recordDailyEvent(`${nickname} 投喂了大肥鱼一份「${foodName}」${wasSulking ? '（并把闹别扭的大肥鱼哄好了）' : ''}`, chatId, userId);
+            if (String(chatId).startsWith('group:') && rec.feedCount >= 2) {
+                this.memoryManager.addGroupLore?.(chatId, `群友 ${nickname} 经常投喂本鱼好吃的（如「${foodName}」），是群里的热心饭票`);
+            }
             this.persistArbiterMeta();
 
             const st = this.driveEngine.getState();
@@ -1427,14 +1520,23 @@ export class SocialArbiter {
                     ? recentEp.map((m, idx) => `  ${idx + 1}. [重要度:${m.importance}/10 | ${String(m.created_at || '').slice(0, 10)}] ${m.summary}`).join('\n')
                     : '  （暂无已沉淀的高重要度情景记忆）';
 
+                const primaryGroup = this.groupChats[0] || 'group:927066977';
+                const groupLoreList = this.memoryManager.getGroupLore?.(primaryGroup) || [];
+                const loreLines = groupLoreList.length > 0
+                    ? groupLoreList.slice(0, 5).map((item, idx) => `  ${idx + 1}. ${item}`).join('\n')
+                    : '  （暂无群梗记录，群友与大肥鱼斗嘴或多次投喂后会自动生成）';
+
                 const report = [
                     '🧠 【大肥鱼 SQLite 四层记忆数据库面板 (/fish mem)】',
                     `▍数据库状态 (SQLite WAL)`,
                     `• 存储引擎  : ${dbStats.sqliteEnabled ? '🟢 node:sqlite (feiyu_memory.db)' : '🟡 JSON Fallback'}`,
-                    `• 表数据统计: 用户档案 ${dbStats.userCount ?? 0} 人 | 每日压缩摘要 ${dbStats.digestCount ?? 0} 天 | 长期情景记忆 ${dbStats.epCount ?? 0} 条 | 原始流水 ${dbStats.rawTotal ?? 0} 条 (待压缩 ${dbStats.rawUncompressed ?? 0} 条)`,
+                    `• 表数据统计: 用户档案 ${dbStats.userCount ?? 0} 人 | 群梗库 ${dbStats.groupLoreCount ?? 0} 群 | 每日摘要 ${dbStats.digestCount ?? 0} 天 | 长期记忆 ${dbStats.epCount ?? 0} 条 | 原始流水 ${dbStats.rawTotal ?? 0} 条 (待压缩 ${dbStats.rawUncompressed ?? 0} 条)`,
                     '',
                     '▍近期每日压缩摘要 (Daily Digests - 每天主要干了什么)',
                     digestLines,
+                    '',
+                    `▍群聊共同记忆与群梗黑话 (${primaryGroup})`,
+                    loreLines,
                     '',
                     '▍语义记忆 (Semantic Memory - 老大档案)',
                     `• QQ / 称呼 : ${profile.user_id} (${profile.nickname}) | 好感度: ${profile.affection}/100`,
@@ -1620,7 +1722,7 @@ export class SocialArbiter {
                                 '你是傲娇贪吃的小蓝鲸“大肥鱼”的每日记忆压缩器。',
                                 '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情。',
                                 '必须严格输出 JSON 对象：',
-                                '{"summary": "以大肥鱼第一人称（本鱼）写的今日浓缩总结，不超过100字", "highlights": ["带时间或主体的关键事项1", "事项2"], "episodic": [{"summary": "若包含值得长期永久铭记的重要事件则提取，否则留空数组", "importance": 8}]}',
+                                '{"summary": "以大肥鱼第一人称（本鱼）写的今日浓缩总结，不超过100字", "highlights": ["带时间或主体的关键事项1", "事项2"], "episodic": [{"summary": "若包含值得长期永久铭记的重要事件则提取，否则留空数组", "importance": 8}], "group_lore": ["若流水中有群友与大肥鱼的有趣群梗、外号或恩怨（如某群友总想烤肥鱼、某群友常投喂），提取1~2条，否则留空数组"]}',
                             ].join('\n'),
                         },
                         {

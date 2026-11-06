@@ -149,6 +149,10 @@ export function buildDynamicTurnContext({
 
     if (memoryManager) {
         lines.push(memoryManager.formatSemanticProfileForPrompt(userId, nickname));
+        if (typeof memoryManager.formatGroupLoreForPrompt === 'function') {
+            const groupLore = memoryManager.formatGroupLoreForPrompt(chatId);
+            if (groupLore) lines.push(groupLore);
+        }
         if (typeof memoryManager.formatTemporaryAndDailyMemoryForPrompt === 'function') {
             const tempAndDaily = memoryManager.formatTemporaryAndDailyMemoryForPrompt(chatId);
             if (tempAndDaily) lines.push(tempAndDaily);
@@ -506,6 +510,9 @@ export class MessageDispatcher {
                     importance: action.memory_to_save.importance,
                     userId,
                 });
+                if (ref.kind === 'group' && typeof this.memoryManager.addGroupLore === 'function') {
+                    this.memoryManager.addGroupLore(ref.target, action.memory_to_save.summary);
+                }
                 this.log('info', `[FeiyuMemory] 已存入重要情景记忆 (importance=${action.memory_to_save.importance}): ${action.memory_to_save.summary}`);
                 if (typeof this.memoryManager.maybeTriggerReflection === 'function') {
                     void this.memoryManager.maybeTriggerReflection(userId);
