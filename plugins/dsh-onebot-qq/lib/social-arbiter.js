@@ -133,6 +133,16 @@ export class SocialArbiter {
             llmDailyCompressor: (dayKey, existingDigest, rawLogs) => this.compressDailyMemoryViaLLM(dayKey, existingDigest, rawLogs),
         });
 
+        // 从 SQLite 恢复各监听群最近一次发言时间戳，防止服务重启后 2~2.5h 冷场计时器归零
+        for (const gid of this.groupChats) {
+            try {
+                const row = this.memoryManager?.db?.prepare('SELECT MAX(ts) AS last_ts FROM raw_interaction_logs WHERE chat_id = ?').get(gid);
+                if (row?.last_ts && Number(row.last_ts) > 0) {
+                    this.groupLastActivityMap.set(gid, Number(row.last_ts));
+                }
+            } catch {}
+        }
+
         // 2. 初始化内驱力状态机 (Step 4)
         const initialDriveState = this.memoryManager.getPersistedDriveState() || {};
         this.driveEngine = options.driveEngine ?? new DriveEngine({
@@ -694,15 +704,12 @@ export class SocialArbiter {
             const idleMs = nowMs - lastTime;
             const cooldownUntil = this.groupCooldownUntilMap.get(chatId) || 0;
 
-            // 触发分支 A：高无聊度 (boredom > 80 且精力 > 30)，群内安静满 25~40 分钟即主动冒泡找群友求陪聊
-            const boredomWaitMs = 30 * 60_000;
-            const hitBoredomTrigger = isHighBoredom && idleMs >= boredomWaitMs && nowMs >= cooldownUntil;
-            // 触发分支 B：常规 2.0 ~ 2.5 小时随机冷场破冰
-            const hitIdleTrigger = idleMs >= thresholdMs;
+            // 统一按 2.0 ~ 2.5 小时随机冷场阈值触发破冰（若当前高无聊度则采用求陪聊文案风格）
+            const hitIdleTrigger = idleMs >= thresholdMs && nowMs >= cooldownUntil;
 
-            if (hitBoredomTrigger || hitIdleTrigger) {
+            if (hitIdleTrigger) {
                 const idleHoursText = (idleMs / 3600_000).toFixed(2);
-                const mode = hitBoredomTrigger && !hitIdleTrigger ? 'high_boredom' : 'idle';
+                const mode = isHighBoredom ? 'high_boredom' : 'idle';
                 this.log('info', `[FeiyuArbiter] 群聊 ${chatId} 触发主动冒泡 (mode=${mode}, boredom=${st.boredom}, idle=${idleHoursText}h)`);
                 try {
                     await this.triggerGroupIdleBubble(chatId, Number(idleHoursText), mode);
@@ -712,6 +719,7 @@ export class SocialArbiter {
                     this.groupLastActivityMap.set(chatId, this.now());
                     this.groupIdleThresholdMap.set(chatId, this.rollGroupIdleThresholdMs());
                     this.groupCooldownUntilMap.set(chatId, this.now() + Math.round(this.randFloat(30, 50) * 60_000));
+                    this.driveEngine.applyStatDelta({ boredom: -25 });
                 }
             }
         }
