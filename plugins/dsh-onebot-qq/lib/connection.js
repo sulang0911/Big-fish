@@ -69,6 +69,8 @@ export class OneBotConnection {
     config;
     /** Inbound message event handler; the bridge/plugin wires this. */
     onMessage = () => undefined;
+    /** Notice event handler (e.g. notify.poke); wired to Feiyu SocialArbiter. */
+    onNotice = () => undefined;
     /** Meta event handler (self_id learning). */
     onMeta = () => undefined;
     /** Connection-state callback. */
@@ -638,7 +640,15 @@ export class OneBotConnection {
                 }
                 return;
             }
-            // notice events are intentionally ignored (v1).
+            if (event.post_type === 'notice') {
+                try {
+                    this.onNotice(event);
+                }
+                catch (error) {
+                    this.log('error', 'onNotice handler failed: ' + describeError(error) + errorStack(error));
+                }
+                return;
+            }
         }
     }
 }

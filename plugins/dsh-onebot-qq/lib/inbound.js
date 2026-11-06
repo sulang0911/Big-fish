@@ -19,6 +19,7 @@ import { cqUnescape, detectExplicitMention, detectMention, parseMessage, segment
 import { buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed, RESTRICTED_PREFIX, sanitizeNickname, wrapUserMessage, } from './chat.js';
 import { describeError } from './errors.js';
 import { currentTrace, TRACE_REASONS } from './trace.js';
+import { buildDynamicTurnContext } from './action-protocol.js';
 /**
  * Reduce one raw OneBot 11 event to the neutral inbound shape, or null when
  * the event is not a processable chat message (notice/recall, meta, unknown
@@ -137,6 +138,11 @@ export class InboundPipeline {
             ? inbound.segments.filter(s => s.type === 'text').map(s => s.data.text ?? '').join('')
             : (inbound.raw || '');
 
+        const feiyu = this.ctx.feiyu?.();
+        const activityRes = feiyu
+            ? feiyu.notifyUserActivity(chatId, textContent, userId, inbound.nickname)
+            : undefined;
+
         // 群聊唤醒准则：老大在群聊中 @ 肥鱼、引用回复肥鱼、或者喊肥鱼昵称时唤醒回复；未呼叫时安静吃瓜不打扰老大与群友聊天
         const botNamePattern = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼)/i;
         const adminCalledByName = isAdmin && botNamePattern.test(textContent);
@@ -188,6 +194,9 @@ export class InboundPipeline {
             this.ctx.log('info', `[老大呼叫] 检测到老大在群 ${groupId} 喊肥鱼昵称 ("${textContent.trim()}"), 唤醒回复！`);
         }
         if (requireMentionForThisMessage && !mentioned) {
+            if (feiyu && await feiyu.evaluateGroupLurkAndChime(inbound)) {
+                return;
+            }
             const chimeProb = typeof this.ctx.config.randomChimeProbability === 'number'
                 ? this.ctx.config.randomChimeProbability
                 : 0;
@@ -288,11 +297,18 @@ export class InboundPipeline {
                     const timeStr = m.time ? new Date(m.time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
                     historyLines.push(`[${timeStr} ${label}]: ${cleanText.slice(0, 100)}`);
                 }
-                // 2. 若 API 未能拉取到，使用内存中的滑动历史兜底
+                // 2. 若 API 未能拉取到，优先融合 MemoryManager 的群聊 Working Memory 与内存滑动历史兜底
                 if (historyLines.length === 0) {
-                    const fallbackList = this.recentGroupMessages.get(groupId) || [];
-                    for (const item of fallbackList) {
-                        historyLines.push(`[${item.time} ${item.label}]: ${item.text}`);
+                    const wmList = feiyu?.memoryManager ? feiyu.memoryManager.getWorkingMemory(chatId, 10) : [];
+                    if (wmList.length > 0) {
+                        for (const item of wmList) {
+                            historyLines.push(`[${item.time} ${item.nickname}]: ${item.text}`);
+                        }
+                    } else {
+                        const fallbackList = this.recentGroupMessages.get(groupId) || [];
+                        for (const item of fallbackList) {
+                            historyLines.push(`[${item.time} ${item.label}]: ${item.text}`);
+                        }
                     }
                 }
                 if (historyLines.length > 0) {
@@ -305,14 +321,57 @@ export class InboundPipeline {
             final = contextBlock + restricted + prefix + final;
         }
         const role = isAdmin ? 'admin' : 'member';
-        // T2 (P1): the busy-turn policy seam runs AFTER every gate above (dedup /
-        // self / policy / mention / command / rate-limit) and only around the
-        // final dispatch — a queued or steered message has already paid for its
-        // rate-limit slot and passed the whole pipeline. `plain` = no media, no
-        // quote, no forward: the only shape eligible for steer (media-bearing
-        // messages always queue so the full media pipeline runs for their own
-        // turn). Seam absent = pre-T2 behavior (straight dispatch).
         const plain = inbound.media.length === 0 && inbound.replyId === undefined && inbound.forwardId === undefined;
+
+        if (feiyu) {
+            const dynamicTail = buildDynamicTurnContext({
+                driveEngine: feiyu.driveEngine,
+                memoryManager: feiyu.memoryManager,
+                chatId,
+                userId,
+                nickname,
+                queryText: content,
+                wokeUpFromSleep: Boolean(activityRes?.wokeUpFromSleep),
+            });
+            final = final + '\n' + dynamicTail;
+        }
+
+        // Step 4: 私聊纯文本消息（且当前无运行中回合需立即 steer 时）走 2000ms 滑动防抖缓冲池（最大等待 5000ms）
+        const activeChat = this.ctx.getChat(chatId);
+        const isChatBusy = activeChat !== undefined && activeChat.busy === true;
+        if (kind === 'private' && plain && !isChatBusy && feiyu?.debounceBuffer) {
+            feiyu.debounceBuffer.push(
+                chatId,
+                {
+                    chatId,
+                    userId,
+                    nickname,
+                    text: content,
+                    messageId: inbound.messageId,
+                    meta: { role, wokeUpFromSleep: Boolean(activityRes?.wokeUpFromSleep) },
+                },
+                async (mergedPayload) => {
+                    const mergedWrapped = wrapUserMessage(mergedPayload.text, mergedPayload.userId, mergedPayload.nickname);
+                    const tail = buildDynamicTurnContext({
+                        driveEngine: feiyu.driveEngine,
+                        memoryManager: feiyu.memoryManager,
+                        chatId: mergedPayload.chatId,
+                        userId: mergedPayload.userId,
+                        nickname: mergedPayload.nickname,
+                        queryText: mergedPayload.text,
+                        wokeUpFromSleep: Boolean(mergedPayload.meta?.wokeUpFromSleep),
+                    });
+                    const mergedFinal = mergedWrapped + '\n' + tail;
+                    if (this.ctx.interceptBusyTurn !== undefined
+                        && await this.ctx.interceptBusyTurn(mergedPayload.chatId, mergedFinal, mergedPayload.meta?.role || role, mergedPayload.nickname, true)) {
+                        return;
+                    }
+                    await this.ctx.dispatchFollowup(mergedPayload.chatId, mergedFinal, mergedPayload.meta?.role || role, mergedPayload.nickname);
+                }
+            );
+            return;
+        }
+
         if (this.ctx.interceptBusyTurn !== undefined
             && await this.ctx.interceptBusyTurn(chatId, final, role, nickname, plain)) {
             return;

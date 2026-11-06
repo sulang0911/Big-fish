@@ -17,6 +17,7 @@ import { extractForwardBlocks, scanSensitive, stripMarkdown } from './split.js';
 import { renderTextImage } from './t2i/index.js';
 import { describeError } from './errors.js';
 import { TRACE_REASONS } from './trace.js';
+import { looksLikeActionJson, splitPlainTextIntoBubbles } from './action-protocol.js';
 /**
  * T9 (#2): strip a leaked <user_message> boundary. wrapUserMessage (chat.ts)
  * wraps every inbound payload in `<user_message qq="…" nickname="…">…</user_message>`,
@@ -79,6 +80,23 @@ export class OutboundPipeline {
      * @returns the sent message ids.
      */
     sendToChat(chatId, text, options = {}) {
+        const feiyu = this.ctx.feiyu?.();
+        if (!options.bypassFeiyuInterceptor && feiyu?.dispatcher) {
+            const cleanCandidate = stripBoundaryLeakage(text);
+            const isActionJson = looksLikeActionJson(cleanCandidate);
+            const isConversationalMultiBubble = options.queuable === true
+                && !isActionJson
+                && cleanCandidate.length <= 120
+                && !cleanCandidate.includes('[[qq_forward]]')
+                && !cleanCandidate.includes('```')
+                && !/^[⚠️✅❌⏳⏹🐟🧠⚡]/.test(cleanCandidate.trim())
+                && splitPlainTextIntoBubbles(cleanCandidate).length > 1;
+            if (isActionJson || isConversationalMultiBubble) {
+                return feiyu.dispatcher.dispatch(chatId, cleanCandidate, {
+                    replyToMessageId: options.replyTo,
+                }).then(res => res.sentIds ?? []);
+            }
+        }
         return this.enqueue(chatId, async () => {
             if (!this.ctx.connected()) {
                 if (options.queuable === true) {
@@ -146,6 +164,14 @@ export class OutboundPipeline {
                     const id = await this.sendMsg(chatId, [{ type: 'text', data: { text: plain } }], options);
                     if (id !== undefined)
                         ids.push(id);
+                    if (!options.bypassFeiyuInterceptor && feiyu?.memoryManager && options.queuable === true) {
+                        feiyu.memoryManager.addWorkingMemory(chatId, {
+                            role: 'assistant',
+                            userId: 'self',
+                            nickname: '大肥鱼',
+                            text: plain,
+                        });
+                    }
                 }
                 else {
                     // pipeline-hooks.md #30: the empty-body skip used to be silent.

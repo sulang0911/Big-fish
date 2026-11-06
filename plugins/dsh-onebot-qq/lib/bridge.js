@@ -12,6 +12,7 @@ import { realpath } from 'node:fs/promises';
 import { transcriptLabel } from './stt.js';
 import { buildChatId, classifyUserRole, splitChatId } from './chat.js';
 import { buildPlatformPrompt } from './prompt.js';
+import { buildCachedSystemPromptPrefix } from './action-protocol.js';
 import { registerTools } from './tools.js';
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE } from './commands.js';
 import { relayHostCards as relayCards } from './card-relay.js';
@@ -51,6 +52,8 @@ export class ChatBridge {
     /** T3 (P2): the deferred-delivery tracker (超时补发) — timeout timers, the
      * JSONL registry, bounded send retries and restart recovery. */
     deferred;
+    /** 大肥鱼 v3.0 SocialArbiter 实例（由 index.js 挂载注入） */
+    feiyu;
     /** T4 (P3): the bounded registry of recent fault references — every minted
      * QQ-CONN-/MF- number is recorded here for the /healthcheck report and the
      * diagnostics archive file name. */
@@ -113,6 +116,7 @@ export class ChatBridge {
             isStopping: () => this.stopping,
             log: (level, message) => this.deps.log(level, message),
             config: deps.config,
+            feiyu: () => this.feiyu,
             // W1: outbound decision events ride the chat's initiating traceId; a
             // write with no mapped trace (proactive tool sends) starts a fresh one.
             trace: (chatId, event) => {
@@ -141,6 +145,7 @@ export class ChatBridge {
             sendToChat: (chatId, text) => this.sendToChat(chatId, text),
             log: (level, message) => this.deps.log(level, message),
             config: deps.config,
+            feiyu: () => this.feiyu,
         });
         this.interim = new InterimTracker({
             sendToChat: (chatId, text, options) => this.sendToChat(chatId, text, options),
@@ -474,6 +479,7 @@ export class ChatBridge {
             getChat: chatId => bridge.chats.get(chatId),
             hasChat: chatId => bridge.chats.has(chatId),
             resetChat: chatId => bridge.resetChat(chatId),
+            handleFishCommand: (chatId, arg) => bridge.feiyu?.handleFishCommand(chatId, arg),
             dispatchFollowup: (chatId, text, role, nickname) => bridge.dispatchFollowup(chatId, text, role, nickname),
             // T3 (P2): /stop 也显式终止该聊天的超时补发跟踪（其他聊天不受影响）。
             stopDeferredTracking: chatId => bridge.deferred.cancelChat(chatId),
@@ -938,6 +944,11 @@ export class ChatBridge {
      * not) push messages to QQ.
      */
     installChannelScope(agentCtx) {
+        agentCtx.systemPrompt.section({
+            name: 'channel:dafeiyu-v3-prefix',
+            order: 10,
+            text: buildCachedSystemPromptPrefix(this.feiyu?.memoryManager),
+        });
         agentCtx.systemPrompt.section({
             name: 'channel:dsh-onebot',
             order: 90,

@@ -10,7 +10,7 @@
  */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { IdleDouyinScheduler } from './idle-douyin.js';
+import { SocialArbiter } from './social-arbiter.js';
 // R1 部署加固：peer 依赖解析失败/关键模块缺失时必须显眼报错并 fail-loud，
 // 不能静默不挂载。静态 import 会在本模块任何代码运行之前就以晦涩的
 // ERR_MODULE_NOT_FOUND 失败（宿主侧表现为插件被静默跳过），因此运行时
@@ -428,20 +428,21 @@ export function apply(ctx, config) {
         configSnapshot: () => redactSnapshot(config),
         log,
     });
-    const targetChat = policy.adminUsers?.length > 0 ? `private:${policy.adminUsers[0]}` : 'private:2536218596';
+    const masterQQ = policy.adminUsers?.length > 0 ? String(policy.adminUsers[0]) : '2536218596';
+    const targetChat = `private:${masterQQ}`;
     const idleGroupChats = config.idleGroupChats?.length > 0 ? config.idleGroupChats : ['group:927066977'];
-    const douyinScheduler = new IdleDouyinScheduler(bridge, { 
+    const socialArbiter = new SocialArbiter(bridge, {
+        masterQQ,
         targetChat,
         targetChats: idleGroupChats,
-        idleHours: config.idleHours ?? 2.0
+        log,
     });
+    bridge.feiyu = socialArbiter;
     connection.onMessage = (event) => {
-        const messageType = event.message_type;
-        const groupId = event.group_id;
-        const userId = event.user_id;
-        const chatId = messageType === 'group' && groupId ? `group:${groupId}` : (userId ? `private:${userId}` : null);
-        douyinScheduler.notifyUserActivity(chatId);
         void bridge.handleInbound(event);
+    };
+    connection.onNotice = (event) => {
+        socialArbiter.handleNoticeEvent(event);
     };
     // W3/T4 (P3): connection faults mint QQ-CONN-… references through the
     // bridge (registry + trace + structured log); the transport appends the
@@ -453,10 +454,10 @@ export function apply(ctx, config) {
         bridge.start();
         connection.start();
         injectChannel?.start();
-        douyinScheduler.start();
+        socialArbiter.start();
         // QQ 平台说明与 qq_* 工具现按会话 agent 注入（见 ChatBridge.installChannelScope）
         return async () => {
-            douyinScheduler.stop();
+            socialArbiter.stop();
             await injectChannel?.stop();
             await bridge.stop();
             await connection.stop();

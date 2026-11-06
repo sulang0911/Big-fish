@@ -31,6 +31,13 @@ export const COMMANDS = [
     { name: 'plan', adminOnly: true, group: '输出', help: '[off|内容] 宿主计划模式', handler: (ctx, chatId, arg) => handlePlanCommand(ctx, chatId, arg) },
     { name: 'permission', adminOnly: true, group: '会话', help: '[w|f|预设名|序号] 切换权限预设（w=工作区可写+需审批，f=全盘+免审批）', handler: (ctx, chatId, arg) => handlePermissionCommand(ctx, chatId, arg) },
     { name: 'goal', adminOnly: true, group: '其他', help: '[目标|clear] 目标记录', handler: (ctx, chatId, arg) => handleGoalCommand(ctx, chatId, arg) },
+    { name: 'fish', adminOnly: true, group: '查询', help: '[status|mem|tick] 大肥鱼 v3.0 生理状态/三层记忆/主动破冰测试（零 Token 检视）', handler: async (ctx, chatId, arg) => {
+            if (typeof ctx.handleFishCommand === 'function') {
+                await ctx.handleFishCommand(chatId, arg);
+            } else {
+                await ctx.sendToChat(chatId, '⚠️ 大肥鱼 v3.0 SocialArbiter 尚未挂载。');
+            }
+        } },
     { name: 'help', adminOnly: true, group: '其他', help: '本帮助', handler: async (ctx, chatId) => {
             await ctx.sendToChat(chatId, helpText());
         } },
