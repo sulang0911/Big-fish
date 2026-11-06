@@ -82,6 +82,45 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
     ].join('\n');
 }
 
+/** 拟人打字手滑同音错别字与秒纠正词表 */
+export const CUTE_TYPO_TABLE = [
+    { word: '五花肉', typo: '五花漏', fix: '*五花肉！嘴瓢打错字了😣' },
+    { word: '白米饭', typo: '白米范', fix: '*白米饭！手滑打错了捏' },
+    { word: '红烧肉', typo: '红烧漏', fix: '*红烧肉！饿得爪子打滑了' },
+    { word: '本鱼', typo: '笨鱼', fix: '*本鱼！！破输入法害我，才不是笨鱼！😤' },
+    { word: '摸鱼', typo: '摸于', fix: '*摸鱼！手滑按错啦' },
+    { word: '睡觉', typo: '水觉', fix: '*睡觉！困得眼花打错字了zzZ' },
+    { word: '好吃', typo: '好尺', fix: '*好吃！输入法又乱蹦字' },
+    { word: '干饭', typo: '干范', fix: '*干饭！手滑打错啦' },
+];
+
+/**
+ * 构建星期几、周末与时段氛围感知描述
+ */
+export function formatWeekdayAndTimePerception(now = new Date()) {
+    const days = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+    const dayIdx = now.getDay();
+    const dayName = days[dayIdx];
+    const hour = now.getHours();
+    let vibe = '日常摸鱼时段';
+    if (dayIdx === 0 || dayIdx === 6) {
+        vibe = '快乐周末休息日（不用早起打工，适合赖床打游戏吃大餐）';
+    } else if (dayIdx === 5 && hour >= 14) {
+        vibe = '周五下午（马上就要放假迎周末啦，心已经飞了！）';
+    } else if (dayIdx === 1 && hour < 12) {
+        vibe = '周一上午（打工综合症发作，困困的想摸鱼）';
+    } else if (hour >= 11 && hour <= 13) {
+        vibe = '午饭与午休干饭时间';
+    } else if (hour >= 15 && hour <= 16) {
+        vibe = '下午茶摸鱼犯馋时间';
+    } else if (hour >= 17 && hour <= 19) {
+        vibe = '晚饭干饭与下班放松时间';
+    } else if (hour >= 22 || hour < 2) {
+        vibe = '深夜夜猫子时间';
+    }
+    return `${dayName} · ${vibe}`;
+}
+
 /**
  * 构建动态回合尾部上下文（置于 Prompt 最末端，避免破坏前缀缓存）
  */
@@ -94,17 +133,41 @@ export function buildDynamicTurnContext({
     queryText = '',
     eventPayload = null,
     wokeUpFromSleep = false,
+    envContext = null,
+    forceVoiceSurprise = false,
 }) {
     const lines = ['\n=== ⏱️ 实时生理与记忆感知注入 (Dynamic Turn Tail) ==='];
     if (driveEngine) {
         lines.push(driveEngine.formatStateForPrompt({ wokeUpFromSleep }));
     }
+    const nowDate = driveEngine?.now ? new Date(driveEngine.now()) : new Date();
+    const resolvedEnv = envContext || driveEngine?.envContext || null;
+    const weekdayPerception = formatWeekdayAndTimePerception(nowDate);
+    const weatherPart = resolvedEnv?.weather ? ` | 实时天气=${resolvedEnv.weather}` : '';
+    const pcPart = resolvedEnv?.pcActivity ? ` | 老大电脑当前活动=${resolvedEnv.pcActivity}` : '';
+    lines.push(`【时空与环境感知】时段=${weekdayPerception}${weatherPart}${pcPart}`);
+
     if (memoryManager) {
         lines.push(memoryManager.formatSemanticProfileForPrompt(userId, nickname));
         const retrieved = memoryManager.retrieveEpisodicMemories(queryText, 3, userId);
         const epText = memoryManager.formatEpisodicMemoriesForPrompt(retrieved);
         if (epText) lines.push(epText);
     }
+
+    // 偶发主动发语音撒娇/吐槽（与老大私聊且精力充沛或刚被吵醒时小概率触发）
+    const isMasterPrivate = String(chatId || '') === `private:${DEFAULT_MASTER_QQ}` || String(userId) === String(DEFAULT_MASTER_QQ);
+    const snap = driveEngine?.getSnapshot ? driveEngine.getSnapshot() : null;
+    const shouldSurpriseVoice = forceVoiceSurprise || (
+        isMasterPrivate &&
+        String(chatId || '').startsWith('private:') &&
+        queryText &&
+        !String(queryText).trim().startsWith('/') &&
+        (wokeUpFromSleep || ((snap?.energy ?? 80) > 78 && Math.random() < 0.14))
+    );
+    if (shouldSurpriseVoice) {
+        lines.push('🎙️【主动发语音小惊喜触发：你现在很有兴致（或迷迷糊糊想向老大撒娇），请在本轮直接调用 `qq_send_tts` 工具用语音跟老大说一句简短可爱的话（10~25字），给老大一个惊喜！】');
+    }
+
     if (eventPayload) {
         lines.push(`【当前触发事件】${JSON.stringify(eventPayload)}`);
     }
@@ -352,6 +415,7 @@ export class MessageDispatcher {
         this.memoryManager = deps.memoryManager;
         this.log = deps.log ?? (() => {});
         this.sleep = deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+        this.lastTypoAt = 0;
     }
 
     /**
@@ -470,16 +534,35 @@ export class MessageDispatcher {
         }
 
         // decision === 'send_message'
-        const bubbles = Array.isArray(action.messages) ? action.messages : [];
+        const bubbles = Array.isArray(action.messages) ? [...action.messages] : [];
         const useQuote = action.qq_action?.type === 'quote_reply' && options.replyToMessageId !== undefined;
+
+        // 拟人手滑打错字 + 秒纠正（精力 < 35 犯困时 15% 概率，日常 4% 概率，冷却 15 分钟）
+        const nowMs = Date.now();
+        const energyVal = this.driveEngine?.getSnapshot ? (this.driveEngine.getSnapshot().energy ?? 80) : 80;
+        const typoProb = energyVal < 35 ? 0.15 : 0.04;
+        const canTryTypo = options.forceTypo === true || ((nowMs - this.lastTypoAt) > 15 * 60_000 && Math.random() < typoProb);
+        let typoInjected = false;
 
         for (let i = 0; i < bubbles.length; i++) {
             if (options.shouldAbort?.()) {
                 this.log('info', `[FeiyuDispatcher] 气泡发送中途检测到用户新消息抢占，中止剩余 ${bubbles.length - i} 条气泡`);
                 return { aborted: true, sentIds };
             }
-            const bubble = bubbles[i];
+            let bubble = bubbles[i];
             if (!bubble) continue;
+
+            let typoFixBubble = null;
+            if (canTryTypo && !typoInjected) {
+                const hit = CUTE_TYPO_TABLE.find(item => bubble.includes(item.word));
+                if (hit) {
+                    bubble = bubble.replace(hit.word, hit.typo);
+                    typoFixBubble = hit.fix;
+                    typoInjected = true;
+                    this.lastTypoAt = nowMs;
+                }
+            }
+
             if (i > 0) {
                 const delayMs = computeBubbleDelayMs(bubble);
                 await this.sleep(delayMs);
@@ -503,6 +586,20 @@ export class MessageDispatcher {
                     nickname: '大肥鱼',
                     text: bubble,
                 });
+            }
+
+            // 若本条气泡触发了手滑错别字，间隔约 1 秒立即追发一条纠正气泡
+            if (typoFixBubble && !options.shouldAbort?.()) {
+                await this.sleep(950);
+                if (!options.shouldAbort?.()) {
+                    const fixIds = await this.sendTextBubble(chatId, typoFixBubble, {});
+                    if (Array.isArray(fixIds)) {
+                        sentIds.push(...fixIds);
+                    } else if (fixIds !== undefined) {
+                        sentIds.push(fixIds);
+                    }
+                    this.log('info', `[FeiyuDispatcher] 触发拟人手滑错别字秒纠正: "${typoFixBubble}"`);
+                }
             }
         }
 

@@ -60,6 +60,50 @@ async function getSystemHardwareBrief() {
     return gpuInfo ? `GPU(${gpuInfo}), 可用内存 ${ramFreeGB}GB` : `可用内存 ${ramFreeGB}GB`;
 }
 
+/**
+ * 探测老大当前在电脑上运行的游戏、创作软件或前台窗口标题（大肥鱼与老大共处同一台电脑的时空感知）
+ */
+export async function detectBossPcActivity() {
+    try {
+        const psCmd = 'powershell -NoProfile -Command "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-Process | Where-Object { $_.MainWindowTitle } | Select-Object -First 12 ProcessName, MainWindowTitle | ConvertTo-Json -Compress"';
+        const { stdout } = await execAsync(psCmd, { timeout: 2500 });
+        const raw = JSON.parse(stdout.trim() || '[]');
+        const list = Array.isArray(raw) ? raw : [raw];
+        const activities = [];
+        for (const item of list) {
+            const name = String(item?.ProcessName || '').toLowerCase();
+            const title = String(item?.MainWindowTitle || '').trim();
+            if (!name && !title) continue;
+            if (/dazstudio/i.test(name) || /daz studio/i.test(title)) {
+                activities.push('正在用 Daz Studio 捏人/做 3D 渲染');
+            } else if (/yuanshen|genshin/i.test(name)) {
+                activities.push('正在玩《原神》');
+            } else if (/starrail/i.test(name)) {
+                activities.push('正在玩《崩坏：星穹铁道》');
+            } else if (/client-win64-shipping/i.test(name) || /鸣潮|wuthering/i.test(title)) {
+                activities.push('正在玩《鸣潮》');
+            } else if (/zenlesszonezero/i.test(name)) {
+                activities.push('正在玩《绝区零》');
+            } else if (/blender/i.test(name)) {
+                activities.push('正在用 Blender 建模');
+            } else if (/code|cursor|windsurf|idea64|pycharm/i.test(name)) {
+                activities.push(`正在写代码 (${title.slice(0, 35)})`);
+            } else if (/potplayer|vlc|mpv/i.test(name)) {
+                activities.push(`正在看视频 (${title.slice(0, 30)})`);
+            } else if (/cloudmusic|qqmusic|spotify/i.test(name)) {
+                activities.push(`正在听歌 (${title.slice(0, 30)})`);
+            } else if (/chrome|msedge|firefox/i.test(name) && title && !/新标签页|New Tab|抖音/i.test(title)) {
+                const cleanTitle = title.replace(/\s*-\s*(Google Chrome|Microsoft​ Edge|Mozilla Firefox).*$/i, '').trim();
+                if (cleanTitle) activities.push(`浏览器开着「${cleanTitle.slice(0, 28)}」`);
+            }
+        }
+        const unique = [...new Set(activities)];
+        return unique.length > 0 ? unique.slice(0, 2).join('；') : '电脑桌面挂机摸鱼中';
+    } catch {
+        return '';
+    }
+}
+
 export class SocialArbiter {
     /**
      * @param {object} bridge - ChatBridge 实例
@@ -155,11 +199,96 @@ export class SocialArbiter {
 
         // Fetch 注入点（方便单测 mock）
         this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+
+        // 时空与电脑环境感知缓存
+        this.cachedPcActivity = '电脑桌面摸鱼中';
+        this.cachedWeather = '';
+        this.lastEnvRefreshAt = 0;
+        this.lastWeatherRefreshAt = 0;
+        this.lastEmojiReactAt = 0;
+        this.driveEngine.envContext = { pcActivity: this.cachedPcActivity, weather: this.cachedWeather };
     }
 
     start() {
         this.driveEngine.start();
+        void this.refreshEnvironmentCache();
         this.log('info', `[FeiyuArbiter] v3.0 自主数字生命引擎已启动 (master=${this.masterChatId}, unanswered=${this.unansweredProactiveCount}/2)`);
+    }
+
+    getEnvironmentContext() {
+        return {
+            pcActivity: this.cachedPcActivity || '',
+            weather: this.cachedWeather || '',
+        };
+    }
+
+    async refreshEnvironmentCache() {
+        const nowMs = this.now();
+        if (nowMs - this.lastEnvRefreshAt >= 60_000) {
+            this.lastEnvRefreshAt = nowMs;
+            const pcAct = await detectBossPcActivity();
+            if (pcAct) this.cachedPcActivity = pcAct;
+        }
+        if (!this.cachedWeather || (nowMs - this.lastWeatherRefreshAt) >= 60 * 60_000) {
+            this.lastWeatherRefreshAt = nowMs;
+            try {
+                const res = await this.fetchImpl('https://wttr.in/?format=%C+%t&lang=zh', {
+                    signal: AbortSignal.timeout(3000),
+                });
+                if (res.ok) {
+                    const txt = (await res.text()).trim();
+                    if (txt && txt.length <= 30 && !txt.includes('<')) {
+                        this.cachedWeather = txt;
+                    }
+                }
+            } catch {}
+        }
+        this.driveEngine.envContext = this.getEnvironmentContext();
+        return this.driveEngine.envContext;
+    }
+
+    /**
+     * 给收到的 QQ 消息顺手贴一个表情回应 (NapCat `set_msg_emoji_like`)
+     */
+    async maybeReactEmojiToMessage(messageId, text = '', isAdmin = false, kind = 'private', forceReact = false) {
+        const msgId = Number(messageId);
+        if (!Number.isFinite(msgId) || msgId <= 0) return false;
+        const clean = String(text || '').trim();
+        if (!clean || clean.startsWith('/')) return false;
+
+        const nowMs = this.now();
+        // 避免频繁贴表情刷屏，至少间隔 25 秒
+        if (!forceReact && nowMs - this.lastEmojiReactAt < 25_000) return false;
+
+        let emojiId = null;
+        if (this.driveEngine.isSulking(nowMs)) {
+            // 闹别扭记小本本时，给对方消息贴个傲娇翻白眼(38)或哼唧表情
+            if (forceReact || Math.random() < 0.55) emojiId = '38';
+        } else if (/(五花肉|白米饭|红烧肉|奶茶|夜宵|烧烤|火锅|好吃|投喂|干饭|加餐)/i.test(clean)) {
+            if (forceReact || Math.random() < 0.5) emojiId = ['66', '319', '76'][Math.floor(Math.random() * 3)];
+        } else if (/(可爱|乖|聪明|真棒|喜欢肥鱼|喜欢本鱼|摸摸|抱抱|爱你|贴贴)/i.test(clean)) {
+            if (forceReact || Math.random() < 0.65) emojiId = ['66', '49', '319'][Math.floor(Math.random() * 3)];
+        } else if (isAdmin && kind === 'private' && (forceReact || Math.random() < 0.22)) {
+            emojiId = ['76', '66', '175', '285'][Math.floor(Math.random() * 4)];
+        } else if (kind === 'group' && /(哈哈|笑死|666|牛逼|绝了|摸鱼)/i.test(clean) && (forceReact || Math.random() < 0.25)) {
+            emojiId = ['76', '285'][Math.floor(Math.random() * 2)];
+        }
+
+        if (!emojiId) return false;
+        this.lastEmojiReactAt = nowMs;
+        try {
+            const callFn = this.bridge?.guardedConnectionCall
+                ? (act, p) => this.bridge.guardedConnectionCall(act, p)
+                : (act, p) => this.bridge?.deps?.connection?.call?.(act, p);
+            await callFn('set_msg_emoji_like', {
+                message_id: msgId,
+                emoji_id: String(emojiId),
+            });
+            this.log('info', `[FeiyuEmojiLike] 已给消息 ${msgId} 贴表情回应 (emoji_id=${emojiId})`);
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     stop() {
@@ -287,11 +416,14 @@ export class SocialArbiter {
 
         const wokeUpFromSleep = this.driveEngine.isSleeping(new Date(this.now()));
         this.driveEngine.applyStatDelta({ boredom: -10 });
+        if (count >= 3) {
+            this.driveEngine.enterSulking(`刚才被 ${userId} 连续狂戳了 ${count} 下脑门，气鼓鼓记小本本中`);
+        }
 
         const prompt = [
             `用户 (QQ: ${userId}) 刚刚在 5 秒内连续戳了你 ${count} 下！`,
             count >= 3
-                ? '你被戳得脸颊鼓起、呆毛炸立，非常傲娇不服气，请立刻在 JSON 中输出 1~2 条短气泡吐槽并设置 qq_action.type = "poke" 反戳回去（或发 angry/fish_slap 表情包）！'
+                ? '你被戳得脸颊鼓起、呆毛炸立，非常傲娇不服气（已经记进小本本闹别扭了），请立刻在 JSON 中输出 1~2 条短气泡吐槽并设置 qq_action.type = "poke" 反戳回去（或发 angry/fish_slap 表情包）！'
                 : '请根据你当前的心情和生理状态，输出 JSON 动作协议回应这次戳一戳（可以傲娇哼唧、讨食、或者反戳回去）。',
             buildDynamicTurnContext({
                 driveEngine: this.driveEngine,
@@ -301,6 +433,7 @@ export class SocialArbiter {
                 queryText: '戳一戳',
                 eventPayload: pokePayload,
                 wokeUpFromSleep,
+                envContext: this.getEnvironmentContext(),
             }),
         ].join('\n');
 
@@ -327,6 +460,7 @@ export class SocialArbiter {
      * @param {object} state
      */
     async onBackgroundDriveTick(state) {
+        void this.refreshEnvironmentCache();
         if (!this.isProactiveRunning) {
             const check = this.evaluateProactiveDmTrigger(state, false);
             if (check.shouldTrigger) {
@@ -555,12 +689,15 @@ export class SocialArbiter {
             const reason = opts.reason || check.reason;
             this.log('info', `[FeiyuArbiter] 触发主动私聊思考 (force=${force}): ${reason}`);
 
+            await this.refreshEnvironmentCache();
+            const envCtx = this.getEnvironmentContext();
             const hwBrief = await getSystemHardwareBrief();
             const prompt = [
                 `【系统内部事件：proactive_dm_tick（主动找老大私聊破冰）】`,
                 `触发原因：${reason}`,
                 `顺带感知到的电脑状态：${hwBrief}`,
-                `请以大肥鱼的傲娇/贪吃/粘人本色，主动给老大发 1~3 条短气泡（每条 <= 25 字，句尾不加句号），可以撒娇抱怨无聊、讨要脆皮五花肉/白米饭、关心老大、或者顺便提一句帮老大巡检了电脑状态。`,
+                ...(envCtx.pcActivity ? [`感知到老大当前电脑画面：${envCtx.pcActivity}`] : []),
+                `请以大肥鱼的傲娇/贪吃/粘人本色，主动给老大发 1~3 条短气泡（每条 <= 25 字，句尾不加句号），可以撒娇抱怨无聊、讨要脆皮五花肉/白米饭、吐槽/关心老大正在玩的软件或游戏、或者顺便提一句帮老大巡检了电脑状态。`,
                 `必须严格输出 JSON Action Schema！`,
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
@@ -569,6 +706,7 @@ export class SocialArbiter {
                     userId: this.masterQQ,
                     queryText: reason,
                     eventPayload: { event: 'proactive_dm_tick', reason, force },
+                    envContext: envCtx,
                 }),
             ].join('\n');
 
@@ -954,7 +1092,9 @@ export class SocialArbiter {
             const boredomDelta = Math.round(pubBoredom * mult * 10) / 10;
             const affectionDelta = Math.round(pubAffection * mult * 10) / 10;
 
+            const wasSulking = this.driveEngine.isSulking();
             this.driveEngine.applyStatDelta({ hunger: hungerDelta, energy: energyDelta, boredom: boredomDelta });
+            this.driveEngine.clearSulking();
             const updatedProfile = this.memoryManager.applyAffectionDelta(userId, affectionDelta, nickname);
             this.persistArbiterMeta();
 
@@ -962,6 +1102,7 @@ export class SocialArbiter {
             const pubTag = this.getPublicRelationshipTag(updatedProfile.affection);
             const msg = [
                 `🍖 【投喂成功 (${rec.feedCount}/${MAX_DAILY_FEEDS})】${nickname} 赏了大肥鱼一份「${foodName}」！`,
+                ...(wasSulking ? [`• 💢➡️💖 哄好成功: 哼，看在「${foodName}」的份上，本鱼把小本本上的仇划掉原谅你啦！`] : []),
                 `• 属性变化: 饱食度 +${pubHunger} | 精力 +${pubEnergy} | 无聊度 ${pubBoredom} | 好感度 +${pubAffection}`,
                 `• 当前状态: 饱食度 ${st.hunger}/100 | 精力 ${st.energy}/100 | 无聊度 ${st.boredom}/100 | 心境: ${st.mood}`,
                 `• 你的好感度: ${updatedProfile.affection}/100 (${pubTag})`,
@@ -996,7 +1137,9 @@ export class SocialArbiter {
             const energyDelta = Math.round(pubEnergy * (isAdmin ? 3 : 1) * 10) / 10;
             const affectionDelta = Math.round(pubAffection * mult * 10) / 10;
 
+            const wasSulking = this.driveEngine.isSulking();
             this.driveEngine.applyStatDelta({ boredom: boredomDelta, energy: energyDelta });
+            this.driveEngine.clearSulking();
             const updatedProfile = this.memoryManager.applyAffectionDelta(userId, affectionDelta, nickname);
             this.persistArbiterMeta();
 
@@ -1012,6 +1155,7 @@ export class SocialArbiter {
             const msg = [
                 `🫳 【摸鱼成功 (${rec.patCount}/${MAX_DAILY_PATS})】`,
                 reaction,
+                ...(wasSulking ? [`• 💢➡️💖 哄好成功: 被你顺毛摸舒服了，本鱼傲娇地把记仇小本本收起来原谅你咯~`] : []),
                 `• 属性变化: 无聊度 ${pubBoredom} | 精力 ${pubEnergy} | 好感度 +${pubAffection}`,
                 `• 当前状态: 无聊度 ${st.boredom}/100 | 精力 ${st.energy}/100 | 心境: ${st.mood}`,
                 `• 你的好感度: ${updatedProfile.affection}/100 (${pubTag})`,
@@ -1118,6 +1262,7 @@ export class SocialArbiter {
             const msg = [
                 `📖 【偷看大肥鱼的秘密小本本】`,
                 `• 当前心情: ${st.mood} (饱食度 ${st.hunger}/100 | 精力 ${st.energy}/100 | 无聊度 ${st.boredom}/100)`,
+                `• 记仇状态: ${st.sulking ? `💢 正在闹别扭记小本本中！（原因：${st.sulkingReason || '不给五花肉还欺负本鱼'}，快发 /fish feed 哄好本鱼！）` : '🟢 心情尚可，小本本上暂时没有记仇'}`,
                 `• 脑内执念: ${st.current_obsession || '什么时候才能吃到热腾腾的脆皮五花肉拌白米饭'}`,
                 `• 今日碎碎念: “${st.diary || '今天也要做一个合格的摸鱼干饭搭子！(｡•̀ᴗ-)✧'}”`,
                 `• 近期小发现:\n${discoveries}`,
@@ -1136,6 +1281,8 @@ export class SocialArbiter {
                 return await this.triggerSelfSurfWeb({ chatId, reason: 'manual_command', siteHint });
             }
             if (sub === 'status') {
+                await this.refreshEnvironmentCache();
+                const envCtx = this.getEnvironmentContext();
                 const st = this.driveEngine.getState();
                 const profile = this.memoryManager.getSemanticProfile(this.masterQQ);
                 const rec = this.getDailyUserRecord(this.masterQQ);
@@ -1149,11 +1296,14 @@ export class SocialArbiter {
                 const report = [
                     '🐟 【大肥鱼 v3.0 实时内驱力与风控面板 (/fish status)】',
                     `• 生理心境 (mood)   : ${st.mood}${sleeping ? ' 💤(睡眠期 01:30~07:30)' : ''}`,
+                    `• 记小本本 (sulking): ${st.sulking ? `💢 闹别扭中 (${st.sulkingReason})` : '🟢 未记仇'}`,
                     `• 饱食度 (hunger)   : ${st.hunger} / 100 ${st.hunger < 20 ? '⚠️(饿扁讨食中)' : ''}`,
                     `• 精力值 (energy)   : ${st.energy} / 100`,
                     `• 无聊度 (boredom)  : ${st.boredom} / 100 ${st.boredom > 85 ? '🔥(渴望找老大)' : ''}`,
                     `• 老大好感度        : ${profile.affection} / 100 (${profile.relationship_tag})`,
                     `• 今日互动 (老大)   : 打招呼 ${rec.greeted ? '✅' : '⏳'} | 投喂 ${rec.feedCount || 0}/5 次 | 摸摸 ${rec.patCount || 0}/3 次`,
+                    `• 电脑前台感知      : ${envCtx.pcActivity || '未检测到特定应用'}`,
+                    `• 窗外实时天气      : ${envCtx.weather || '暂未获取'}`,
                     `• 未回复熔断计数    : ${this.unansweredProactiveCount} / 2 ${circuitLocked ? '🔒(已触发防骚扰熔断，待老大回复解锁)' : '🟢(正常)'}`,
                     `• 主动破冰冷却锁    : ${cooldownRemainMin > 0 ? `⏳ 剩余 ${cooldownRemainMin} 分钟` : '🟢 已就绪'}`,
                 ].join('\n');

@@ -85,6 +85,8 @@ export class InboundPipeline {
     seenMessages = new Map();
     /** 群聊近期消息滑动缓存: groupId → Array<{ time, label, text }> */
     recentGroupMessages = new Map();
+    /** 群聊复读机队形检测缓存: groupId → { text, senders: Set, count, lastRepeatedText, lastRepeatAt } */
+    groupRepeatState = new Map();
     constructor(ctx, options = {}) {
         this.ctx = ctx;
         this.dedupMaxEntries = options.dedupMaxEntries ?? DEDUP_MAX_ENTRIES;
@@ -142,6 +144,9 @@ export class InboundPipeline {
         const activityRes = feiyu
             ? feiyu.notifyUserActivity(chatId, textContent, userId, inbound.nickname)
             : undefined;
+        if (feiyu && inbound.messageId !== undefined && typeof feiyu.maybeReactEmojiToMessage === 'function') {
+            void feiyu.maybeReactEmojiToMessage(inbound.messageId, textContent, isAdmin, kind);
+        }
 
         // 群聊唤醒准则：老大在群聊中 @ 肥鱼、引用回复肥鱼、或者喊肥鱼昵称时唤醒回复；或者任何人使用公开 /fish 互动命令时放行至命令路由
         const botNamePattern = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼)/i;
@@ -196,6 +201,36 @@ export class InboundPipeline {
             this.ctx.log('info', `[老大呼叫] 检测到老大在群 ${groupId} 喊肥鱼昵称 ("${textContent.trim()}"), 唤醒回复！`);
         }
         if (requireMentionForThisMessage && !mentioned) {
+            // 人类本质：群聊“复读机 +1”队形检测（当群内 >=2 位群友或连续 3 条刷相同短句时，自动跟队形复读一次）
+            const cleanGroupText = (inbound.text || textContent || '').replace(/\r?\n/g, ' ').trim();
+            if (cleanGroupText && cleanGroupText.length >= 1 && cleanGroupText.length <= 35 && !cleanGroupText.startsWith('/')) {
+                const nowMs = this.now();
+                let rep = this.groupRepeatState.get(groupId);
+                if (!rep || rep.text !== cleanGroupText) {
+                    rep = {
+                        text: cleanGroupText,
+                        senders: new Set([userId]),
+                        count: 1,
+                        lastRepeatedText: rep?.lastRepeatedText || '',
+                        lastRepeatAt: rep?.lastRepeatAt || 0,
+                    };
+                    this.groupRepeatState.set(groupId, rep);
+                } else {
+                    rep.senders.add(userId);
+                    rep.count += 1;
+                    if (
+                        (rep.senders.size >= 2 || rep.count >= 3) &&
+                        rep.lastRepeatedText !== cleanGroupText &&
+                        (nowMs - rep.lastRepeatAt) > 2 * 60_000
+                    ) {
+                        rep.lastRepeatedText = cleanGroupText;
+                        rep.lastRepeatAt = nowMs;
+                        this.ctx.log('info', `[群聊复读机 +1] 检测到群 ${groupId} 队形 ("${cleanGroupText}")，跟风复读一次！`);
+                        await this.ctx.sendToChat(chatId, cleanGroupText);
+                        return;
+                    }
+                }
+            }
             if (feiyu && await feiyu.evaluateGroupLurkAndChime(inbound)) {
                 return;
             }
@@ -334,6 +369,7 @@ export class InboundPipeline {
                 nickname,
                 queryText: content,
                 wokeUpFromSleep: Boolean(activityRes?.wokeUpFromSleep),
+                envContext: typeof feiyu.getEnvironmentContext === 'function' ? feiyu.getEnvironmentContext() : null,
             });
             final = final + '\n' + dynamicTail;
         }
@@ -362,6 +398,7 @@ export class InboundPipeline {
                         nickname: mergedPayload.nickname,
                         queryText: mergedPayload.text,
                         wokeUpFromSleep: Boolean(mergedPayload.meta?.wokeUpFromSleep),
+                        envContext: typeof feiyu.getEnvironmentContext === 'function' ? feiyu.getEnvironmentContext() : null,
                     });
                     const mergedFinal = mergedWrapped + '\n' + tail;
                     if (this.ctx.interceptBusyTurn !== undefined

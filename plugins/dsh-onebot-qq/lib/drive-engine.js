@@ -20,6 +20,12 @@ function randFloat(min, max) {
     return Math.round((min + Math.random() * (max - min)) * 10) / 10;
 }
 
+/** 故意逗鱼/欺负大肥鱼触发“闹别扭记小本本”的正则 */
+export const TEASE_BULLY_REGEX = /(不给你吃|不喂你|饿死你|把你炖了|红烧肥鱼|清蒸肥鱼|烤肥鱼|全吃光|一口都不留|略略略|傻鱼|笨鱼|丑鱼|死鱼|胖头鱼)/i;
+
+/** 哄大肥鱼开心消气的正则 */
+export const COAX_COMFORT_REGEX = /(哄哄|摸摸|乖啦|不气|别生气|原谅|给你吃|请你吃|给你留了|最喜欢肥鱼|最喜欢本鱼|抱抱|亲亲|对不起嘛|错啦|五花肉给你|白米饭给你)/i;
+
 /**
  * 判断某个时间是否处于深夜睡眠时段 (01:30 ~ 07:30)
  */
@@ -60,6 +66,9 @@ export class DriveEngine {
             mood: '元气满满想干饭',
             sleeping: false,
             wokenUpAt: 0,
+            sulking: false,
+            sulkingReason: '',
+            sulkingSince: 0,
             current_obsession: '正在琢磨怎样能吃到外脆里嫩的脆皮五花肉，还有怎样多摸鱼陪伴老大',
             recent_discoveries: [
                 '刚学习了一道秘制红烧肉绝密配方，据说拌大米饭能连吃三大碗！',
@@ -75,6 +84,9 @@ export class DriveEngine {
                 hunger: clamp(initialOverride.hunger ?? 80, 0, 100),
                 energy: clamp(initialOverride.energy ?? 85, 0, 100),
                 boredom: clamp(initialOverride.boredom ?? 25, 0, 100),
+                sulking: Boolean(initialOverride.sulking ?? false),
+                sulkingReason: String(initialOverride.sulkingReason || ''),
+                sulkingSince: Number(initialOverride.sulkingSince || 0),
             };
         }
         try {
@@ -89,6 +101,9 @@ export class DriveEngine {
                         boredom: clamp(raw.boredom ?? 25, 0, 100),
                         sleeping: Boolean(raw.sleeping ?? isSleepWindow()),
                         wokenUpAt: Number(raw.wokenUpAt || 0),
+                        sulking: Boolean(raw.sulking ?? false),
+                        sulkingReason: String(raw.sulkingReason || ''),
+                        sulkingSince: Number(raw.sulkingSince || 0),
                     };
                 }
             }
@@ -138,6 +153,38 @@ export class DriveEngine {
         return this.state.wokenUpAt > 0 && (nowMs - this.state.wokenUpAt) < 15 * 60_000 && isSleepWindow(new Date(nowMs));
     }
 
+    isSulking(nowMs = this.now()) {
+        if (!this.state.sulking) return false;
+        const since = Number(this.state.sulkingSince || 0);
+        // 闹别扭状态最长持续 2 小时后自然消气
+        if (since > 0 && (nowMs - since) > 2 * 3600_000) {
+            this.state.sulking = false;
+            this.state.sulkingReason = '';
+            this.state.sulkingSince = 0;
+            return false;
+        }
+        return true;
+    }
+
+    enterSulking(reason = '刚才被故意欺负调侃了，正在拿小本本记仇', nowMs = this.now()) {
+        this.state.sulking = true;
+        this.state.sulkingReason = reason;
+        this.state.sulkingSince = nowMs;
+        this._recomputeMood();
+        this.save();
+        return this.getSnapshot();
+    }
+
+    clearSulking() {
+        const wasSulking = Boolean(this.state.sulking);
+        this.state.sulking = false;
+        this.state.sulkingReason = '';
+        this.state.sulkingSince = 0;
+        this._recomputeMood();
+        this.save();
+        return wasSulking;
+    }
+
     /**
      * 每分钟后台生理数值自然演化
      */
@@ -168,6 +215,12 @@ export class DriveEngine {
             // 饭点 (12:00 / 18:00 前后) 饥饿加速下降，均带自然随机波动
             const hungerDrop = mealMode ? randFloat(0.6, 1.2) : randFloat(0.1, 0.25);
             this.state.hunger = clamp(this.state.hunger - hungerDrop, 0, 100);
+            // 极度饥饿 (< 15) 没人喂时自动触发委屈记小本本
+            if (this.state.hunger < 15 && !this.isSulking(now.getTime())) {
+                this.state.sulking = true;
+                this.state.sulkingReason = '肚子饿扁了也没人投喂，委屈巴巴记小本本中';
+                this.state.sulkingSince = now.getTime();
+            }
             // 无聊度适度上升：每分钟 +0.2 ~ +0.4（平均 +0.3/分钟，约每小时 +18 点，约 2.5~3 小时累积到高无聊度）
             this.state.boredom = clamp(this.state.boredom + randFloat(0.2, 0.4), 0, 100);
             // 午休时段 (13:00~14:00) 打盹回精力，其余白天时段平缓消耗 (-0.05 ~ -0.1/分钟，每小时约 -4.5)
@@ -215,7 +268,10 @@ export class DriveEngine {
         const wokeNote = (opts.wokeUpFromSleep || snap.wokenUpGrumpy)
             ? ' ⚠️【生物钟警告：你刚刚在深夜 01:30~07:30 熟睡中被吵醒，迷迷糊糊带着强烈起床气，说话要揉眼睛抱怨困！】'
             : '';
-        return `【当前时间与大肥鱼实时内在生理状态 (InternalState)】时间=${nowStr} | 饱食度(hunger)=${snap.hunger}/100 | 精力(energy)=${snap.energy}/100 | 无聊度(boredom)=${snap.boredom}/100 | 心境(mood)=${snap.mood}${wokeNote}`;
+        const sulkNote = snap.sulking
+            ? ` 💢【小脾气警告：你当前正在闹别扭记小本本（原因：${snap.sulkingReason || '刚才被欺负或冷落了'}）！回复必须表现得气鼓鼓、傲娇简短（如“哼，刚才还欺负本鱼，不理你了！”或委屈讨要投喂），除非对方温柔哄你或给你好吃的才消气！】`
+            : '';
+        return `【当前时间与大肥鱼实时内在生理状态 (InternalState)】时间=${nowStr} | 饱食度(hunger)=${snap.hunger}/100 | 精力(energy)=${snap.energy}/100 | 无聊度(boredom)=${snap.boredom}/100 | 心境(mood)=${snap.mood}${wokeNote}${sulkNote}`;
     }
 
     _recomputeMood() {
@@ -223,6 +279,8 @@ export class DriveEngine {
             this.state.mood = '刚被吵醒迷迷糊糊有起床气';
         } else if (this.state.sleeping) {
             this.state.mood = '呼呼大睡中(zzZ)';
+        } else if (this.isSulking()) {
+            this.state.mood = '抱起鱼尾闹别扭记小本本中(哼!)';
         } else if (this.state.hunger < 20) {
             this.state.mood = '饿扁了眼巴巴求投喂白米饭';
         } else if (this.state.boredom > 80) {
@@ -237,11 +295,13 @@ export class DriveEngine {
     }
 
     /**
-     * 当收到用户消息时触发：检测深夜吵醒（饱食度仅通过 /fish feed 投喂增加，普通聊天不再凭空加饱食度）
+     * 当收到用户消息时触发：检测深夜吵醒、闹别扭记仇与哄好消气
      */
     onUserMessage(userText = '', now = new Date()) {
         const text = String(userText || '').trim();
         let wokenUp = false;
+        let teased = false;
+        let coaxed = false;
 
         if (isSleepWindow(now)) {
             this.state.wokenUpAt = now.getTime();
@@ -250,15 +310,35 @@ export class DriveEngine {
             wokenUp = true;
         }
 
-        // 非 /fish 指令的普通聊天随机缓解 2.0 ~ 5.0 无聊度
+        // 非 /fish 指令的普通聊天：检测哄好 vs 故意逗鱼欺负，并随机缓解 2.0 ~ 5.0 无聊度
         if (!/^\/fish(?:\s|$)/i.test(text)) {
             this.state.boredom = clamp(this.state.boredom - randFloat(2.0, 5.0), 0, 100);
+            if (text && COAX_COMFORT_REGEX.test(text) && this.isSulking(now.getTime())) {
+                this.state.sulking = false;
+                this.state.sulkingReason = '';
+                this.state.sulkingSince = 0;
+                this.state.boredom = clamp(this.state.boredom - randFloat(4.0, 8.0), 0, 100);
+                coaxed = true;
+            } else if (text && TEASE_BULLY_REGEX.test(text)) {
+                this.state.sulking = true;
+                this.state.sulkingReason = `刚才有人对本鱼说“${text.slice(0, 20)}”，气鼓鼓记小本本中`;
+                this.state.sulkingSince = now.getTime();
+                teased = true;
+            }
         }
         if (!wokenUp) {
             this._recomputeMood();
         }
         this.save();
-        return { fed: false, wokenUp, wokeUpFromSleep: wokenUp, state: this.getSnapshot() };
+        return {
+            fed: false,
+            wokenUp,
+            wokeUpFromSleep: wokenUp,
+            teased,
+            coaxed,
+            sulking: this.isSulking(now.getTime()),
+            state: this.getSnapshot(),
+        };
     }
 
     /**
@@ -269,6 +349,11 @@ export class DriveEngine {
         if (statDelta.hunger !== undefined) {
             const dh = clamp(statDelta.hunger, -30, 50);
             this.state.hunger = clamp(this.state.hunger + dh, 0, 100);
+            if (dh > 0 && this.state.hunger >= 20 && this.state.sulking) {
+                this.state.sulking = false;
+                this.state.sulkingReason = '';
+                this.state.sulkingSince = 0;
+            }
         }
         if (statDelta.boredom !== undefined) {
             const db = clamp(statDelta.boredom, -50, 20);
@@ -287,6 +372,7 @@ export class DriveEngine {
     }
 
     getSnapshot() {
+        const sulking = this.isSulking();
         return {
             hunger: this.state.hunger,
             energy: this.state.energy,
@@ -294,6 +380,9 @@ export class DriveEngine {
             mood: this.state.mood,
             sleeping: isSleepWindow() && !this.isWokenUpGrumpy(),
             wokenUpGrumpy: this.isWokenUpGrumpy(),
+            sulking,
+            sulkingReason: sulking ? (this.state.sulkingReason || '') : '',
+            sulkingSince: sulking ? (this.state.sulkingSince || 0) : 0,
             current_obsession: this.state.current_obsession,
             recent_discoveries: this.state.recent_discoveries,
             diary: this.state.diary,
