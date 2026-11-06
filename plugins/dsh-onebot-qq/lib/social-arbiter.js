@@ -194,8 +194,9 @@ export class SocialArbiter {
         this.activeProactiveAbort = null;
         this.isProactiveRunning = false;
 
-        // 群聊插话冷却与近期消息时间戳统计
+        // 群聊插话冷却、活跃对话延续窗口与近期消息时间戳统计
         this.groupCooldownUntilMap = new Map();
+        this.activeGroupConvoMap = new Map(); // chatId -> { userId, nickname, expiresAt, turns }
         this.groupBurstTimestamps = new Map();
         this.isGroupChimeRunning = false;
 
@@ -887,34 +888,48 @@ export class SocialArbiter {
         tsList.push(nowMs);
         this.groupBurstTimestamps.set(groupId, tsList);
 
-        // 睡眠中、精力不足 (energy <= 30) 或正在插话中，保持安静潜水
-        if (this.driveEngine.isSleeping(new Date(nowMs))) return false;
-        if (this.driveEngine.state.energy <= 30) return false;
+        // 睡眠中、精力不足 (energy <= 30) 或正在插话中，保持安静潜水（但若有人直接点名喊肥鱼则哪怕犯困也会哼唧回应）
+        const calledByName = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼|本鱼)/i.test(cleanText) && !/^\/fish(?:\s|$)/i.test(cleanText);
+        const activeConvo = this.activeGroupConvoMap.get(chatId);
+        const isFollowUpConvo = Boolean(
+            activeConvo &&
+            nowMs < activeConvo.expiresAt &&
+            activeConvo.turns < 6 &&
+            !cleanText.startsWith('/') &&
+            (activeConvo.userId === userId || /(你|你们|烤|炖|红烧|清蒸|吃|香|臭|五花肉|略略略|哈哈|鱼)/i.test(cleanText))
+        );
+
+        if (!calledByName && !isFollowUpConvo) {
+            if (this.driveEngine.isSleeping(new Date(nowMs))) return false;
+            if (this.driveEngine.state.energy <= 30) return false;
+        }
         if (this.isGroupChimeRunning) return false;
 
-        // 检查群插话冷却
+        // 检查群插话冷却（仅对“无人点名且非连续对话”的野生潜水插话生效；被点名或处于 3 分钟连续对话余温期时直接穿透冷却！）
         const cooldownUntil = this.groupCooldownUntilMap.get(chatId) || 0;
-        if (nowMs < cooldownUntil) return false;
+        if (!calledByName && !isFollowUpConvo && nowMs < cooldownUntil) return false;
 
         const hitInterestKeyword = GROUP_INTEREST_REGEX.test(cleanText);
         const isHotBurst = tsList.length >= 5;
         const boredom = Number(this.driveEngine.state.boredom) || 0;
         const isHighBoredomChime = boredom >= 65 && !/^\/fish(?:\s|$)/i.test(cleanText);
 
-        if (!hitInterestKeyword && !isHotBurst && !isHighBoredomChime) return false;
+        if (!calledByName && !isFollowUpConvo && !hitInterestKeyword && !isHotBurst && !isHighBoredomChime) return false;
 
-        // 基础概率：兴趣词 45%，刷屏热聊 25%，高无聊度闲聊接话 15%~35%；当无聊度 > 60 时整体插话欲望动态提升
-        const boredomBoost = boredom > 60 ? 1 + ((boredom - 60) / 40) * 0.8 : 1.0;
-        let baseProb = 0.20;
-        if (hitInterestKeyword) {
-            baseProb = 0.45 * boredomBoost;
-        } else if (isHotBurst) {
-            baseProb = 0.25 * boredomBoost;
-        } else if (isHighBoredomChime) {
-            baseProb = 0.15 + ((boredom - 65) / 35) * 0.20;
+        // 若被点名喊肥鱼或处于 3 分钟连续对话追问期，100% 触发评估；否则按常规兴趣概率评估
+        if (!calledByName && !isFollowUpConvo) {
+            const boredomBoost = boredom > 60 ? 1 + ((boredom - 60) / 40) * 0.8 : 1.0;
+            let baseProb = 0.20;
+            if (hitInterestKeyword) {
+                baseProb = 0.45 * boredomBoost;
+            } else if (isHotBurst) {
+                baseProb = 0.25 * boredomBoost;
+            } else if (isHighBoredomChime) {
+                baseProb = 0.15 + ((boredom - 65) / 35) * 0.20;
+            }
+            const triggerProb = Math.min(0.85, baseProb);
+            if (Math.random() > triggerProb) return false;
         }
-        const triggerProb = Math.min(0.85, baseProb);
-        if (Math.random() > triggerProb) return false;
 
         this.isGroupChimeRunning = true;
         try {
@@ -924,21 +939,28 @@ export class SocialArbiter {
                 .join('\n');
 
             const prompt = [
-                `【系统内部事件：group_chime_in_check（群聊潜伏吃瓜插话评估）】`,
+                `【系统内部事件：group_chime_in_check（群聊互动与插话评估）】`,
                 `当前群号：${groupId}，刚刚群友 [${nickname}(${userId})] 说了："${cleanText}"`,
                 `近期群聊上下文：\n${historyBlock}`,
-                `当前你的无聊度为 ${boredom}/100${boredom >= 65 ? '（你现在挺无聊的，很想找群友搭话吐槽！）' : ''}。`,
-                `判断准则：`,
-                `1. 如果群友在聊美食（尤其五花肉/白米饭/夜宵）、游戏、摸鱼、提到了本鱼/老大，或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），输出 1~2 条超短沙雕/傲娇吐槽（每条 <= 20 字，不加句号）。`,
-                `2. 如果话题严肃、或者插话会显得突兀打扰别人，请务必将 reply_decision 设为 "ignore"，保持高冷潜水！`,
+                ...(calledByName
+                    ? [`🎯【点名呼叫触发】群友刚刚直接点名喊了你（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以傲娇鲜活的大肥鱼口吻分成 1~2 条超短气泡（每条 <= 20 字，不加句号）回应对方！`]
+                    : isFollowUpConvo
+                        ? [`⚡【连续对话追问余温中】你刚刚才和群友 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着说了："${cleanText}"！只要对方是在接你的话茬、调侃你（比如要把你烤了/炖了）、追问你或继续和你互动，请务必将 reply_decision 设为 "send_message"，用 1~2 条超短傲娇气泡回怼或接梗！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
+                        : [
+                            `当前你的无聊度为 ${boredom}/100${boredom >= 65 ? '（你现在挺无聊的，很想找群友搭话吐槽！）' : ''}。`,
+                            `判断准则：`,
+                            `1. 如果群友在聊美食（尤其五花肉/白米饭/夜宵）、游戏、摸鱼、提到了本鱼/老大，或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），输出 1~2 条超短沙雕/傲娇吐槽（每条 <= 20 字，不加句号）。`,
+                            `2. 如果话题严肃、或者插话会显得突兀打扰别人，请务必将 reply_decision 设为 "ignore"，保持高冷潜水！`,
+                        ]),
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
                     memoryManager: this.memoryManager,
                     chatId,
                     userId,
-                     nickname,
+                    nickname,
                     queryText: cleanText,
-                    eventPayload: { event: 'group_chime_in_check', hitInterestKeyword, isHotBurst, boredom },
+                    eventPayload: { event: 'group_chime_in_check', calledByName, isFollowUpConvo, hitInterestKeyword, isHotBurst, boredom },
+                    envContext: this.getEnvironmentContext(),
                 }),
             ].join('\n');
 
@@ -948,12 +970,25 @@ export class SocialArbiter {
             const action = parseActionResponse(rawJson);
             if (action.reply_decision === 'ignore') {
                 this.log('debug', `[FeiyuArbiter] 群 ${groupId} 插话评估结果: ignore (${action.inner_thought})`);
+                if (isFollowUpConvo && activeConvo?.userId === userId) {
+                    this.activeGroupConvoMap.delete(chatId);
+                }
                 return true;
             }
 
-            // 设置 15 ~ 30 分钟群聊插话冷却，防止群内刷屏；插话成功后无聊度随机下降 8 ~ 16 点
-            const groupCooldownMs = (15 + Math.floor(Math.random() * 16)) * 60_000;
-            this.groupCooldownUntilMap.set(chatId, this.now() + groupCooldownMs);
+            // 开启/续期 3 分钟的“群聊连续对话余温窗口”，让群友后续的追问（如“把你烤了”、“大肥鱼”）能顺畅接上话！
+            this.activeGroupConvoMap.set(chatId, {
+                userId,
+                nickname,
+                expiresAt: this.now() + 3 * 60_000,
+                turns: (activeConvo?.userId === userId ? (activeConvo.turns || 0) : 0) + 1,
+            });
+
+            // 仅在非点名、非连续对话的“野生潜水插话”时设置 8 ~ 15 分钟冷却，避免把正在进行的对话锁死
+            if (!calledByName && !isFollowUpConvo) {
+                const groupCooldownMs = (8 + Math.floor(Math.random() * 8)) * 60_000;
+                this.groupCooldownUntilMap.set(chatId, this.now() + groupCooldownMs);
+            }
             this.driveEngine.applyStatDelta({ boredom: -this.randFloat(8, 16) });
 
             await this.dispatcher.dispatch(chatId, action, {

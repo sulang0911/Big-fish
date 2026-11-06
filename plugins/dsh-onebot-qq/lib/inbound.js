@@ -148,9 +148,10 @@ export class InboundPipeline {
             void feiyu.maybeReactEmojiToMessage(inbound.messageId, textContent, isAdmin, kind);
         }
 
-        // 群聊唤醒准则：老大在群聊中 @ 肥鱼、引用回复肥鱼、或者喊肥鱼昵称时唤醒回复；或者任何人使用公开 /fish 互动命令时放行至命令路由
+        // 群聊唤醒准则：老大在群聊中喊肥鱼执行工具任务时走完整 Agent 通道；日常喊肥鱼名字闲聊则交由下方 evaluateGroupLurkAndChime 走灵动多气泡秒回通道
         const botNamePattern = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼)/i;
-        const adminCalledByName = isAdmin && botNamePattern.test(textContent);
+        const toolTaskPattern = /(打开|浏览器|搜索|查一下|看看|截图|发语音|说句|语音|执行|运行|代码|文件|天气|帮我)/i;
+        const adminCalledByName = isAdmin && botNamePattern.test(textContent) && toolTaskPattern.test(textContent);
         const isPublicFishCommand = /^\s*(?:@\d+\s*)?\/fish(?:\s|$)/i.test(inbound.text || textContent);
 
         const requireMentionForThisMessage = kind === 'group' && this.ctx.config.requireMention;
