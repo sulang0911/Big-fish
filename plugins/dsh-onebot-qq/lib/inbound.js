@@ -242,7 +242,7 @@ export class InboundPipeline {
                 const hasImg = Array.isArray(inbound.media) && inbound.media.some(m => m.kind === 'image');
                 const shouldResolveMediaForChime = (hasImg || inbound.replyId !== undefined) && (
                     feiyu.isGroupConvoActive?.(chatId) ||
-                    /(肥鱼|飞鱼|大肥鱼|五花肉|好吃|夜宵|烧烤|火锅|奶茶|干饭|饿|图|看)/i.test(textContent)
+                    /(肥鱼|飞鱼|大肥鱼|五花肉|好吃|夜宵|烧烤|火锅|奶茶|干饭|饿|图|看|吃|投喂|喂|饭|肉|菜|给|赏|请)/i.test(textContent)
                 );
                 if (shouldResolveMediaForChime) {
                     try {

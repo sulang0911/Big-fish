@@ -34,7 +34,121 @@ import { browseFavoriteSite } from './browser-douyin.js';
 const execAsync = promisify(exec);
 
 /** 高兴趣群聊关键词正则 */
-export const GROUP_INTEREST_REGEX = /(五花肉|白米饭|红烧肉|夜宵|烧烤|火锅|奶茶|干饭|好饿|饿了|美食|好吃|游戏|原神|启动|写代码|bug|报错|摸鱼|下班|放假|熬夜|肥鱼|大肥鱼|本鱼|小蓝鲸|老大)/i;
+export const GROUP_INTEREST_REGEX = /(五花肉|白米饭|红烧肉|夜宵|烧烤|火锅|奶茶|干饭|好饿|饿了|美食|好吃|游戏|原神|启动|写代码|bug|报错|摸鱼|下班|放假|熬夜|肥鱼|大肥鱼|本鱼|小蓝鲸|老大|[🍚🍙🍛🍜🍣🍤🍖🍗🥩🥓🍔🍟🍕🌭🍰🎂🧋🍓])/iu;
+
+const FOOD_EMOJI_MAP = {
+    '🍚': '热腾腾的白米饭',
+    '🍙': '紫菜饭团',
+    '🍛': '咖喱拌饭',
+    '🍜': '热汤面',
+    '🍝': '意大利面',
+    '🍣': '寿司',
+    '🍤': '天妇罗炸虾',
+    '🍖': '脆皮五花肉',
+    '🥓': '滋滋冒油的烤五花肉',
+    '🥩': '香煎牛排',
+    '🍗': '黄金大鸡腿',
+    '🍔': '双层芝士牛肉堡',
+    '🍟': '现炸薯条',
+    '🍕': '芝士披萨',
+    '🌭': '热狗肠',
+    '🍰': '草莓奶油小蛋糕',
+    '🎂': '大生日蛋糕',
+    '🧁': '纸杯小蛋糕',
+    '🍮': '焦糖布丁',
+    '🍭': '彩虹棒棒糖',
+    '🍬': '水果糖',
+    '🍫': '巧克力',
+    '🍿': '焦糖爆米花',
+    '🍩': '甜甜圈',
+    '🍪': '黄油曲奇',
+    '🧋': '冰镇珍珠奶茶',
+    '🥤': '快乐肥宅水',
+    '☕': '拿铁咖啡',
+    '🍵': '热茶',
+    '🍓': '甜草莓',
+    '🍉': '冰镇西瓜',
+    '🍑': '水蜜桃',
+    '🍒': '车厘子',
+    '[米饭]': '热腾腾的白米饭',
+    '[蛋糕]': '奶油小蛋糕',
+    '[咖啡]': '香浓咖啡',
+    '[茶]': '清茶',
+    '[西瓜]': '冰镇西瓜',
+    '[棒棒糖]': '甜棒棒糖',
+    '[面条]': '热汤面',
+};
+
+/**
+ * 识别食物的口味档位：
+ * - cannibal: 同类鱼肉（触发炸毛记小本本）
+ * - disliked: 黑暗料理/香菜苦瓜（触发嫌弃吐出）
+ * - favorite: 本命白米饭/五花肉/红烧肉/猪脚饭（触发双倍暴击）
+ * - normal: 普通美食零食
+ */
+export function classifyFoodTaste(foodName = '') {
+    const f = String(foodName || '').trim();
+    if (/(烤鱼|水煮鱼|酸菜鱼|清蒸鱼|红烧鱼|剁椒鱼头|生鱼片|刺身|三文鱼|鱼肉|鱼片|鱼头|鱼丸|炖鱼|炸鱼|鲨鱼|鲸鱼)/i.test(f)) {
+        return 'cannibal';
+    }
+    if (/(香菜|折耳根|鱼腥草|苦瓜|青椒|芹菜|大蒜|洋葱|芥末|鲱鱼罐头|空气|西北风|土|草|毒药|翔|粑粑)/i.test(f)) {
+        return 'disliked';
+    }
+    if (/(白米饭|大米饭|米饭|白饭|五花肉|脆皮五花肉|红烧肉|猪脚饭|隆江猪脚饭|卤肉饭|扣肉|把子肉)/i.test(f)) {
+        return 'favorite';
+    }
+    return 'normal';
+}
+
+/**
+ * 从自然语言、晒美食图片或 Emoji 中解析投喂意图
+ * @param {string} rawText
+ * @returns {{ mode: 'spoken' | 'photo' | 'emoji', foodName: string, taste: string } | null}
+ */
+export function parseNaturalFeedIntent(rawText = '') {
+    const text = String(rawText || '').trim();
+    if (!text || text.startsWith('/')) return null;
+
+    // 剥离图片视觉描述部分，单独提取用户手打的正文
+    const userCaption = text.replace(/\[图片:[^\]]*\]/g, '').replace(/\[引用\][^\n]*/g, '').trim();
+    if (/(不给你|不喂你|饿死你|馋死你|想吃吗|就不给|没你的份|把你炖了|把你烤了|把你蒸了|烤了你|炖了你|蒸了你|杀鱼|剁了你|把你切了)/.test(userCaption)) {
+        return null;
+    }
+
+    // 1. 口语自然投喂（如：“肥鱼请你吃红烧肉”、“给本鱼塞一碗白米饭”、“赏你一块五花肉”、“拿去加餐”）
+    const verbMatch = userCaption.match(/(?:投喂(?:肥鱼|飞鱼|大肥鱼|本鱼|你)?|喂(?:你|本鱼|肥鱼|飞鱼|大肥鱼)(?:吃|喝)?|(?:给你|给肥鱼|给飞鱼|给本鱼|请你|请肥鱼|请本鱼|赏你|赏肥鱼|赏本鱼|奖励你|犒劳你)(?:吃|喝|炫|来一[碗盘份块杯串个顿包桶勺口])?|塞(?:给你|你嘴里)|拿去(?:吃|干饭|加餐)|张嘴吃)\s*(?:一[碗盘份块杯串个顿包桶勺口]|点|些|碗|份|块|杯)?\s*([^\s，。！？!?,~～呢吧啦呀嘛捏]{1,14})?/i);
+    if (verbMatch) {
+        let candidate = String(verbMatch[1] || '').replace(/^(了|个|份|碗|块|盘|杯|串|点|些|口)+/, '').trim();
+        if (!candidate || /^(吃|喝|加餐|干饭|饭|东西|好吃的|夜宵|零食)$/.test(candidate)) {
+            // 尝试在整句里提取明确的食物词
+            const kw = userCaption.match(/(脆皮五花肉|五花肉|白米饭|大米饭|米饭|红烧肉|隆江猪脚饭|猪脚饭|卤肉饭|扣肉|把子肉|烤肉|火锅|烧烤|珍珠奶茶|奶茶|杨枝甘露|炸鸡|汉堡|薯条|披萨|小蛋糕|蛋糕|草莓|大鸡腿|鸡腿|螺蛳粉|牛肉面|面条|包子|饺子|小笼包|巧克力|冰淇淋|棒棒糖|香菜|折耳根|苦瓜|烤鱼|水煮鱼|酸菜鱼|生鱼片|刺身|西北风|空气)/i);
+            candidate = kw ? kw[1] : '脆皮五花肉拌白米饭';
+        }
+        return { mode: 'spoken', foodName: candidate, taste: classifyFoodTaste(candidate) };
+    }
+
+    // 2. “发美食照片”赛博投喂（包含视觉画面描述且画面内容为真实美食/饮品）
+    const visMatch = text.match(/视觉画面描述:\s*([^）\]]+)/i);
+    if (visMatch && visMatch[1]) {
+        const visDesc = visMatch[1].trim();
+        const isFoodPhoto = /(米饭|白饭|五花肉|红烧肉|猪脚饭|卤肉|烤肉|牛排|排骨|鸡腿|炸鸡|火锅|烧烤|烤串|麻辣烫|螺蛳粉|面条|拉面|粉|饺子|包子|汉堡|薯条|披萨|寿司|小龙虾|螃蟹|虾|菜肴|美食|一盘|一碗|一锅|餐桌|外卖|便当|盒饭|奶茶|咖啡|蛋糕|甜点|甜品|面包|草莓|冰淇淋|夜宵)/i.test(visDesc)
+            && !/(聊天记录|代码|终端|网页截图|三视图|动漫人物立绘)/i.test(visDesc);
+        if (isFoodPhoto) {
+            const foodKw = (userCaption + ' ' + visDesc).match(/(脆皮五花肉|五花肉|白米饭|米饭|红烧肉|猪脚饭|卤肉|烤肉|牛排|排骨|鸡腿|炸鸡|火锅|烧烤|烤串|麻辣烫|螺蛳粉|面条|拉面|饺子|包子|汉堡|薯条|披萨|寿司|小龙虾|奶茶|咖啡|蛋糕|甜点|甜品|草莓|冰淇淋|外卖|夜宵)/i);
+            const dishName = foodKw ? `照片里的${foodKw[1]}` : `照片里的美食（${visDesc.slice(0, 16)}）`;
+            return { mode: 'photo', foodName: dishName, taste: classifyFoodTaste(dishName) };
+        }
+    }
+
+    // 3. Emoji / QQ 表情懒人投喂（发食物 Emoji 或 [米饭]/[蛋糕] 等）
+    for (const [token, label] of Object.entries(FOOD_EMOJI_MAP)) {
+        if (userCaption.includes(token)) {
+            return { mode: 'emoji', foodName: label, taste: classifyFoodTaste(label) };
+        }
+    }
+
+    return null;
+}
 
 function getDeepSeekApiKey() {
     if (process.env.DEEPSEEK_API_KEY) return process.env.DEEPSEEK_API_KEY;
@@ -277,8 +391,8 @@ export class SocialArbiter {
         if (this.driveEngine.isSulking(nowMs)) {
             // 闹别扭记小本本时，给对方消息贴个傲娇翻白眼(38)或哼唧表情
             if (forceReact || Math.random() < 0.55) emojiId = '38';
-        } else if (/(五花肉|白米饭|红烧肉|奶茶|夜宵|烧烤|火锅|好吃|投喂|干饭|加餐)/i.test(clean)) {
-            if (forceReact || Math.random() < 0.5) emojiId = ['66', '319', '76'][Math.floor(Math.random() * 3)];
+        } else if (/(五花肉|白米饭|红烧肉|奶茶|夜宵|烧烤|火锅|好吃|投喂|干饭|加餐|[🍚🍙🍛🍜🍣🍤🍖🍗🥩🥓🍔🍟🍕🌭🍰🎂🧋🍓])/iu.test(clean)) {
+            if (forceReact || Math.random() < 0.65) emojiId = ['66', '319', '76'][Math.floor(Math.random() * 3)];
         } else if (/(可爱|乖|聪明|真棒|喜欢肥鱼|喜欢本鱼|摸摸|抱抱|爱你|贴贴)/i.test(clean)) {
             if (forceReact || Math.random() < 0.65) emojiId = ['66', '49', '319'][Math.floor(Math.random() * 3)];
         } else if (isAdmin && kind === 'private' && (forceReact || Math.random() < 0.22)) {
@@ -464,6 +578,129 @@ export class SocialArbiter {
     }
 
     /**
+     * 无感拟人自然投喂结算器（支持：口语投喂、发美食照片赛博投喂、Emoji/表情投喂 + 挑食口味三档彩蛋）
+     * @param {string} chatId
+     * @param {string} userId
+     * @param {string} nickname
+     * @param {string} text
+     * @returns {{ fed: boolean, mode: string, foodName: string, taste: string, promptHint: string, voiceBoost: number } | null}
+     */
+    tryNaturalFeed(chatId, userId, nickname, text) {
+        const intent = parseNaturalFeedIntent(text);
+        if (!intent) return null;
+
+        const uid = String(userId || this.masterQQ).trim() || this.masterQQ;
+        const isAdmin = uid === this.masterQQ;
+        const nick = String(nickname || uid).trim();
+        const dedupKey = `${chatId}:${uid}:${intent.foodName}:${Math.floor(this.now() / 3000)}`;
+        if (this.lastNaturalFeedKey === dedupKey && this.lastNaturalFeedResult) {
+            return this.lastNaturalFeedResult;
+        }
+
+        const { mode, foodName, taste } = intent;
+        const MAX_DAILY_FEEDS = 5;
+        const rec = this.getDailyUserRecord(uid);
+        const currentCount = Number(rec.feedCount) || 0;
+
+        // 档位 1：同类相残禁忌（烤鱼/生鱼片/酸菜鱼）
+        if (taste === 'cannibal') {
+            if (!isAdmin) {
+                this.memoryManager.applyAffectionDelta(uid, -1.5, nick);
+                this.memoryManager.setPetNickname?.(uid, '烤鱼狂魔', nick);
+            }
+            this.driveEngine.enterSulking(`刚才 ${nick} 居然试图喂本鱼吃同类「${foodName}」，吓得呆毛炸立记小本本中`);
+            const res = {
+                fed: false,
+                mode,
+                foodName,
+                taste,
+                voiceBoost: 0.45,
+                promptHint: `💢【投喂彩蛋·同类相残警报！】对方居然拿鱼类料理「${foodName}」投喂你！你是小蓝鲸大肥鱼，绝不吃鱼类同类！你现在吓得鱼尾炸毛并把对方记进了小本本，请立刻用 1~2 条超短气泡气鼓鼓吐槽对方心狠手辣，并将 qq_action.type 设为 "poke" 反戳回去（或发 angry 表情包）！`,
+            };
+            this.lastNaturalFeedKey = dedupKey;
+            this.lastNaturalFeedResult = res;
+            return res;
+        }
+
+        // 档位 2：黑暗料理与嫌弃食物（香菜/折耳根/苦瓜/西北风）
+        if (taste === 'disliked') {
+            this.driveEngine.applyStatDelta({ boredom: -3 });
+            const res = {
+                fed: false,
+                mode,
+                foodName,
+                taste,
+                voiceBoost: 0.40,
+                promptHint: `🤢【投喂彩蛋·嫌弃吐出！】对方居然拿黑暗料理「${foodName}」喂你！本鱼最讨厌吃这个了，请立刻在回复里“呸呸呸”傲娇吐出来，嫌弃吐槽对方坏心眼（绝不要说好吃）！`,
+            };
+            this.lastNaturalFeedKey = dedupKey;
+            this.lastNaturalFeedResult = res;
+            return res;
+        }
+
+        // 检查今日投喂次数上限（吃撑了但依然开心回应）
+        if (currentCount >= MAX_DAILY_FEEDS) {
+            const st = this.driveEngine.getState();
+            const res = {
+                fed: false,
+                mode,
+                foodName,
+                taste,
+                voiceBoost: 0.30,
+                promptHint: `🍗【投喂触发·肚皮圆滚滚吃撑啦】对方投喂了你「${foodName}」，但今天已经喂过你 ${MAX_DAILY_FEEDS} 次啦（当前饱食度 ${st.hunger}/100）！请不要发系统属性面板，直接拍拍圆滚滚的肚皮傲娇表示今天实在装不下啦，让ta明天再喂！`,
+            };
+            this.lastNaturalFeedKey = dedupKey;
+            this.lastNaturalFeedResult = res;
+            return res;
+        }
+
+        // 档位 3 & 4：本命最爱 (favorite 2x 暴击) vs 日常美食/晒图吃席 (normal 1x)
+        rec.feedCount = currentCount + 1;
+        const isFav = taste === 'favorite';
+        const favMult = isFav ? 2.0 : 1.0;
+        const adminMult = isAdmin ? 10 : 1;
+        const hungerDelta = Math.round(this.randFloat(2.5, 4.8) * favMult * adminMult * 10) / 10;
+        const energyDelta = Math.round(this.randFloat(1.2, 2.5) * favMult * adminMult * 10) / 10;
+        const boredomDelta = -Math.round(this.randFloat(2.0, 4.0) * favMult * adminMult * 10) / 10;
+        const affectionDelta = Math.round(this.randFloat(0.15, 0.4) * favMult * adminMult * 10) / 10;
+
+        const wasSulking = this.driveEngine.isSulking();
+        this.driveEngine.applyStatDelta({ hunger: hungerDelta, energy: energyDelta, boredom: boredomDelta });
+        this.driveEngine.clearSulking();
+        this.memoryManager.applyAffectionDelta(uid, affectionDelta, nick);
+        this.memoryManager.recordDailyEvent(
+            `${nick} 通过${mode === 'photo' ? '晒美食照片' : mode === 'emoji' ? '发零食表情' : '口语对话'}投喂了大肥鱼「${foodName}」${isFav ? '（本命最爱双倍暴击！）' : ''}`,
+            chatId,
+            uid
+        );
+        if ( uid !== this.masterQQ && rec.feedCount >= 2) {
+            this.memoryManager.setPetNickname?.(uid, '五花肉菩萨', nick);
+        }
+        this.persistArbiterMeta();
+
+        const st = this.driveEngine.getState();
+        const modeDesc = mode === 'photo'
+            ? `发来了一张美食照片请你看图“赛博吃席”（识别菜品：「${foodName}」）`
+            : mode === 'emoji'
+                ? `随手给你塞了一口小零食表情（「${foodName}」）`
+                : `投喂了你一份「${foodName}」`;
+        const res = {
+            fed: true,
+            mode,
+            foodName,
+            taste,
+            voiceBoost: isFav ? 0.55 : 0.35,
+            promptHint: isFav
+                ? `💖【无感投喂成功·本命最爱双倍暴击！】对方刚刚${modeDesc}！这是你最爱的本命美食，你的饱食度已飙升至 ${st.hunger}/100${wasSulking ? '，且原本记小本本的坏脾气瞬间被彻底哄好啦' : ''}！严禁输出死板的系统属性面板，请直接用 1~2 条超开心满足的拟人短气泡（如“哇！！是本鱼最爱的…”、“嚼嚼嚼太香了捏”）回应，并可设 qq_action.type = "send_meme" (meme_tag="happy")！`
+                : `😋【无感投喂成功·开心干饭】对方刚刚${modeDesc}（饱食度已升至 ${st.hunger}/100${wasSulking ? '，你的小脾气也被哄好啦' : ''}）！严禁输出死板的系统属性面板，请直接顺着这份美食用 1~2 条自然可爱的短气泡点评味道、开心接下投喂！`,
+        };
+        this.lastNaturalFeedKey = dedupKey;
+        this.lastNaturalFeedResult = res;
+        this.log('info', `[FeiyuNaturalFeed] 触发无感投喂 (${mode}/${taste}): user=${nick}, food="${foodName}", hunger=${st.hunger}/100`);
+        return res;
+    }
+
+    /**
      * 统一快速拟人多气泡回复通道 (`handleFastChatTurn`)：
      * 用于处理无需调用重型系统工具的私聊消息、群聊 `@` 消息、引用回复消息与图文互动，
      * 消除慢速单条 Agent 通道与灵动双气泡快通道之间的割裂感！
@@ -487,12 +724,14 @@ export class SocialArbiter {
                 .join('\n');
 
             const hasImage = /\[图片:|视觉画面描述:/i.test(cleanText);
+            const feedRes = this.tryNaturalFeed(chatId, userId, nickname, cleanText);
             const prompt = [
                 isGroup
                     ? `【群聊点名 / @ / 引用互动（群号：${groupId || chatId}）】`
                     : `【私聊实时对话（对方：${nickname}(${userId})）】`,
                 `对方刚刚发来消息："${cleanText}"`,
                 ...(historyBlock ? [`近期对话上下文：\n${historyBlock}`] : []),
+                ...(feedRes ? [feedRes.promptHint] : []),
                 `回复准则：`,
                 `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
                 `2. 以傲娇、机灵、爱吃白米饭和五花肉的小蓝鲸“大肥鱼”口吻，拆分为 1~3 条简短自然的气泡（每条 <= 25 字，句尾绝不加句号），像真人秒回微信/QQ一样有灵气！（聊美食/投喂时可开心馋五花肉和白米饭，聊其他话题时自然顺着话题接梗，不要句句硬扯五花肉）`,
@@ -505,7 +744,7 @@ export class SocialArbiter {
                     nickname,
                     queryText: cleanText,
                     wokeUpFromSleep: Boolean(wokeUpFromSleep),
-                    eventPayload: { event: isGroup ? 'group_fast_turn' : 'private_fast_turn', hasImage },
+                    eventPayload: { event: isGroup ? 'group_fast_turn' : 'private_fast_turn', hasImage, fed: Boolean(feedRes?.fed) },
                     envContext: this.getEnvironmentContext(),
                 }),
             ].join('\n');
@@ -532,7 +771,10 @@ export class SocialArbiter {
             const forceVoice = /(发语音|说句语音|用语音|语音说|讲句语音|听你声音|语音哄|发条语音)/i.test(cleanText);
             const snap = this.driveEngine.getState();
             const baseVoiceProb = isGroup ? 0.25 : 0.30;
-            const voiceProbability = (snap.sulking || snap.wokenUpGrumpy || snap.hunger < 25) ? 0.42 : baseVoiceProb;
+            const voiceProbability = Math.max(
+                feedRes?.voiceBoost || 0,
+                (snap.sulking || snap.wokenUpGrumpy || snap.hunger < 25) ? 0.42 : baseVoiceProb
+            );
             await this.dispatcher.dispatch(chatId, action, {
                 userId,
                 replyToMessageId: messageId,
@@ -1103,15 +1345,19 @@ export class SocialArbiter {
         if (!calledByName && !isFollowUpConvo && nowMs < cooldownUntil) return false;
 
         const hasImage = /\[图片:|视觉画面描述:/i.test(cleanText);
-        const hitInterestKeyword = GROUP_INTEREST_REGEX.test(cleanText) || hasImage;
+        const naturalFeedPreview = parseNaturalFeedIntent(cleanText);
+        const isExplicitGroupFeed = Boolean(
+            naturalFeedPreview && (calledByName || isFollowUpConvo || naturalFeedPreview.mode === 'photo' || /(肥鱼|飞鱼|本鱼)/.test(cleanText))
+        );
+        const hitInterestKeyword = GROUP_INTEREST_REGEX.test(cleanText) || hasImage || isExplicitGroupFeed;
         const isHotBurst = tsList.length >= 5;
         const boredom = Number(this.driveEngine.state.boredom) || 0;
         const isHighBoredomChime = boredom >= 65 && !/^\/fish(?:\s|$)/i.test(cleanText);
 
-        if (!calledByName && !isFollowUpConvo && !hitInterestKeyword && !isHotBurst && !isHighBoredomChime) return false;
+        if (!calledByName && !isFollowUpConvo && !isExplicitGroupFeed && !hitInterestKeyword && !isHotBurst && !isHighBoredomChime) return false;
 
-        // 若被点名喊肥鱼或处于 3 分钟连续对话追问期，100% 触发评估；否则按常规兴趣概率评估
-        if (!calledByName && !isFollowUpConvo) {
+        // 若被点名喊肥鱼、处于 3 分钟连续对话追问期、或发了美食照片/明确投喂，100% 触发评估；否则按常规兴趣概率评估
+        if (!calledByName && !isFollowUpConvo && !isExplicitGroupFeed) {
             const boredomBoost = boredom > 60 ? 1 + ((boredom - 60) / 40) * 0.8 : 1.0;
             let baseProb = 0.20;
             if (hitInterestKeyword) {
@@ -1133,10 +1379,14 @@ export class SocialArbiter {
                 .join('\n');
 
             const isHarass = SEXUAL_HARASS_REGEX.test(cleanText);
+            const feedRes = (calledByName || isFollowUpConvo || isExplicitGroupFeed)
+                ? this.tryNaturalFeed(chatId, userId, nickname, cleanText)
+                : null;
             const prompt = [
                 `【系统内部事件：group_chime_in_check（群聊互动与插话评估）】`,
                 `当前群号：${groupId}，刚刚群友 [${nickname}(${userId})] 说了："${cleanText}"`,
                 `近期群聊上下文：\n${historyBlock}`,
+                ...(feedRes ? [feedRes.promptHint] : []),
                 ...(isHarass ? [`🚨【反性骚扰回击指令】检测到该群友正在对你开黄腔/性骚扰/问猥琐下头问题！绝对禁止呆呆傻傻顺着问题正经回答或科普，也严禁设为 ignore！必须将 reply_decision 设为 "send_message"，立刻开启毒舌暴躁模式，用犀利嫌弃的口吻连发 1~2 条短气泡狠狠痛骂回击对方（喊ta「下头怪」），并将 qq_action.type 设为 "send_meme" (meme_tag="尾巴拍" 或 "生气")！`] : []),
                 ...(hasImage ? [`🖼️【视觉感知提示】群友消息中包含图片或表情包（见其中的“视觉画面描述”），你可以针对图片内容吐槽，或者设置 reply_decision = "meme_only" / qq_action.type = "send_meme" 发表情包跟对方斗图！`] : []),
                 ...(calledByName
@@ -1189,7 +1439,10 @@ export class SocialArbiter {
             this.driveEngine.applyStatDelta({ boredom: -this.randFloat(8, 16) });
             const forceVoice = /(发语音|说句语音|用语音|语音说|讲句语音|听你声音|语音哄|发条语音)/i.test(cleanText);
             const snap = this.driveEngine.getState();
-            const voiceProbability = (snap.sulking || snap.wokenUpGrumpy || snap.hunger < 25) ? 0.38 : 0.25;
+            const voiceProbability = Math.max(
+                feedRes?.voiceBoost || 0,
+                (snap.sulking || snap.wokenUpGrumpy || snap.hunger < 25) ? 0.38 : 0.25
+            );
 
             await this.dispatcher.dispatch(chatId, action, {
                 userId,
@@ -1330,12 +1583,30 @@ export class SocialArbiter {
                 return msg;
             }
 
-            rec.feedCount = currentCount + 1;
             const foodName = parts.slice(1).join(' ').trim() || '脆皮五花肉拌白米饭';
-            const pubHunger = this.randFloat(2.0, 4.5);      // 表面波动: +2.0 ~ +4.5
-            const pubEnergy = this.randFloat(1.0, 2.5);      // 表面波动: +1.0 ~ +2.5 (干饭补充元气)
-            const pubBoredom = -this.randFloat(1.2, 3.0);    // 表面波动: -1.2 ~ -3.0
-            const pubAffection = this.randFloat(0.1, 0.4);   // 表面波动: +0.1 ~ +0.4
+            const taste = classifyFoodTaste(foodName);
+            if (taste === 'cannibal') {
+                if (!isAdmin) {
+                    this.memoryManager.applyAffectionDelta(userId, -1.5, nickname);
+                    this.memoryManager.setPetNickname?.(userId, '烤鱼狂魔', nickname);
+                }
+                this.driveEngine.enterSulking(`刚才 ${nickname} 居然试图用 /fish feed 喂本鱼吃同类「${foodName}」`);
+                const msg = `💢 【投喂失败·同类相残警报】${nickname}，你居然喂本鱼吃「${foodName}」？！本鱼是小蓝鲸，绝不吃鱼类同类！已把你记进小本本，哼！`;
+                await this.bridge.sendToChat(chatId, msg, { bypassFeiyuInterceptor: true });
+                return msg;
+            }
+            if (taste === 'disliked') {
+                const msg = `🤢 【投喂被嫌弃吐出】呸呸呸！${nickname} 居然拿黑暗料理「${foodName}」害本鱼，本鱼一口都不吃，坏心眼！`;
+                await this.bridge.sendToChat(chatId, msg, { bypassFeiyuInterceptor: true });
+                return msg;
+            }
+
+            rec.feedCount = currentCount + 1;
+            const favMult = taste === 'favorite' ? 2.0 : 1.0;
+            const pubHunger = Math.round(this.randFloat(2.0, 4.5) * favMult * 10) / 10;
+            const pubEnergy = Math.round(this.randFloat(1.0, 2.5) * favMult * 10) / 10;
+            const pubBoredom = -Math.round(this.randFloat(1.2, 3.0) * favMult * 10) / 10;
+            const pubAffection = Math.round(this.randFloat(0.1, 0.4) * favMult * 10) / 10;
             const mult = isAdmin ? 10 : 1;                   // 老大暗享 10 倍
             const hungerDelta = Math.round(pubHunger * mult * 10) / 10;
             const energyDelta = Math.round(pubEnergy * mult * 10) / 10;
