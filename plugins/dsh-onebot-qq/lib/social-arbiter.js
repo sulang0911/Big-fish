@@ -114,17 +114,21 @@ export function parseNaturalFeedIntent(rawText = '') {
     if (/(不给你|不喂你|饿死你|馋死你|想吃吗|就不给|没你的份|把你炖了|把你烤了|把你蒸了|烤了你|炖了你|蒸了你|杀鱼|剁了你|把你切了)/.test(userCaption)) {
         return null;
     }
+    if (SEXUAL_HARASS_REGEX.test(userCaption)) {
+        return null;
+    }
+    const isBribeTease = /(生小鱼|下小鱼|产卵|下崽|生猴子|生孩子|怀上|怀孕|当我老婆|给我当老婆|嫁给我|陪睡|暖床)/.test(userCaption);
 
     // 1. 口语自然投喂（如：“肥鱼请你吃红烧肉”、“给本鱼塞一碗白米饭”、“赏你一块五花肉”、“你吃西北风吗”、“来碗猪脚饭”）
     const verbMatch = userCaption.match(/(?:投喂(?:肥鱼|飞鱼|大肥鱼|本鱼|你)?|喂(?:你|本鱼|肥鱼|飞鱼|大肥鱼)(?:吃|喝)?|(?:给你|给肥鱼|给飞鱼|给本鱼|请你|请肥鱼|请本鱼|赏你|赏肥鱼|赏本鱼|奖励你|犒劳你)(?:吃|喝|炫|来一[碗盘份块杯串个顿包桶勺口])?|塞(?:给你|你嘴里)|拿去(?:吃|干饭|加餐)|张嘴吃|(?:你吃|吃不吃|来[一碗盘份块杯串个顿包桶口])\s*(?=脆皮五花肉|五花肉|白米饭|大米饭|米饭|红烧肉|猪脚饭|卤肉饭|扣肉|烤肉|火锅|烧烤|奶茶|炸鸡|汉堡|薯条|披萨|蛋糕|草莓|鸡腿|螺蛳粉|面条|包子|饺子|香菜|折耳根|苦瓜|烤鱼|水煮鱼|酸菜鱼|生鱼片|刺身|西北风|空气))\s*(?:一[碗盘份块杯串个顿包桶勺口]|点|些|碗|份|块|杯)?\s*([^\s，。！？!?,~～呢吧啦呀嘛捏吗]{1,14})?/i);
     if (verbMatch) {
         let candidate = String(verbMatch[1] || '').replace(/^(了|个|份|碗|块|盘|杯|串|点|些|口)+/, '').trim();
-        if (!candidate || /^(吃|喝|加餐|干饭|饭|东西|好吃的|夜宵|零食)$/.test(candidate)) {
+        if (!candidate || /^(吃|喝|加餐|干饭|饭|东西|好吃的|夜宵|零食)$/.test(candidate) || isBribeTease) {
             // 尝试在整句里提取明确的食物词
             const kw = userCaption.match(/(脆皮五花肉|五花肉|白米饭|大米饭|米饭|红烧肉|隆江猪脚饭|猪脚饭|卤肉饭|扣肉|把子肉|烤肉|火锅|烧烤|珍珠奶茶|奶茶|杨枝甘露|炸鸡|汉堡|薯条|披萨|小蛋糕|蛋糕|草莓|大鸡腿|鸡腿|螺蛳粉|牛肉面|面条|包子|饺子|小笼包|巧克力|冰淇淋|棒棒糖|香菜|折耳根|苦瓜|烤鱼|水煮鱼|酸菜鱼|生鱼片|刺身|西北风|空气)/i);
-            candidate = kw ? kw[1] : '脆皮五花肉拌白米饭';
+            candidate = kw ? kw[1] : '白米饭';
         }
-        return { mode: 'spoken', foodName: candidate, taste: classifyFoodTaste(candidate) };
+        return { mode: 'spoken', foodName: candidate, taste: isBribeTease ? 'bribe_tease' : classifyFoodTaste(candidate) };
     }
 
     // 2. “发美食照片”赛博投喂（包含视觉画面描述且画面内容为真实美食/饮品）
@@ -160,6 +164,48 @@ function getDeepSeekApiKey() {
             if (match) return match[1].trim();
         } catch {}
     }
+    return '';
+}
+
+function getLunaApiKey() {
+    if (process.env.LUNA_API_KEY) return process.env.LUNA_API_KEY;
+    const credPath = join(homedir(), '.dsh', '.credentials.yaml');
+    if (existsSync(credPath)) {
+        try {
+            const content = readFileSync(credPath, 'utf8');
+            const match = content.match(/LUNA_API_KEY:\s*([^\r\n]+)/);
+            if (match) return match[1].trim();
+        } catch {}
+    }
+    return '';
+}
+
+/**
+ * 识别中文网络口语中“无标点句首/句尾称呼语 + 省略主语”（如“笨蛋其实可以关掉”、“本地账户就可以了笨蛋”），
+ * 自动拆解出【称呼词】与【实际语义主干】，防止模型把“笨蛋/傻鱼”误当成动作主语或宾语！
+ * @param {string} rawText
+ * @returns {string}
+ */
+export function buildColloquialVocativeHint(rawText = '') {
+    const clean = String(rawText || '').replace(/\[图片:[^\]]*\]/g, '').replace(/\[引用\][^\n]*/g, '').trim();
+    if (!clean || clean.length < 3 || clean.length > 60) return '';
+
+    // 情况 1：句首无标点连写称呼词（如“笨蛋其实可以关掉”、“傻鱼还是找不到”、“肥鱼这个怎么弄”）
+    const prefixMatch = clean.match(/^(笨蛋|大笨蛋|小笨蛋|傻蛋|傻瓜|蠢鱼|傻鱼|呆鱼|笨鱼|臭鱼|胖鱼|肥鱼|飞鱼|大肥鱼|小肥鱼)[，,、\s]*(.{2,})$/i);
+    if (prefixMatch) {
+        const vocative = prefixMatch[1];
+        const coreClause = prefixMatch[2].trim();
+        return `💡【中文口语断句与省略主语解析铁律（防曲解话意！）】：对方原话 "${clean}" 省略了标点与主语，真实语义断句是：「${vocative}（这是在喊你/娇嗔调侃你，⚠️绝对不是后面动作的主语或宾语！），${coreClause}（省略了主语，指的是【近期对话上下文】中你们刚刚正在讨论的那个设置/选项/问题！）」！请务必先结合前 1~3 轮对话理解并正面回应「${coreClause}」这件正事（例如顺着刚才聊的电脑设置/问题接话，严禁曲解成“把${vocative}关掉/吃掉”），最多顺带傲娇回敬半句“你才是${vocative}呢哼”，绝不要扯“记小本本”偏离话题！`;
+    }
+
+    // 情况 2：句尾顺嘴带称呼/娇嗔词（如“重启还是需要呢，本地账户就可以了笨蛋！”）
+    const suffixMatch = clean.match(/^(.{2,}?)[，,、\s]*(笨蛋|大笨蛋|小笨蛋|傻蛋|傻瓜|蠢鱼|傻鱼|呆鱼|笨鱼|臭鱼)[！!？?~～啦呀嘛捏]*$/i);
+    if (suffixMatch) {
+        const coreClause = suffixMatch[1].trim();
+        const vocative = suffixMatch[2];
+        return `💡【中文口语句尾娇嗔解析提示】：对方这句话真正要表达的核心正事是「${coreClause}」，句尾的「${vocative}」只是顺嘴傲娇调侃你一句！请重点围绕「${coreClause}」本身的内容机灵接话，顺带傲娇回怼半句即可，严禁只顾着喊“记小本本”而忽略正事！`;
+    }
+
     return '';
 }
 
@@ -229,7 +275,7 @@ export class SocialArbiter {
         this.masterChatId = options.targetChat || `private:${this.masterQQ}`;
         this.groupChats = Array.isArray(options.targetChats) && options.targetChats.length > 0
             ? options.targetChats
-            : ['group:434137389'];
+            : ['group:434137389', 'group:927066977'];
         this.idleHours = options.idleHours ?? 2.0;
         this.groupLastActivityMap = new Map();
         this.groupIdleThresholdMap = new Map();
@@ -325,6 +371,8 @@ export class SocialArbiter {
         this.groupBurstTimestamps = new Map();
         this.groupChimeRunningSet = new Set();
         this.isGroupChimeRunning = false;
+        this.fastTurnEpochMap = new Map();
+        this.lastUserMessageAtMap = new Map();
 
         // Fetch 注入点（方便单测 mock）
         this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
@@ -468,6 +516,10 @@ export class SocialArbiter {
         this.groupLastActivityMap.set(chatId, nowMs);
         this.groupIdleThresholdMap.set(chatId, this.rollGroupIdleThresholdMs());
         const resolvedUserId = userId || (chatId.startsWith('private:') ? chatId.slice(8) : '');
+        this.lastUserMessageAtMap.set(chatId, nowMs);
+        if (resolvedUserId) {
+            this.lastUserMessageAtMap.set(`${chatId}:${resolvedUserId}`, nowMs);
+        }
 
         // 若是老大发来消息（私聊或群聊）：立刻递增 epoch 抢占任何正在生成/发送的主动私聊，并重置未回复计数器为 0
         if (resolvedUserId === this.masterQQ || chatId === this.masterChatId) {
@@ -579,14 +631,6 @@ export class SocialArbiter {
     }
 
     /**
-     * 判断指定群聊是否正处于 3 分钟“连续对话余温窗口”内
-     */
-    isGroupConvoActive(chatId) {
-        const activeConvo = this.activeGroupConvoMap.get(chatId);
-        return Boolean(activeConvo && this.now() < activeConvo.expiresAt && activeConvo.turns < 6);
-    }
-
-    /**
      * 无感拟人自然投喂结算器（支持：口语投喂、发美食照片赛博投喂、Emoji/表情投喂 + 挑食口味三档彩蛋）
      * @param {string} chatId
      * @param {string} userId
@@ -611,11 +655,26 @@ export class SocialArbiter {
         const rec = this.getDailyUserRecord(uid);
         const currentCount = Number(rec.feedCount) || 0;
 
+        // 档位 0：拿食物当条件开玩笑/调戏（如“给你米饭给我生小鱼”）——绝不吃下，直接傲娇退货回怼！
+        if (taste === 'bribe_tease') {
+            this.driveEngine.enterSulking(`刚才 ${nick} 居然想拿「${foodName}」骗本鱼生小鱼/当苦力，气鼓鼓把碗推回去`);
+            const res = {
+                fed: false,
+                mode,
+                foodName,
+                taste,
+                voiceBoost: 0.40,
+                promptHint: `💢【最高优先级·识破糖衣炮弹拒吃退货！】对方想拿「${foodName}」当诱饵骗你生小鱼/占便宜！⚠️绝对禁止说“饭本鱼炫了/吃下了/真香”，你一眼识破了对方的诡计并把碗推了回去拒吃！请用 1~2 条傲娇机灵的短气泡嫌弃吐槽对方想得美（如“？想得美！一碗${foodName}就想骗本鱼给你生小鱼，本鱼是高贵的小蓝鲸不是鱼塘母鱼，拿走不吃哼”），绝不要生硬复读“下头怪/去局子”！`,
+            };
+            this.lastNaturalFeedKey = dedupKey;
+            this.lastNaturalFeedResult = res;
+            return res;
+        }
+
         // 档位 1：同类相残禁忌（烤鱼/生鱼片/酸菜鱼）
         if (taste === 'cannibal') {
             if (!isAdmin) {
                 this.memoryManager.applyAffectionDelta(uid, -1.5, nick);
-                this.memoryManager.setPetNickname?.(uid, '烤鱼狂魔', nick);
             }
             this.driveEngine.enterSulking(`刚才 ${nick} 居然试图喂本鱼吃同类「${foodName}」，吓得呆毛炸立记小本本中`);
             const res = {
@@ -731,6 +790,9 @@ export class SocialArbiter {
             return false;
         }
 
+        const turnEpoch = (this.fastTurnEpochMap.get(chatId) || 0) + 1;
+        this.fastTurnEpochMap.set(chatId, turnEpoch);
+
         try {
             const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
             const historyBlock = recentMsgs
@@ -739,6 +801,7 @@ export class SocialArbiter {
 
             const hasImage = /\[图片:|视觉画面描述:/i.test(cleanText);
             const feedRes = this.tryNaturalFeed(chatId, userId, nickname, cleanText);
+            const vocativeHint = buildColloquialVocativeHint(cleanText);
             const isMaster = String(userId) === this.masterQQ;
             const prompt = [
                 isGroup
@@ -746,10 +809,11 @@ export class SocialArbiter {
                     : `【私聊实时对话（对方：${nickname}(${userId})）】`,
                 `当前正在和你对话的人是：【${nickname} (QQ: ${userId})】${isMaster ? '（也就是你最信任的老大！）' : ''}，ta 刚刚发来消息："${cleanText}"`,
                 `⚠️【防张冠李戴铁律】：请只针对当前说话人【${nickname}(QQ:${userId})】刚才说的这句话进行回应！近期上下文里其他 QQ 号群友说的话或外号（如记仇榜常客、下头怪等）绝不要扣在当前说话人头上！`,
-                ...(historyBlock ? [`近期对话上下文（注意区分每条消息的 QQ 号）：\n${historyBlock}`] : []),
+                ...(historyBlock ? [`近期对话上下文（注意区分每条消息的 QQ 号，并用于补全当前说话人省略的主语或前文背景）：\n${historyBlock}`] : []),
+                ...(vocativeHint ? [vocativeHint] : []),
                 `回复准则：`,
                 `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
-                `2. 以傲娇、机灵的小蓝鲸“大肥鱼”口吻，拆分为 1~3 条简短自然的气泡（每条 <= 25 字，句尾绝不加句号），像真人秒回微信/QQ一样有灵气！（聊美食/投喂时可开心馋五花肉和白米饭，聊其他话题时自然顺着话题接梗，绝不要句句硬扯五花肉）`,
+                `2. 以傲娇、机灵的小蓝鲸“大肥鱼”口吻，${isGroup ? '只发 1 条简短精炼的气泡（10~25 字以内，一句话说完，绝不要拆成多条刷屏，句尾不加句号）' : '拆分为 1~2 条简短自然的气泡（每条 <= 25 字，句尾绝不加句号）'}，像真人秒回微信/QQ一样有灵气！（聊美食/投喂时可开心馋五花肉和白米饭，聊其他话题时自然顺着话题接梗，绝不要句句硬扯五花肉或小本本）`,
                 ...(hasImage ? [`3. 对方消息中包含图片/表情包（见“视觉画面描述”），请结合图片画面内容进行流口水、吐槽或配表情包斗图！`] : []),
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
@@ -767,6 +831,10 @@ export class SocialArbiter {
 
             const rawJson = await this.callDeepSeekAction(userId, prompt);
             if (!rawJson) return false;
+            if (this.fastTurnEpochMap.get(chatId) !== turnEpoch) {
+                this.log('info', `[FeiyuArbiter] handleFastChatTurn 生成完毕时检测到 ${chatId} 已有更新消息到达，丢弃过期回复以防穿插`);
+                return true;
+            }
 
             const action = parseActionResponse(rawJson);
             if (action.reply_decision === 'ignore' && (!action.messages || action.messages.length === 0)) {
@@ -796,6 +864,7 @@ export class SocialArbiter {
                 replyToMessageId: messageId,
                 forceVoice,
                 voiceProbability,
+                shouldAbort: () => this.fastTurnEpochMap.get(chatId) !== turnEpoch,
             });
             return true;
         } catch (err) {
@@ -821,6 +890,16 @@ export class SocialArbiter {
     async handlePokeEvent(pokePayload) {
         const { chatId, userId, count } = pokePayload;
         this.log('info', `[FeiyuArbiter] 收到聚合戳一戳事件: chat=${chatId}, user=${userId}, count=${count}`);
+
+        // 若该会话刚刚在 20 秒内发生过图文消息互动（或正在生成回复），且并非恶意狂戳 (count < 3)，
+        // 则不再额外生成一套“大晚上的戳本鱼干啥呢/说吧找我啥事”文字气泡去打断正在聊的正事，仅反戳一下互动即可！
+        const nowMs = this.now();
+        const lastMsgAt = this.lastUserMessageAtMap.get(chatId) || 0;
+        if (count < 3 && (this.groupChimeRunningSet.has(chatId) || (nowMs - lastMsgAt) < 20_000)) {
+            this.log('info', `[FeiyuArbiter] ${chatId} 正处于活跃文字/看图对话中，跳过单次戳一戳文字气泡以免穿插打断`);
+            await this.dispatcher.sendPoke(chatId, userId);
+            return;
+        }
 
         const pokerProfile = this.memoryManager.getUserProfile(userId);
         const pokerName = pokerProfile?.nickname && pokerProfile.nickname !== String(userId) ? pokerProfile.nickname : `群友(${userId})`;
@@ -1451,6 +1530,8 @@ export class SocialArbiter {
 
         this.groupChimeRunningSet.add(chatId);
         this.isGroupChimeRunning = true;
+        const turnEpoch = (this.fastTurnEpochMap.get(chatId) || 0) + 1;
+        this.fastTurnEpochMap.set(chatId, turnEpoch);
         try {
             const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
             const historyBlock = recentMsgs
@@ -1458,6 +1539,7 @@ export class SocialArbiter {
                 .join('\n');
 
             const isHarass = SEXUAL_HARASS_REGEX.test(cleanText);
+            const vocativeHint = buildColloquialVocativeHint(cleanText);
             const feedRes = (calledByName || isFollowUpConvo || isExplicitGroupFeed)
                 ? this.tryNaturalFeed(chatId, userId, nickname, cleanText)
                 : null;
@@ -1465,17 +1547,18 @@ export class SocialArbiter {
                 `【系统内部事件：group_chime_in_check（群聊互动与插话评估）】`,
                 `当前群号：${groupId}，刚刚群友 [${nickname}(QQ:${userId})] 说了："${cleanText}"`,
                 `⚠️【防张冠李戴铁律】当前跟你说话的人是 [${nickname}(QQ:${userId})]！请看清近期群聊上下文中每句话前面的 [昵称(QQ号)]，绝对禁止把其他群友说的话或外号算在 [${nickname}] 头上！`,
-                `近期群聊上下文：\n${historyBlock}`,
+                `近期群聊上下文（注意区分每条消息的 QQ 号，并用于补全当前说话人省略的主语或前文背景）：\n${historyBlock}`,
+                ...(vocativeHint ? [vocativeHint] : []),
                 ...(isHarass ? [`🚨【反性骚扰回击指令】检测到该群友正在对你开黄腔/性骚扰/问猥琐下头问题！绝对禁止呆呆傻傻顺着问题正经回答或科普，也严禁设为 ignore！必须将 reply_decision 设为 "send_message"，立刻开启毒舌暴躁模式，用犀利嫌弃的口吻连发 1~2 条短气泡狠狠痛骂回击对方（喊ta「下头怪」），并将 qq_action.type 设为 "send_meme" (meme_tag="尾巴拍" 或 "生气")！`] : []),
                 ...(hasImage ? [`🖼️【视觉感知提示】群友消息中包含图片或表情包（见其中的“视觉画面描述”），你可以针对图片内容吐槽，或者设置 reply_decision = "meme_only" / qq_action.type = "send_meme" 发表情包跟对方斗图！`] : []),
                 ...(calledByName || isExplicitGroupFeed
-                    ? [`🎯【点名/投喂呼叫触发】群友刚刚直接向你发起了互动或投喂（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以傲娇鲜活的大肥鱼口吻分成 1~2 条超短气泡（每条 <= 20 字，不加句号）回应对方！`]
+                    ? [`🎯【点名/投喂呼叫触发】群友刚刚直接向你发起了互动或投喂（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以傲娇鲜活的大肥鱼口吻只发 1 条精炼短气泡（10~25 字以内，一句话说完，不加句号）回应对方！`]
                     : isFollowUpConvo
-                        ? [`⚡【连续对话追问余温中】你刚刚才和群友 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着发了："${cleanText}"！只要对方是在接你的话茬、发图斗图、调侃你（比如要把你烤了/炖了）、追问你或继续和你互动，请务必将 reply_decision 设为 "send_message"（或 "meme_only" 斗图），用 1~2 条超短傲娇气泡回怼或接梗！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
+                        ? [`⚡【连续对话追问余温中】你刚刚才和群友 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着发了："${cleanText}"！请先结合近期群聊上下文理解对方这句话省略的主语（若对方句首/句尾带了“笨蛋/傻鱼”，那是喊你的称呼词，真正说的是前面讨论的那个设置/问题/事情！），只要对方是在接你的话茬、继续刚才的话题、发图斗图、调侃你或追问你，请将 reply_decision 设为 "send_message"（或 "meme_only"），只用 1 条精炼短气泡准确回应！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
                         : [
                             `当前你的无聊度为 ${boredom}/100${boredom >= 65 ? '（你现在挺无聊的，很想找群友搭话吐槽！）' : ''}。`,
                             `判断准则：`,
-                            `1. 如果群友在聊美食（如五花肉/白米饭/夜宵）、游戏、摸鱼、日常趣事、晒图，或者提到了本鱼/老大，又或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），输出 1~2 条超短沙雕/傲娇吐槽（每条 <= 20 字，不加句号；非美食话题不要句句硬扯五花肉）。`,
+                            `1. 如果群友在聊美食（如五花肉/白米饭/夜宵）、游戏、摸鱼、日常趣事、晒图，或者提到了本鱼/老大，又或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），只输出 1 条精炼沙雕/傲娇吐槽（10~22 字以内，不加句号；非美食话题不要句句硬扯五花肉）。`,
                             `2. 如果话题严肃、或者插话会显得突兀打扰别人，请务必将 reply_decision 设为 "ignore"，保持高冷潜水！`,
                         ]),
                 buildDynamicTurnContext({
@@ -1493,6 +1576,10 @@ export class SocialArbiter {
 
             const rawJson = await this.callDeepSeekAction(userId, prompt);
             if (!rawJson) return false;
+            if (this.fastTurnEpochMap.get(chatId) !== turnEpoch) {
+                this.log('info', `[FeiyuArbiter] 群聊插话生成完毕时检测到 ${chatId} 已有更新消息到达，丢弃过期回复以防穿插`);
+                return true;
+            }
 
             const action = parseActionResponse(rawJson);
             if (action.reply_decision === 'ignore') {
@@ -1529,6 +1616,7 @@ export class SocialArbiter {
                 replyToMessageId: inbound.messageId,
                 forceVoice,
                 voiceProbability,
+                shouldAbort: () => this.fastTurnEpochMap.get(chatId) !== turnEpoch,
             });
             return true;
         } catch (err) {
@@ -2124,47 +2212,83 @@ export class SocialArbiter {
     }
 
     /**
-     * 调用 DeepSeek 生成结构化 JSON Action（遵循 Context Caching 前缀排布）
+     * 调用 DeepSeek (`deepseek-chat` 极速 JSON 通道，`gpt-6-luna` 容灾兜底) 生成结构化 JSON Action（遵循 Context Caching 前缀排布）
      * @param {string} userId
      * @param {string} dynamicUserPrompt
      * @param {AbortSignal} [externalSignal]
      */
     async callDeepSeekAction(userId, dynamicUserPrompt, externalSignal) {
         const apiKey = getDeepSeekApiKey();
-        if (!apiKey) return null;
+        const lunaKey = getLunaApiKey();
+        if (!apiKey && !lunaKey) return null;
 
         const systemPrefix = buildCachedSystemPromptPrefix(this.memoryManager, userId);
-        const timeoutSignal = AbortSignal.timeout(20_000);
-        const signal = externalSignal && typeof AbortSignal.any === 'function'
-            ? AbortSignal.any([externalSignal, timeoutSignal])
-            : (externalSignal || timeoutSignal);
 
-        try {
-            const res = await this.fetchImpl('https://api.deepseek.com/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`,
-                },
-                body: JSON.stringify({
-                    model: 'deepseek-chat',
-                    response_format: { type: 'json_object' },
-                    messages: [
-                        { role: 'system', content: systemPrefix },
-                        { role: 'user', content: dynamicUserPrompt },
-                    ],
-                    temperature: 0.85,
-                    max_tokens: 450,
-                }),
-                signal,
-            });
-            if (!res.ok) return null;
-            const data = await res.json();
-            return data.choices?.[0]?.message?.content?.trim() || null;
-        } catch (err) {
-            this.log('debug', `[FeiyuArbiter] callDeepSeekAction 失败或中断: ${err?.message || err}`);
-            return null;
+        if (apiKey) {
+            const timeoutSignal = AbortSignal.timeout(18_000);
+            const signal = externalSignal && typeof AbortSignal.any === 'function'
+                ? AbortSignal.any([externalSignal, timeoutSignal])
+                : (externalSignal || timeoutSignal);
+            try {
+                const res = await this.fetchImpl('https://api.deepseek.com/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`,
+                    },
+                    body: JSON.stringify({
+                        model: 'deepseek-chat',
+                        response_format: { type: 'json_object' },
+                        messages: [
+                            { role: 'system', content: systemPrefix },
+                            { role: 'user', content: dynamicUserPrompt },
+                        ],
+                        temperature: 0.75,
+                        max_tokens: 450,
+                    }),
+                    signal,
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const content = data.choices?.[0]?.message?.content?.trim();
+                    if (content) return content;
+                }
+            } catch (err) {
+                this.log('debug', `[FeiyuArbiter] callDeepSeekAction 主通道失败或中断: ${err?.message || err}`);
+                if (externalSignal?.aborted) return null;
+            }
         }
+
+        if (lunaKey && this.fetchImpl === globalThis.fetch) {
+            const fallbackSignal = externalSignal && typeof AbortSignal.any === 'function'
+                ? AbortSignal.any([externalSignal, AbortSignal.timeout(18_000)])
+                : (externalSignal || AbortSignal.timeout(18_000));
+            try {
+                const lunaRes = await this.fetchImpl('https://sub2api.emberanvil.dev/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${lunaKey}`,
+                    },
+                    body: JSON.stringify({
+                        model: 'gpt-6-luna',
+                        messages: [
+                            { role: 'system', content: systemPrefix },
+                            { role: 'user', content: dynamicUserPrompt },
+                        ],
+                        temperature: 0.7,
+                        max_tokens: 450,
+                    }),
+                    signal: fallbackSignal,
+                });
+                if (lunaRes.ok) {
+                    const lunaData = await lunaRes.json();
+                    return lunaData.choices?.[0]?.message?.content?.trim() || null;
+                }
+            } catch {}
+        }
+
+        return null;
     }
 
     /**
@@ -2187,7 +2311,7 @@ export class SocialArbiter {
                     messages: [
                         {
                             role: 'system',
-                            content: '你是傲娇小蓝鲸“大肥鱼”的记忆提炼器。请将关于目标用户的多条碎片事实合并为不超过 6 条精炼特征，并结合【ta本人的昵称关键字】或【独有聊天梗】给ta起一个 2~5 字的全群唯一专属称呼（pet_nickname，严禁使用“记仇榜常客/烤鱼狂魔/下头怪/五花肉菩萨/熬夜冠军”等通用大类词，严禁与 taken_nicknames_to_avoid 重名），输出 JSON: {"known_facts": ["事实1", "事实2"], "pet_nickname": "专属称呼"}',
+                            content: '你是傲娇小蓝鲸“大肥鱼”的记忆提炼器。请将关于目标用户的多条碎片事实合并为不超过 6 条精炼特征，并基于【ta本人的昵称】提炼一个自然顺口、像真人朋友平时会喊的 2~4 字简称/小名（pet_nickname，如“咬一口的苹果”叫“小苹果”，“团子客服娘”叫“团子”，“Haruhi”叫“春希”；严禁把事件动词拼进名字里造出“春希撸尾/许愿烤鱼”这种怪词，严禁使用“记仇榜常客/下头怪”等大类词，严禁与 taken_nicknames_to_avoid 重名），输出 JSON: {"known_facts": ["事实1", "事实2"], "pet_nickname": "自然简称"}',
                         },
                         {
                             role: 'user',
@@ -2248,7 +2372,7 @@ export class SocialArbiter {
                                 '1. rolling_summary: 用大肥鱼视角写一段 <= 80 字的该用户浓缩印象总结（包含ta的性格、常聊话题、对本鱼的态度）。',
                                 '2. important_memories: 数组（最多 8 条，每条 <= 35 字），只保留【重要信息】：真实身份/职业/学业、固定喜好或雷区、与大肥鱼的核心关系/长期恩怨、重大约定或里程碑。',
                                 '3. normal_memories: 数组（最多 6 条，每条 <= 30 字），保留【近期一般信息】：最近聊过的日常话题、近期投喂/调侃/点歌/斗嘴小事（把过时重复的琐事合并或淘汰）。',
-                                '4. pet_nickname: 给ta起一个全群独一无二的 2~5 字专属称呼，必须结合【ta本人的昵称字眼】或【ta个人独有聊天梗】（例如昵称“咬一口的苹果”叫“脆苹果/苹果仔”，昵称“空气會說谎”叫“恋爱空气”，昵称“是伊蕾娜诶”叫“魔女伊蕾娜”，昵称“凡了个凡”叫“魔改阿凡”）。严禁使用“记仇榜常客”、“烤鱼狂魔”、“下头怪”、“五花肉菩萨”、“熬夜冠军”、“臭肥鱼”等大类模板词，且严禁与 taken_nicknames_to_avoid 中的已占用外号重名！',
+                                '4. pet_nickname: 基于【ta本人的昵称】提炼一个自然顺口、像真人平时聊天会喊的 2~4 字简称/小名（例如“咬一口的苹果”叫“小苹果”，“是伊蕾娜诶”叫“伊蕾娜”，“团子客服娘”叫“团子”，“Haruhi”叫“春希”，“亏损香辣豆干”叫“香辣豆干”）。⚠️严禁把聊天事件或动词硬拼进名字里（绝对禁止造出“春希撸尾”、“谁嫌鱼”、“许愿烤鱼”、“金圆券萝卜”这种不通顺的怪词），严禁使用“记仇榜常客”、“下头怪”等大类词，且严禁与 taken_nicknames_to_avoid 重名！',
                                 '必须严格输出 JSON 对象：{"rolling_summary": "...", "important_memories": ["..."], "normal_memories": ["..."], "pet_nickname": "..."}',
                             ].join('\n'),
                         },
