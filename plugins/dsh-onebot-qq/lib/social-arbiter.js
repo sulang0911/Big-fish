@@ -115,8 +115,8 @@ export function parseNaturalFeedIntent(rawText = '') {
         return null;
     }
 
-    // 1. 口语自然投喂（如：“肥鱼请你吃红烧肉”、“给本鱼塞一碗白米饭”、“赏你一块五花肉”、“拿去加餐”）
-    const verbMatch = userCaption.match(/(?:投喂(?:肥鱼|飞鱼|大肥鱼|本鱼|你)?|喂(?:你|本鱼|肥鱼|飞鱼|大肥鱼)(?:吃|喝)?|(?:给你|给肥鱼|给飞鱼|给本鱼|请你|请肥鱼|请本鱼|赏你|赏肥鱼|赏本鱼|奖励你|犒劳你)(?:吃|喝|炫|来一[碗盘份块杯串个顿包桶勺口])?|塞(?:给你|你嘴里)|拿去(?:吃|干饭|加餐)|张嘴吃)\s*(?:一[碗盘份块杯串个顿包桶勺口]|点|些|碗|份|块|杯)?\s*([^\s，。！？!?,~～呢吧啦呀嘛捏]{1,14})?/i);
+    // 1. 口语自然投喂（如：“肥鱼请你吃红烧肉”、“给本鱼塞一碗白米饭”、“赏你一块五花肉”、“你吃西北风吗”、“来碗猪脚饭”）
+    const verbMatch = userCaption.match(/(?:投喂(?:肥鱼|飞鱼|大肥鱼|本鱼|你)?|喂(?:你|本鱼|肥鱼|飞鱼|大肥鱼)(?:吃|喝)?|(?:给你|给肥鱼|给飞鱼|给本鱼|请你|请肥鱼|请本鱼|赏你|赏肥鱼|赏本鱼|奖励你|犒劳你)(?:吃|喝|炫|来一[碗盘份块杯串个顿包桶勺口])?|塞(?:给你|你嘴里)|拿去(?:吃|干饭|加餐)|张嘴吃|(?:你吃|吃不吃|来[一碗盘份块杯串个顿包桶口])\s*(?=脆皮五花肉|五花肉|白米饭|大米饭|米饭|红烧肉|猪脚饭|卤肉饭|扣肉|烤肉|火锅|烧烤|奶茶|炸鸡|汉堡|薯条|披萨|蛋糕|草莓|鸡腿|螺蛳粉|面条|包子|饺子|香菜|折耳根|苦瓜|烤鱼|水煮鱼|酸菜鱼|生鱼片|刺身|西北风|空气))\s*(?:一[碗盘份块杯串个顿包桶勺口]|点|些|碗|份|块|杯)?\s*([^\s，。！？!?,~～呢吧啦呀嘛捏吗]{1,14})?/i);
     if (verbMatch) {
         let candidate = String(verbMatch[1] || '').replace(/^(了|个|份|碗|块|盘|杯|串|点|些|口)+/, '').trim();
         if (!candidate || /^(吃|喝|加餐|干饭|饭|东西|好吃的|夜宵|零食)$/.test(candidate)) {
@@ -638,8 +638,9 @@ export class SocialArbiter {
             return res;
         }
 
-        // 检查今日投喂次数上限（吃撑了但依然开心回应）
-        if (currentCount >= MAX_DAILY_FEEDS) {
+        // 检查今日投喂次数上限（老大无限畅喂，群友自然投喂每日上限 15 次）
+        const naturalLimit = isAdmin ? 999 : 15;
+        if (currentCount >= naturalLimit) {
             const st = this.driveEngine.getState();
             const res = {
                 fed: false,
@@ -647,7 +648,7 @@ export class SocialArbiter {
                 foodName,
                 taste,
                 voiceBoost: 0.30,
-                promptHint: `🍗【投喂触发·肚皮圆滚滚吃撑啦】对方投喂了你「${foodName}」，但今天已经喂过你 ${MAX_DAILY_FEEDS} 次啦（当前饱食度 ${st.hunger}/100）！请不要发系统属性面板，直接拍拍圆滚滚的肚皮傲娇表示今天实在装不下啦，让ta明天再喂！`,
+                promptHint: `🍗【投喂触发·肚皮圆滚滚吃撑啦】对方投喂了你「${foodName}」，但今天已经喂过你很多次啦（当前饱食度 ${st.hunger}/100）！请不要发系统属性面板，直接拍拍圆滚滚的肚皮傲娇表示今天实在装不下啦，让ta明天再喂！`,
             };
             this.lastNaturalFeedKey = dedupKey;
             this.lastNaturalFeedResult = res;
@@ -682,7 +683,7 @@ export class SocialArbiter {
         const modeDesc = mode === 'photo'
             ? `发来了一张美食照片请你看图“赛博吃席”（识别菜品：「${foodName}」）`
             : mode === 'emoji'
-                ? `随手给你塞了一口小零食表情（「${foodName}」）`
+                ? `给你发了食物表情投喂你吃「${foodName}」`
                 : `投喂了你一份「${foodName}」`;
         const res = {
             fed: true,
@@ -691,8 +692,8 @@ export class SocialArbiter {
             taste,
             voiceBoost: isFav ? 0.55 : 0.35,
             promptHint: isFav
-                ? `💖【无感投喂成功·本命最爱双倍暴击！】对方刚刚${modeDesc}！这是你最爱的本命美食，你的饱食度已飙升至 ${st.hunger}/100${wasSulking ? '，且原本记小本本的坏脾气瞬间被彻底哄好啦' : ''}！严禁输出死板的系统属性面板，请直接用 1~2 条超开心满足的拟人短气泡（如“哇！！是本鱼最爱的…”、“嚼嚼嚼太香了捏”）回应，并可设 qq_action.type = "send_meme" (meme_tag="happy")！`
-                : `😋【无感投喂成功·开心干饭】对方刚刚${modeDesc}（饱食度已升至 ${st.hunger}/100${wasSulking ? '，你的小脾气也被哄好啦' : ''}）！严禁输出死板的系统属性面板，请直接顺着这份美食用 1~2 条自然可爱的短气泡点评味道、开心接下投喂！`,
+                ? `💖【最高优先级·无感投喂成功（本命最爱双倍暴击！）】对方刚刚${modeDesc}，你已经一口吃进肚子里啦！（当前饱食度已飙升至 ${st.hunger}/100${wasSulking ? '，且你原本记小本本的脾气瞬间被这顿美食彻底哄好啦' : ''}）。⚠️绝对禁止抱怨“就一个？”或追问别的食物，也严禁输出死板的系统属性面板！必须立刻表现为已经大口吃下「${foodName}」、嚼得超香超开心满足（如“哇！！热腾腾的${foodName}本鱼一口炫完！”、“嚼嚼嚼太香了捏”），并可设 qq_action.type = "send_meme" (meme_tag="happy")！`
+                : `😋【最高优先级·无感投喂成功（开心干饭！）】对方刚刚${modeDesc}，你已经开心吃下啦（饱食度已升至 ${st.hunger}/100${wasSulking ? '，你的小脾气也被哄好啦' : ''}）！⚠️绝对禁止抱怨挑刺或输出死板的系统属性面板，请直接表现为已经吃下「${foodName}」，用 1~2 条自然可爱的短气泡夸赞味道、开心干饭！`,
         };
         this.lastNaturalFeedKey = dedupKey;
         this.lastNaturalFeedResult = res;
@@ -731,7 +732,6 @@ export class SocialArbiter {
                     : `【私聊实时对话（对方：${nickname}(${userId})）】`,
                 `对方刚刚发来消息："${cleanText}"`,
                 ...(historyBlock ? [`近期对话上下文：\n${historyBlock}`] : []),
-                ...(feedRes ? [feedRes.promptHint] : []),
                 `回复准则：`,
                 `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
                 `2. 以傲娇、机灵、爱吃白米饭和五花肉的小蓝鲸“大肥鱼”口吻，拆分为 1~3 条简短自然的气泡（每条 <= 25 字，句尾绝不加句号），像真人秒回微信/QQ一样有灵气！（聊美食/投喂时可开心馋五花肉和白米饭，聊其他话题时自然顺着话题接梗，不要句句硬扯五花肉）`,
@@ -747,6 +747,7 @@ export class SocialArbiter {
                     eventPayload: { event: isGroup ? 'group_fast_turn' : 'private_fast_turn', hasImage, fed: Boolean(feedRes?.fed) },
                     envContext: this.getEnvironmentContext(),
                 }),
+                ...(feedRes ? [feedRes.promptHint] : []),
             ].join('\n');
 
             const rawJson = await this.callDeepSeekAction(userId, prompt);
@@ -1334,21 +1335,30 @@ export class SocialArbiter {
             (activeConvo.userId === userId || SEXUAL_HARASS_REGEX.test(cleanText) || /(你|你们|烤|炖|红烧|清蒸|吃|香|臭|五花肉|略略略|哈哈|鱼)/i.test(cleanText))
         );
 
-        if (!calledByName && !isFollowUpConvo) {
+        const naturalFeedPreview = parseNaturalFeedIntent(cleanText);
+        const isExplicitGroupFeed = Boolean(naturalFeedPreview);
+
+        if (!calledByName && !isFollowUpConvo && !isExplicitGroupFeed) {
             if (this.driveEngine.isSleeping(new Date(nowMs))) return false;
             if (this.driveEngine.state.energy <= 30) return false;
         }
-        if (this.isGroupChimeRunning) return false;
+        if (this.isGroupChimeRunning) {
+            // 若是点名、连续对话或投喂（如老大连发 🍚 和 🥓），等待上一条气泡发完再处理，绝不静默丢弃！
+            if (calledByName || isFollowUpConvo || isExplicitGroupFeed) {
+                let waited = 0;
+                while (this.isGroupChimeRunning && waited < 4000) {
+                    await this.dispatcher.sleep(250);
+                    waited += 250;
+                }
+            }
+            if (this.isGroupChimeRunning) return false;
+        }
 
-        // 检查群插话冷却（仅对“无人点名且非连续对话”的野生潜水插话生效；被点名或处于 3 分钟连续对话余温期时直接穿透冷却！）
+        // 检查群插话冷却（仅对“无人点名且非连续对话”的野生潜水插话生效；被点名、连续对话或投喂时直接穿透冷却！）
         const cooldownUntil = this.groupCooldownUntilMap.get(chatId) || 0;
-        if (!calledByName && !isFollowUpConvo && nowMs < cooldownUntil) return false;
+        if (!calledByName && !isFollowUpConvo && !isExplicitGroupFeed && nowMs < cooldownUntil) return false;
 
         const hasImage = /\[图片:|视觉画面描述:/i.test(cleanText);
-        const naturalFeedPreview = parseNaturalFeedIntent(cleanText);
-        const isExplicitGroupFeed = Boolean(
-            naturalFeedPreview && (calledByName || isFollowUpConvo || naturalFeedPreview.mode === 'photo' || /(肥鱼|飞鱼|本鱼)/.test(cleanText))
-        );
         const hitInterestKeyword = GROUP_INTEREST_REGEX.test(cleanText) || hasImage || isExplicitGroupFeed;
         const isHotBurst = tsList.length >= 5;
         const boredom = Number(this.driveEngine.state.boredom) || 0;
@@ -1386,11 +1396,10 @@ export class SocialArbiter {
                 `【系统内部事件：group_chime_in_check（群聊互动与插话评估）】`,
                 `当前群号：${groupId}，刚刚群友 [${nickname}(${userId})] 说了："${cleanText}"`,
                 `近期群聊上下文：\n${historyBlock}`,
-                ...(feedRes ? [feedRes.promptHint] : []),
                 ...(isHarass ? [`🚨【反性骚扰回击指令】检测到该群友正在对你开黄腔/性骚扰/问猥琐下头问题！绝对禁止呆呆傻傻顺着问题正经回答或科普，也严禁设为 ignore！必须将 reply_decision 设为 "send_message"，立刻开启毒舌暴躁模式，用犀利嫌弃的口吻连发 1~2 条短气泡狠狠痛骂回击对方（喊ta「下头怪」），并将 qq_action.type 设为 "send_meme" (meme_tag="尾巴拍" 或 "生气")！`] : []),
                 ...(hasImage ? [`🖼️【视觉感知提示】群友消息中包含图片或表情包（见其中的“视觉画面描述”），你可以针对图片内容吐槽，或者设置 reply_decision = "meme_only" / qq_action.type = "send_meme" 发表情包跟对方斗图！`] : []),
-                ...(calledByName
-                    ? [`🎯【点名呼叫触发】群友刚刚直接点名喊了你（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以傲娇鲜活的大肥鱼口吻分成 1~2 条超短气泡（每条 <= 20 字，不加句号）回应对方！`]
+                ...(calledByName || isExplicitGroupFeed
+                    ? [`🎯【点名/投喂呼叫触发】群友刚刚直接向你发起了互动或投喂（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以傲娇鲜活的大肥鱼口吻分成 1~2 条超短气泡（每条 <= 20 字，不加句号）回应对方！`]
                     : isFollowUpConvo
                         ? [`⚡【连续对话追问余温中】你刚刚才和群友 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着发了："${cleanText}"！只要对方是在接你的话茬、发图斗图、调侃你（比如要把你烤了/炖了）、追问你或继续和你互动，请务必将 reply_decision 设为 "send_message"（或 "meme_only" 斗图），用 1~2 条超短傲娇气泡回怼或接梗！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
                         : [
@@ -1406,9 +1415,10 @@ export class SocialArbiter {
                     userId,
                     nickname,
                     queryText: cleanText,
-                    eventPayload: { event: 'group_chime_in_check', calledByName, isFollowUpConvo, hitInterestKeyword, isHotBurst, boredom },
+                    eventPayload: { event: 'group_chime_in_check', calledByName, isFollowUpConvo, hitInterestKeyword, isHotBurst, boredom, fed: Boolean(feedRes?.fed) },
                     envContext: this.getEnvironmentContext(),
                 }),
+                ...(feedRes ? [feedRes.promptHint] : []),
             ].join('\n');
 
             const rawJson = await this.callDeepSeekAction(userId, prompt);
