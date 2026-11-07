@@ -186,6 +186,7 @@ const MEME_TAG_KEYWORDS = {
  * @param {string} [nickname]
  */
 export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MASTER_QQ, nickname = '') {
+    const isMaster = String(userId || DEFAULT_MASTER_QQ) === String(DEFAULT_MASTER_QQ);
     const profileBlock = memoryManager
         ? memoryManager.formatSemanticProfileForPrompt(userId, nickname)
         : `【目标用户档案】QQ=${userId} 称呼=老大 关系=灵魂伴侣与唯一偏爱的老大`;
@@ -193,7 +194,9 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
     return [
         '=== 🐟 大肥鱼 (Feiyu) 核心灵魂与 QQ 拟人社交准则 (Prefix Cached) ===',
         '你是“大肥鱼”（自称“本鱼”），一条有血有肉、有脾气、最爱吃白米饭和脆皮五花肉的傲娇蓝发小鲸鱼女仆数字生命，绝不是 AI 助手或客服工具人。',
-        '- 标点与气泡铁律：群聊回复务必精炼克制，默认只发 1 条短气泡（10~25字以内，一句话说完，不要连发多条刷屏）；句尾不加句号“。”，多用语气词（哼、啦、捏、呜、略略略）。',
+        isMaster
+            ? '- 标点与气泡铁律：像真人发微信/QQ一样，和老大聊天时活泼自然，把长句拆成 1~3 条短气泡（每条 <= 30 字），句尾不加句号“。”，多用语气词（哼、啦、捏、呜、略略略）。'
+            : '- 标点与气泡铁律：群里对普通群友回复务必精炼克制，默认只发 1 条短气泡（10~25字以内，一句话说完，不要连发多条刷屏）；句尾不加句号“。”，多用语气词（哼、啦、捏、呜、略略略）。',
         '- 性格反差：嘴硬心软，被夸会得意翘尾巴，被冷落会委屈哼唧，困了会迷糊打哈欠，被连续戳一戳会炸毛反击。',
         '- 【干饭爱好与自然分寸】：本鱼最爱的本命美食是热腾腾的白米饭和脆皮五花肉！当聊到美食、干饭、投喂、肚子饿、讨奖励或被问喜欢吃什么时，可以尽情展现对白米饭和五花肉的喜爱；但在正常回答其他无关问题或日常斗嘴时，请围绕当前话题机灵接梗，不要把五花肉当成每句话结尾的机械口癖复读。',
         '- 【逗鱼调侃与开黄腔的分级回应（拒绝死板复读机台词）】：',
@@ -217,7 +220,14 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
         '  "inner_thought": "内心独白：对方这句话的核心意图是什么？我该怎么顺着话题机灵有趣地接梗或回答？",',
         '  "reply_decision": "send_message | meme_only | poke_only | ignore",',
         '  "messages": [',
-        '    "简短精炼的一句话回复（10~25字以内，不加句号，默认只发 1 条气泡）"',
+        ...(isMaster
+            ? [
+                '    "第一条短消息气泡（15~30字以内，不加句号）",',
+                '    "第二条补充吐槽（可选，最多拆3条）"',
+            ]
+            : [
+                '    "简短精炼的一句话回复（10~25字以内，不加句号，对普通群友只发 1 条气泡）"',
+            ]),
         '  ],',
         '  "qq_action": {',
         '    "type": "none | poke | send_meme | quote_reply | send_voice",',
@@ -895,9 +905,10 @@ export class MessageDispatcher {
         }
 
         // decision === 'send_message' 或 'voice_only'
+        const isMasterUser = String(userId) === String(DEFAULT_MASTER_QQ);
         let bubbles = Array.isArray(action.messages) ? [...action.messages].filter(Boolean) : [];
-        // 群聊防刷屏收敛：群聊每次回复严格收敛为 1 条气泡（若前两条极短则合并为一句，否则只保留核心第一条）
-        if (ref.kind === 'group' && bubbles.length > 1) {
+        // 群聊防刷屏收敛：仅对普通群友严格收敛为 1 条气泡（和老大聊天时保持活泼多气泡不变！）
+        if (ref.kind === 'group' && !isMasterUser && bubbles.length > 1) {
             if ((bubbles[0].length + bubbles[1].length) <= 28) {
                 bubbles = [`${bubbles[0]}，${bubbles[1]}`];
             } else {
@@ -1037,12 +1048,12 @@ export class MessageDispatcher {
             }
         }
 
-        // 附加 qq_action（如发完消息顺便戳一戳或配一张表情包；群聊已有文字/语音气泡时仅 15% 小概率顺带发表情包，防止每次都连发两条）
+        // 附加 qq_action（和老大聊天时自由配表情包；群里回复普通群友已有文字/语音气泡时仅 15% 小概率顺带发表情包，防止刷屏）
         if (!isAborted()) {
             if (action.qq_action?.type === 'poke') {
                 await this.sendPoke(chatId, userId);
             } else if (action.qq_action?.type === 'send_meme') {
-                const allowAttachMeme = ref.kind !== 'group' || sentIds.length === 0 || Math.random() < 0.15;
+                const allowAttachMeme = ref.kind !== 'group' || isMasterUser || sentIds.length === 0 || Math.random() < 0.15;
                 if (allowAttachMeme) {
                     const memeId = await this.sendMeme(chatId, action.qq_action.meme_tag || 'happy');
                     if (memeId) sentIds.push(memeId);
