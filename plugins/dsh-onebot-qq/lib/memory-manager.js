@@ -1428,26 +1428,52 @@ export class MemoryManager {
     }
 
     /**
-     * 判断某个外号是否属于同质化的大类标签（禁止将分类标签当作个人称呼）
+     * 判断某个外号是否属于同质化的大类标签或生硬缝合的怪异动宾词组（禁止将此类词当作个人称呼）
      */
     isGenericCategoryNickname(nick) {
         const s = String(nick || '').trim();
         if (!s) return true;
         return /^(记仇榜常客|烤鱼狂魔|炖鱼大厨|下头怪|五花肉菩萨|熬夜冠军|熟人群友|普通路人|铁杆饭票|饭票候选|群友|臭肥鱼|肥鱼|大肥鱼|本鱼|损友|小损友|投喂员)$/i.test(s)
-            || /(记仇榜|常客|饭票候选|熟人群友|普通路人|臭肥鱼)/.test(s);
+            || /(记仇榜|常客|饭票候选|熟人群友|普通路人|臭肥鱼|撸尾|嫌鱼|烤鱼|胖鲸|亏损户|圆券|回戳鱼|鱼片)/.test(s);
     }
 
     /**
-     * 从群友本人的 QQ 昵称提取自然、不撞名的 2~4 字个人简称/俏皮称呼
+     * 从群友本人的 QQ 昵称提取自然、顺口的人类简称/昵称（绝不暴力截断成半截残词）
      */
     derivePersonalNick(nickname, userId = '') {
         const uid = String(userId || '');
         if (uid === this.masterQQ) return '老大';
-        const raw = String(nickname || '')
-            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}❤✨⭐🌙🔥💧🐟🐾]/gu, '')
+        const raw0 = String(nickname || '')
+            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}❤✨⭐🌙🔥💧🐟🐾🥕🍑]/gu, '')
             .replace(/^群友_/, '')
             .trim();
-        if (!raw || /^\d+$/.test(raw)) return `小鱼干${uid.slice(-2) || '号'}`;
+        if (!raw0 || /^\d+$/.test(raw0)) return `鱼友${uid.slice(-2) || '号'}`;
+        if (/^\([●•·_\-—]+\)$/.test(raw0)) return '大白';
+
+        const raw = raw0.replace(/^[-_~～—·•\s]+|[-_~～—·•\s]+$/g, '').trim();
+        if (!raw) return raw0.slice(0, 4);
+
+        // 纯英文昵称（如 Haruhi, Marshmello, CeciliaMak, Doy）：保留完整单词或首段驼峰，绝不截成 3 个字母
+        if (/^[A-Za-z0-9_.\s]+$/.test(raw)) {
+            const camel = raw.match(/^[A-Z][a-z]{2,9}/);
+            if (camel && raw.length > 8) return camel[0];
+            return raw.slice(0, 10);
+        }
+
+        // 常见前后缀剥离（如“团子客服娘” -> “团子”，“被冷空气袭击” -> “冷空气”，“亏损香辣豆干” -> “香辣豆干”）
+        if (/^被(.+?)(?:袭击|打败|封印|包围)$/.test(raw)) {
+            return raw.replace(/^被(.+?)(?:袭击|打败|封印|包围)$/, '$1');
+        }
+        if (/^(.{2,4})(?:客服娘|客服|酱|君|大人|先生|女士)$/.test(raw)) {
+            return raw.replace(/^(.{2,4})(?:客服娘|客服|酱|君|大人|先生|女士)$/, '$1');
+        }
+        if (/^(?:亏损|盈利|野生|迷路|暴躁|安静)(.{2,4})$/.test(raw)) {
+            return raw.replace(/^(?:亏损|盈利|野生|迷路|暴躁|安静)(.{2,4})$/, '$1');
+        }
+        if (raw.includes(' ')) {
+            const firstPart = raw.split(/\s+/)[0];
+            if (firstPart.length >= 2 && firstPart.length <= 4) return firstPart;
+        }
         if (raw.includes('的')) {
             const parts = raw.split('的').map(s => s.trim()).filter(Boolean);
             const tail = parts[parts.length - 1];
@@ -1465,7 +1491,7 @@ export class MemoryManager {
             return `阿${raw[0]}`;
         }
         if (raw.length <= 4) return raw;
-        return raw.slice(0, 3);
+        return raw.slice(0, 4);
     }
 
     setPetNickname(userId, petNickname, fallbackNickname = '') {
@@ -1837,7 +1863,7 @@ export class MemoryManager {
             `【当前对话目标 QQ 用户专属档案 (Per-User Isolated Memory)】`,
             `- 用户 QQ: ${profile.user_id}`,
             `- 原始昵称: ${profile.nickname}`,
-            `- 🗣️【专属称呼指南 (千人千面，拒绝同质化)】：${isMaster ? '称呼ta为「老大」（但不用每句话都喊）' : `平时水群接话约 70% 直接自然回话（不必句句带称呼）；需要喊ta名字时（约 30%），请喊ta的个人简称「${shortNick}」或专属外号「${validPetNick}」！绝对禁止喊别人“记仇榜常客”、“烤鱼狂魔”、“熟人群友”、“饭票”等大类标签！`}`,
+            `- 🗣️【专属称呼指南 (千人千面，拒绝强行打卡)】：${isMaster ? '称呼ta为「老大」（但不用每句话都喊）' : `平时水群接话请直接顺着话茬自然回话（不必句句带称呼，更严禁在句子中间生硬插入四字外号造成病句！）；只有需要专门喊ta时，才自然喊一声「${validPetNick}」（或原名简称「${shortNick}」）。`}`,
             `- 🎭【说话态度定位 (仅决定语气，严禁当称呼喊出口)】：${profile.relationship_tag}（好感度 ${profile.affection}/100 —— ${attitudeGuide}）`,
             ...(summaryLine ? [summaryLine] : []),
             `- 🔴 重要记忆 (Important, 永久核心事实):\n${impLines}`,

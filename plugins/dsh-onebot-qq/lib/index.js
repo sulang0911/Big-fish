@@ -210,8 +210,8 @@ export const Config = z.object({
         .description('注入队列轮询间隔（毫秒，W1；最小 500）'),
     logLevel: z.union([z.const('debug'), z.const('info'), z.const('warn'), z.const('error')]).default('info')
         .description('控制台日志级别门槛（debug < info < warn < error）：低于该级别的日志不输出。debug=全部输出（含「session 事件早退」等调试行）；info=常规信息（启动、连接建立、meta 事件等，默认）；warn=仅警告与错误；error=仅错误'),
-    idleGroupChats: z.array(z.string()).default(['group:434137389'])
-        .description('群聊冷场主动冒泡监听目标列表（如 group:434137389）'),
+    idleGroupChats: z.array(z.string()).default(['group:434137389', 'group:927066977'])
+        .description('群聊冷场主动冒泡监听目标列表（如 group:434137389, group:927066977）'),
     idleHours: z.number().default(2.0)
         .description('群聊冷场触发阈值（小时，默认 2.0 小时）'),
 });

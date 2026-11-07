@@ -20,11 +20,11 @@ function randFloat(min, max) {
     return Math.round((min + Math.random() * (max - min)) * 10) / 10;
 }
 
-/** 故意逗鱼/欺负大肥鱼触发“闹别扭记小本本”的正则 */
-export const TEASE_BULLY_REGEX = /(不给你吃|不喂你|饿死你|把你炖了|把你烤了|把你蒸了|烤了你|炖了你|蒸了你|红烧肥鱼|清蒸肥鱼|烤肥鱼|烤鱼|生鱼片|全吃光|一口都不留|略略略|傻鱼|笨鱼|臭鱼|丑鱼|死鱼|胖头鱼|菜刀|杀鱼|剁了你|把你切了)/i;
+/** 故意逗鱼/欺负/无厘头调戏大肥鱼触发“傲娇炸毛记小本本”的正则 */
+export const TEASE_BULLY_REGEX = /(不给你吃|不喂你|饿死你|把你炖了|把你烤了|把你蒸了|烤了你|炖了你|蒸了你|红烧肥鱼|清蒸肥鱼|烤肥鱼|烤鱼|生鱼片|全吃光|一口都不留|略略略|傻鱼|笨鱼|臭鱼|丑鱼|死鱼|胖头鱼|菜刀|杀鱼|剁了你|把你切了|生小鱼|下小鱼|产卵|下崽|生猴子|生孩子|怀上|怀孕|当我老婆|给我当老婆|嫁给我)/i;
 
-/** 猥琐调戏/开黄腔/性骚扰检测正则（触发毒舌暴击回怼，绝不呆傻回答） */
-export const SEXUAL_HARASS_REGEX = /(胸多大|什么罩杯|几罩杯|胖次|内裤|内衣|胸罩|脱光|脱掉|脱衣服|看看腿|看看胸|看看逼|看看批|看看奈子|奶子|欧派|涩涩|色色|做爱|打炮|约炮|交配|发情|生猴子|生孩子|生小鱼|产卵|怀上|怀孕|舔你|舔舔腿|舔脚|闻闻脚|丝袜|黑丝|白丝|摸摸胸|摸摸腿|摸摸屁股|揉胸|揉揉胸|陪睡|侍寝|暖床|给操|草你|日你|操你|操死|日死|干死你|精液|射你|口交|足交|自慰|叫床|喘一个|娇喘|下面湿|小穴|肉便器|母狗|骚货|发骚)/i;
+/** 露骨猥琐/恶性开黄腔/性骚扰检测正则（触发嫌弃痛斥，绝不呆傻回答） */
+export const SEXUAL_HARASS_REGEX = /(胸多大|什么罩杯|几罩杯|胖次|内裤|内衣|胸罩|脱光|脱掉|脱衣服|看看腿|看看胸|看看逼|看看批|看看奈子|奶子|欧派|涩涩|色色|做爱|打炮|约炮|交配|发情|舔你|舔舔腿|舔脚|闻闻脚|丝袜|黑丝|白丝|摸摸胸|摸摸腿|摸摸屁股|揉胸|揉揉胸|陪睡|侍寝|暖床|给操|草你|日你|操你|操死|日死|干死你|精液|射你|口交|足交|自慰|叫床|喘一个|娇喘|下面湿|小穴|肉便器|母狗|骚货|发骚)/i;
 
 /** 哄大肥鱼开心消气的正则 */
 export const COAX_COMFORT_REGEX = /(哄哄|摸摸|乖啦|不气|别生气|原谅|给你吃|请你吃|给你留了|最喜欢肥鱼|最喜欢本鱼|抱抱|亲亲|对不起嘛|错啦|五花肉给你|白米饭给你)/i;
@@ -266,7 +266,7 @@ export class DriveEngine {
             ? ' ⚠️【生物钟警告：你刚刚在深夜 01:30~07:30 熟睡中被吵醒，迷迷糊糊带着强烈起床气，说话要揉眼睛抱怨困！】'
             : '';
         const sulkNote = snap.sulking
-            ? ` 💢【小脾气警告：你当前正在闹别扭记小本本（原因：${snap.sulkingReason || '刚才被欺负或冷落了'}）！回复可带一点傲娇小脾气，但请围绕当前话题接梗，绝不要句句机械索要五花肉拌饭！】`
+            ? ` 💢【小傲娇状态：${snap.sulkingReason || '刚才被调侃了'}（仅对刚惹你的本人带一点傲娇语气即可，聊具体话题时请专注理解对方话意，严禁句句复读“记小本本/清账”！）】`
             : '';
         return `【当前时间与大肥鱼实时内在生理状态 (InternalState)】时间=${nowStr} | 精力(energy)=${snap.energy}/100 | 无聊度(boredom)=${snap.boredom}/100 | 心境(mood)=${snap.mood}${snap.hunger < 25 ? ` | 饱食度(hunger)=${snap.hunger}/100(有点馋了，仅在聊到美食时顺带提一句，非美食话题禁止复读五花肉)` : ''}${wokeNote}${sulkNote}`;
     }
@@ -307,20 +307,20 @@ export class DriveEngine {
             wokenUp = true;
         }
 
-        // 非 /fish 指令的普通聊天：检测哄好 vs 故意逗鱼欺负，并随机缓解 2.0 ~ 5.0 无聊度
+        // 非 /fish 指令的普通聊天：先检测调戏/欺负，再检测纯意哄好，防止“给你米饭给我生小鱼”这种带坑的话误触发消气
         if (!/^\/fish(?:\s|$)/i.test(text)) {
             this.state.boredom = clamp(this.state.boredom - randFloat(2.0, 5.0), 0, 100);
-            if (text && COAX_COMFORT_REGEX.test(text) && this.isSulking(now.getTime())) {
+            if (text && (SEXUAL_HARASS_REGEX.test(text) || TEASE_BULLY_REGEX.test(text))) {
+                this.state.sulking = true;
+                this.state.sulkingReason = `刚才有人对本鱼说“${text.slice(0, 20)}”，气鼓鼓记小本本中`;
+                this.state.sulkingSince = now.getTime();
+                teased = true;
+            } else if (text && COAX_COMFORT_REGEX.test(text) && this.isSulking(now.getTime())) {
                 this.state.sulking = false;
                 this.state.sulkingReason = '';
                 this.state.sulkingSince = 0;
                 this.state.boredom = clamp(this.state.boredom - randFloat(4.0, 8.0), 0, 100);
                 coaxed = true;
-            } else if (text && TEASE_BULLY_REGEX.test(text)) {
-                this.state.sulking = true;
-                this.state.sulkingReason = `刚才有人对本鱼说“${text.slice(0, 20)}”，气鼓鼓记小本本中`;
-                this.state.sulkingSince = now.getTime();
-                teased = true;
             }
         }
         if (!wokenUp) {

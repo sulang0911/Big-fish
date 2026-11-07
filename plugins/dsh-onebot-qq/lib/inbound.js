@@ -87,6 +87,8 @@ export class InboundPipeline {
     recentGroupMessages = new Map();
     /** 群聊复读机队形检测缓存: groupId → { text, senders: Set, count, lastRepeatedText, lastRepeatAt } */
     groupRepeatState = new Map();
+    /** 同用户图片识图期间追发文字合流槽: "${chatId}:${userId}" → { extraTexts: string[], latestMessageId?: string } */
+    pendingVisionTurns = new Map();
     constructor(ctx, options = {}) {
         this.ctx = ctx;
         this.dedupMaxEntries = options.dedupMaxEntries ?? DEDUP_MAX_ENTRIES;
@@ -158,6 +160,15 @@ export class InboundPipeline {
             (isAdmin && adminToolPattern.test(textContent))
         );
         const isPublicFishCommand = /^\s*(?:@\d+\s*)?\/fish(?:\s|$)/i.test(inbound.text || textContent);
+        const userVisionKey = `${chatId}:${userId}`;
+        const hasInboundImg = Array.isArray(inbound.media) && inbound.media.some(m => m.kind === 'image');
+        const pendingVision = this.pendingVisionTurns.get(userVisionKey);
+        if (pendingVision && !hasInboundImg && !isPublicFishCommand && textContent.trim()) {
+            pendingVision.extraTexts.push(textContent.trim());
+            if (inbound.messageId !== undefined) pendingVision.latestMessageId = inbound.messageId;
+            this.ctx.log('info', `[图文合流] 检测到 ${inbound.nickname || userId} 在图片识图期间追发文字 ("${textContent.trim()}")，已自动合并入图片回合一并回复！`);
+            return;
+        }
 
         const requireMentionForThisMessage = kind === 'group' && this.ctx.config.requireMention;
         const isExplicitMention = adminCalledByName
@@ -247,19 +258,32 @@ export class InboundPipeline {
                     /(肥鱼|飞鱼|大肥鱼|五花肉|好吃|夜宵|烧烤|火锅|奶茶|干饭|饿|图|看|吃|投喂|喂|饭|肉|菜|给|赏|请)/i.test(textContent)
                 );
                 if (shouldResolveMediaForChime) {
+                    const visionSlot = hasImg ? { extraTexts: [], latestMessageId: inbound.messageId } : null;
+                    if (visionSlot) this.pendingVisionTurns.set(userVisionKey, visionSlot);
                     try {
-                        const chimeBody = hasImg && this.ctx.buildBody
+                        let chimeBody = hasImg && this.ctx.buildBody
                             ? await this.ctx.buildBody(inbound.text, inbound.media, chatId)
                             : inbound.text;
+                        if (visionSlot && visionSlot.extraTexts.length > 0) {
+                            chimeBody = [chimeBody, ...visionSlot.extraTexts].filter(Boolean).join(' ');
+                        }
                         const chimeQuote = inbound.replyId !== undefined && this.ctx.expandQuote
                             ? await this.ctx.expandQuote(inbound.replyId, verifiedQuote)
                             : '';
                         const combinedChimeText = [chimeQuote, chimeBody].filter(Boolean).join('\n');
                         if (combinedChimeText) {
-                            chimeInbound = { ...inbound, text: combinedChimeText };
+                            chimeInbound = {
+                                ...inbound,
+                                messageId: visionSlot?.latestMessageId ?? inbound.messageId,
+                                text: combinedChimeText,
+                            };
                             feiyu.memoryManager?.updateLatestWorkingMemoryText?.(chatId, userId, combinedChimeText);
                         }
-                    } catch {}
+                    } catch {} finally {
+                        if (visionSlot && this.pendingVisionTurns.get(userVisionKey) === visionSlot) {
+                            this.pendingVisionTurns.delete(userVisionKey);
+                        }
+                    }
                 }
                 if (await feiyu.evaluateGroupLurkAndChime(chimeInbound)) {
                     return;
@@ -304,7 +328,19 @@ export class InboundPipeline {
             currentTrace()?.emit('command', { ok: true, reason: TRACE_REASONS.inboundCommand });
             return;
         }
-        const body = await this.ctx.buildBody(inbound.text, inbound.media, chatId);
+        const mainVisionSlot = hasInboundImg ? { extraTexts: [], latestMessageId: inbound.messageId } : null;
+        if (mainVisionSlot) this.pendingVisionTurns.set(userVisionKey, mainVisionSlot);
+        let body;
+        try {
+            body = await this.ctx.buildBody(inbound.text, inbound.media, chatId);
+            if (mainVisionSlot && mainVisionSlot.extraTexts.length > 0) {
+                body = [body, ...mainVisionSlot.extraTexts].filter(Boolean).join(' ');
+            }
+        } finally {
+            if (mainVisionSlot && this.pendingVisionTurns.get(userVisionKey) === mainVisionSlot) {
+                this.pendingVisionTurns.delete(userVisionKey);
+            }
+        }
         let quote = '';
         if (inbound.replyId !== undefined) {
             // Keep the bridge's expansion seam while reusing this message's lookup.
@@ -466,6 +502,26 @@ export class InboundPipeline {
             return;
         }
 
+        let fastTurnText = content;
+        if (
+            kind === 'group' &&
+            !needsHeavyAgentTools &&
+            !isChatBusy &&
+            textContent.trim() === '' &&
+            !hasInboundImg &&
+            inbound.replyId === undefined &&
+            /^@\d+\s*$/.test(content.trim())
+        ) {
+            const bareAtTime = feiyu?.lastUserMessageAtMap?.get(userVisionKey) || Date.now();
+            await new Promise(r => setTimeout(r, 2200));
+            const latestTime = feiyu?.lastUserMessageAtMap?.get(userVisionKey) || bareAtTime;
+            if (latestTime > bareAtTime || this.pendingVisionTurns.has(userVisionKey)) {
+                this.ctx.log('info', `[空@合流] 检测到 ${nickname} 发送空@后紧接着发了后续消息/图片，已自动让位合并！`);
+                return;
+            }
+            fastTurnText = '[群友单纯@呼叫了你一下，还没说具体啥事，请用1条简短傲娇气泡问ta喊本鱼干嘛，严禁脑补对方发了生鱼片或图片！]';
+        }
+
         if (
             !needsHeavyAgentTools &&
             !isChatBusy &&
@@ -475,8 +531,8 @@ export class InboundPipeline {
                 groupId,
                 userId,
                 nickname,
-                text: content,
-                messageId: inbound.messageId,
+                text: fastTurnText,
+                messageId: mainVisionSlot?.latestMessageId ?? inbound.messageId,
                 isGroup: kind === 'group',
                 wokeUpFromSleep: Boolean(activityRes?.wokeUpFromSleep),
             })

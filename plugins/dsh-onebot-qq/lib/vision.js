@@ -1,11 +1,78 @@
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 
 const OLLAMA_HOST = '127.0.0.1';
 const OLLAMA_PORT = 11434;
+const LUNA_VISION_URL = 'https://sub2api.emberanvil.dev/v1/chat/completions';
+const LUNA_VISION_MODEL = 'gpt-6-luna';
 
 let cachedModel = null;
 let lastCheckTime = 0;
+let cachedLunaKey = null;
+
+function getLunaApiKey() {
+    if (process.env.LUNA_API_KEY) return process.env.LUNA_API_KEY.trim();
+    if (cachedLunaKey) return cachedLunaKey;
+    try {
+        const credPath = path.join(os.homedir(), '.dsh', '.credentials.yaml');
+        if (fs.existsSync(credPath)) {
+            const content = fs.readFileSync(credPath, 'utf8');
+            const m = content.match(/LUNA_API_KEY:\s*([^\r\n]+)/);
+            if (m && m[1]) {
+                cachedLunaKey = m[1].trim().replace(/^['"]|['"]$/g, '');
+                return cachedLunaKey;
+            }
+        }
+    } catch {}
+    return null;
+}
+
+/**
+ * 优先调用 gpt-6-luna 多模态视觉接口识别图片内容与图中文字
+ */
+async function describeWithLunaVision(imageBase64, prompt) {
+    const apiKey = getLunaApiKey();
+    if (!apiKey || !imageBase64) return null;
+    try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 18000);
+        const resp = await fetch(LUNA_VISION_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+                model: LUNA_VISION_MODEL,
+                max_tokens: 320,
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: prompt },
+                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+                        ],
+                    },
+                ],
+            }),
+            signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (!resp.ok) return null;
+        const json = await resp.json();
+        const raw = (json?.choices?.[0]?.message?.content || '').trim();
+        const cleaned = raw.replace(/\*\*/g, '').replace(/\n+/g, ' ').trim().slice(0, 360);
+        if (cleaned.length > 3) {
+            console.log(`[dsh-onebot] 视觉模型(${LUNA_VISION_MODEL})识别结果: ${cleaned}`);
+            return cleaned;
+        }
+    } catch (e) {
+        console.warn(`[dsh-onebot] Luna 视觉识别降级本地 Ollama: ${e?.message || e}`);
+    }
+    return null;
+}
 
 /**
  * 探测 Ollama 当前已下载的最佳视觉模型
@@ -66,11 +133,15 @@ async function getVisionModel() {
 export async function describeImageBase64(imageBase64, customPrompt) {
     try {
         if (!imageBase64) return null;
+        const defaultPrompt = '请用中文简明生动地描述画面核心内容、人物/二次元角色（发色、衣着、姿态动作、神情表情）以及图中的全部文字（1~2句话）：';
+        const lunaDesc = await describeWithLunaVision(imageBase64, customPrompt || defaultPrompt);
+        if (lunaDesc) return lunaDesc;
+
         const model = await getVisionModel();
         if (!model) return null;
 
         const prompt = customPrompt || (model.includes('minicpm-v')
-            ? '请用中文简明生动地描述画面核心内容、人物/二次元角色（如大肥鱼/鲸鱼娘/人物等）、姿态动作、神情表情以及图中的关键文字（1~2句话）：'
+            ? defaultPrompt
             : '请用中文简短描述这张图片的内容、角色、动作表情以及文字（1~2句话）：');
 
         const payload = JSON.stringify({
@@ -206,13 +277,14 @@ export function evaluateMemeDescription(visualDesc, targetEmotion = '') {
         return { pass: false, reason: '视觉模型未返回有效描述', trueTag: '', desc };
     }
 
-    // 1. 严格校验是否包含大肥鱼角色特征（蓝发二次元动漫少女/小蓝鲸女仆），剔除企鹅/黄鸭/真人/教程封面/无关杂图
-    const hasFeiyu = /(蓝色头发|蓝发|大肥鱼少女|鲸鱼娘|蓝白.*女仆)/.test(desc);
-    const hasNoiseOrReject = /(不是蓝色头发|并非|没有动漫|真人|企鹅角色|黄色卡通角色|教程-3分钟|邀请观看者学习|与一个穿女仆装的角色握手)/.test(desc);
+    // 1. 严格剔除视频封面截图、聊天记录长截图、多宫格合集、插件教程海报、真人/其他角色杂图
+    const cleanedDescForNoise = desc.replace(/不是(?:多宫格合集|教程海报|聊天记录截图|视频封面截图)(?:或(?:多宫格合集|教程海报|聊天记录截图|视频封面截图))*/g, '');
+    const hasNoiseOrReject = /(视频封面|聊天记录|评论区截图|网页截图|列表截图|多宫格|九宫格|十六宫格|合集|教程海报|宣传海报|图文无关|下来播放|自动播放|播放数据|接管的账号|主人不要我了|装上这.*插件|给大肥鱼装上|6个器官|活人感拉满|从夯到拉|一觉醒来|哪张最像我|当务之急|小狗表情包|海绵宝宝|痞老板|不是蓝色|并非蓝色|没有动漫|橘发|橙发|红发|金发|真人|企鹅角色|黄色卡通角色|教程-3分钟|邀请观看者学习|与一个穿女仆装的角色握手)/i.test(cleanedDescForNoise);
+    const hasFeiyu = /(蓝色头发|蓝发|蓝色长发|蓝色短发|大肥鱼少女|鲸鱼娘|蓝白.*女仆)/.test(desc);
     if (!hasFeiyu || hasNoiseOrReject) {
         return {
             pass: false,
-            reason: `不包含纯正大肥鱼特征或混入无关杂图 (${desc.slice(0, 45)})`,
+            reason: `属于视频/聊天截图/海报合集或非纯正大肥鱼单张表情包 (${desc.slice(0, 50)})`,
             trueTag: '',
             desc,
         };
@@ -265,7 +337,7 @@ export function evaluateMemeDescription(visualDesc, targetEmotion = '') {
 
     return {
         pass: true,
-        reason: '符合大肥鱼特征且内容与表情名称一致',
+        reason: '符合大肥鱼单张表情包特征且内容与表情名称一致',
         trueTag,
         inferredTags,
         desc,
@@ -273,16 +345,16 @@ export function evaluateMemeDescription(visualDesc, targetEmotion = '') {
 }
 
 /**
- * 对下载的候选表情包执行完整视觉模型识别与一致性核验
+ * 对下载的候选表情包执行完整视觉模型识别与一致性核验（零暗示客观提问，防小模型顺着提示词产生幻觉）
  * @param {string} imagePath
  * @param {string} [targetEmotion]
  */
 export async function inspectAndVerifyMeme(imagePath, targetEmotion = '') {
     const prompt = [
-        '请仔细观察这张图片并按以下3点用中文如实回答（1~2句话）：',
-        '1. 主体是否为“蓝色头发的二次元动漫少女（大肥鱼/小蓝鲸女仆）”，如果图里有企鹅、黄鸭、真人或纯文字截图请如实指出；',
-        '2. 完整读出图片里的所有配字/文字（如果没有文字请写“图中无文字”）；',
-        '3. 准确描述她此刻的真实面部表情（如开心微笑、闭眼得意、委屈流泪、生气皱眉、震惊张嘴、犯困趴桌）和肢体动作（如叉腰抱胸、端碗吃饭、拿笔写字、抱膝坐地）。',
+        '请客观描述这张图片（不要猜测）：',
+        '1. 版式类型（是单张角色表情包、多宫格合集、聊天记录截图、视频封面截图、还是教程海报）？',
+        '2. 图中人物的发色、衣着、真实面部表情和肢体动作是什么？',
+        '3. 请原样逐字读出图中出现的所有中文文字（若无文字写“图中无文字”）。',
     ].join('');
     const visualDesc = await describeImage(imagePath, prompt);
     return evaluateMemeDescription(visualDesc, targetEmotion);
