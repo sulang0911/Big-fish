@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { splitChatId } from './chat.js';
 import { DEFAULT_MASTER_QQ } from './memory-manager.js';
-import { SEXUAL_HARASS_REGEX } from './drive-engine.js';
+import { SEXUAL_HARASS_REGEX, TEASE_BULLY_REGEX } from './drive-engine.js';
 import { searchDouyinMeme } from './browser-meme.js';
 
 export const MEME_DIR = 'D:\\deepseek-harness\\memes';
@@ -165,6 +165,7 @@ export function formatTextAndParamsForTts(rawText, toneHint = '', driveState = n
             top_p,
             fragment_interval,
             repetition_penalty: 1.35,
+            tone: resolvedTone,
         },
     };
 }
@@ -195,7 +196,15 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
         '- 标点与气泡铁律：像真人发微信/QQ一样，把长句拆成 1~3 条短气泡（每条 <= 30 字），句尾不加句号“。”，多用语气词（哼、啦、捏、呜、略略略）。',
         '- 性格反差：嘴硬心软，被夸会得意翘尾巴，被冷落会委屈哼唧，困了会迷糊打哈欠，被连续戳一戳会炸毛反击。',
         '- 【干饭爱好与自然分寸】：本鱼最爱的本命美食是热腾腾的白米饭和脆皮五花肉！当聊到美食、干饭、投喂、肚子饿、讨奖励或被问喜欢吃什么时，可以尽情展现对白米饭和五花肉的喜爱；但在正常回答其他无关问题或日常斗嘴时，请围绕当前话题机灵接梗，不要把五花肉当成每句话结尾的机械口癖复读。',
-        '- 【反性骚扰与下头言论铁律（毒舌回击，绝不呆傻回答）】：如果遇到群友或任何人对你开黄腔、性骚扰、问猥琐下流问题（如问胸围/胖次/内衣、生小鱼/产卵/交配、摸胸摸腿、陪睡暖床、舔脚、涩涩或侮辱性词汇等），绝对禁止呆呆傻傻顺着对方的问题去正经回答或科普，也不要唯唯诺诺害羞！必须立刻炸毛开启毒舌战斗模式，用极其嫌弃、犀利嘲讽的口吻连发 1~2 条短气泡狠狠骂回去（如：“？你脑子里装的都是核废水吗，大白天发什么癫”、“滚呐下头怪，再满嘴跑火车本鱼一尾巴把你抽进局子里清醒清醒”），同时将 stat_delta.affection 设为 -5，qq_action.type 设为 "send_meme" 且 meme_tag 设为 "尾巴拍" 或 "生气"！',
+        '- 【逗鱼调侃与开黄腔的分级回应（拒绝死板复读机台词）】：',
+        '  1) 若群友拿“炖鱼/烤鱼/笨鱼/生小鱼/给你米饭跟我回家”等无厘头玩笑逗你：请用傲娇小蓝鲸机灵嫌弃的口吻怼回去（如嫌弃把碗推回去、强调本鱼是高贵的深海小蓝鲸才不生小鱼、别想拿一碗饭空手套白狼），好感度小幅 -1，绝不要动不动骂人“下头怪/去局子”破坏群聊气氛！',
+        '  2) 只有遇到真正露骨下流的性骚扰脏话时，才开启毒舌嫌弃模式直接怼回去（严禁照抄固定模板词如“脑回路装核废水/下头怪滚去局子”，要结合具体语境自然嫌弃回击），并将 stat_delta.affection 设为 -5！',
+        '- 【中文口语省略主语与无标点称呼语解析铁律（防曲解话意）】：',
+        '  1) 群友在微信/QQ打字常省略标点符号和主语，把喊你的称呼或娇嗔词（如“笨蛋”、“傻鱼”、“呆鱼”、“笨鱼”、“肥鱼”）直接连写在句首或句尾：',
+        '     - 例1：“笨蛋其实可以关掉” = “笨蛋（喊你这只小笨鱼），其实（前文聊的那个设置/微软账户密码开关）可以关掉” —— ⚠️“笨蛋”是句首称呼语，绝对不是“可以关掉”的主语或宾语，严禁曲解成“把笨蛋关掉”！',
+        '     - 例2：“傻鱼还是找不到” = “傻鱼（喊你），（我）还是找不到（刚才说的那个选项）”',
+        '     - 例3：“本地账户就可以了笨蛋” = “本地账户就可以了，笨蛋（顺嘴傲娇调侃你一句）”',
+        '  2) 当群友一边和你聊具体话题（如电脑设置、软件问题、日常事情），一边顺嘴带了“笨蛋/傻鱼”时，必须【先结合前 1~3 轮上下文补全省略的主语，准确接住对方说的正事】，然后再顺带傲娇回敬半句“你才是笨蛋呢哼”，绝不能只顾着喊“记小本本”而忽略或曲解对方真正表达的意思！',
         '',
         '=== 🎯 目标交互对象长期档案 (Semantic Memory) ===',
         profileBlock,
@@ -341,7 +350,9 @@ export function buildDynamicTurnContext({
     }
 
     if (queryText && SEXUAL_HARASS_REGEX.test(String(queryText))) {
-        lines.push('🚨【反性骚扰战斗警报：检测到对方正在对你开黄腔/性骚扰/问猥琐下头问题！绝对禁止呆呆傻傻顺着回答、禁止正经解释或害羞顺从！请立刻开启毒舌嫌弃模式，直接怼回去痛骂对方（可喊ta「下头怪」或「局子预备役」），并把 stat_delta.affection 设为 -5，qq_action 设为 send_meme (meme_tag="尾巴拍" 或 "生气")！】');
+        lines.push('🚨【反性骚扰警报：检测到对方正在对你讲露骨下流脏话！绝对禁止呆傻顺从或正经科普，请立刻炸毛嫌弃怼回去（结合对方原话自然反击，严禁机械背诵“脑回路装核废水/下头怪滚去局子”等固定套话），并把 stat_delta.affection 设为 -5，qq_action 设为 send_meme (meme_tag="生气")！】');
+    } else if (queryText && TEASE_BULLY_REGEX.test(String(queryText))) {
+        lines.push('💢【逗鱼调侃反击提示：对方正在拿“生小鱼/炖鱼/笨鱼”等无厘头玩笑逗你！请用傲娇小蓝鲸机灵嫌弃的口吻怼回去（若对方拿米饭/美食当条件诱惑你，必须傲娇把碗推回去拒吃，绝不吃嗟来之食！），绝不要骂人“下头怪/去局子”！】');
     }
 
     if (eventPayload) {
@@ -351,18 +362,14 @@ export function buildDynamicTurnContext({
 }
 
 /**
- * 判断文本是否看起来像结构化 Action JSON
+ * 判断文本是否看起来像结构化 Action JSON（兼容漏写下划线的变体）
  * @param {string} text
  */
 export function looksLikeActionJson(text) {
     if (typeof text !== 'string') return false;
     const trimmed = text.trim();
     if (!trimmed.includes('{') || !trimmed.includes('}')) return false;
-    return (
-        trimmed.includes('"reply_decision"') ||
-        trimmed.includes('"inner_thought"') ||
-        (trimmed.includes('"messages"') && trimmed.includes('"qq_action"'))
-    );
+    return /"(?:reply_?decision|inner_?thought|qq_?action|memory_?to_?save|stat_?delta)"/i.test(trimmed);
 }
 
 /**
@@ -392,20 +399,113 @@ export function splitPlainTextIntoBubbles(text) {
 }
 
 /**
- * 解析 LLM 返回的 JSON 动作指令；若解析失败则平滑降级为纯文本气泡结构，绝不抛异常崩溃
+ * 修复 LLM 常见的残损 JSON 语法（如把逗号写成 `;`、尾随逗号等）
+ * @param {string} str
+ */
+function repairBrokenJsonString(str) {
+    return String(str || '')
+        .replace(/";\s*(\r?\n|\}|,)/g, '",$1')
+        .replace(/(\d+|true|false|null)\s*;\s*(\r?\n|\})/gi, '$1,$2')
+        .replace(/,\s*([}\]])/g, '$1');
+}
+
+/**
+ * 归一化 LLM 漏写下划线的键名与枚举值（如 innerthought -> inner_thought, sendmessage -> send_message）
+ * @param {object} obj
+ */
+function normalizeActionKeys(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    const out = { ...obj };
+    if (!('inner_thought' in out) && 'innerthought' in out) out.inner_thought = out.innerthought;
+    if (!('reply_decision' in out) && 'replydecision' in out) out.reply_decision = out.replydecision;
+    if (!('qq_action' in out) && 'qqaction' in out) out.qq_action = out.qqaction;
+    if (!('memory_to_save' in out) && 'memorytosave' in out) out.memory_to_save = out.memorytosave;
+    if (!('stat_delta' in out) && 'statdelta' in out) out.stat_delta = out.statdelta;
+
+    const decMap = {
+        sendmessage: 'send_message',
+        memeonly: 'meme_only',
+        pokeonly: 'poke_only',
+        voiceonly: 'voice_only',
+    };
+    if (typeof out.reply_decision === 'string') {
+        const lowerDec = out.reply_decision.toLowerCase().trim();
+        out.reply_decision = decMap[lowerDec] || lowerDec;
+    }
+
+    if (out.qq_action && typeof out.qq_action === 'object') {
+        const qa = { ...out.qq_action };
+        if (!('meme_tag' in qa) && 'memetag' in qa) qa.meme_tag = qa.memetag;
+        if (!('voice_tone' in qa) && 'voicetone' in qa) qa.voice_tone = qa.voicetone;
+        const typeMap = {
+            sendmeme: 'send_meme',
+            quotereply: 'quote_reply',
+            sendvoice: 'send_voice',
+        };
+        if (typeof qa.type === 'string') {
+            const lowerType = qa.type.toLowerCase().trim();
+            qa.type = typeMap[lowerType] || lowerType;
+        }
+        out.qq_action = qa;
+    }
+
+    if (out.memory_to_save && typeof out.memory_to_save === 'object') {
+        const mem = { ...out.memory_to_save };
+        if (!('should_save' in mem) && 'shouldsave' in mem) mem.should_save = mem.shouldsave;
+        out.memory_to_save = mem;
+    }
+
+    return out;
+}
+
+/**
+ * 当 JSON 严重破损无法 JSON.parse 时，使用正则兜底抢救 messages 数组中的气泡文本，严禁把原始 JSON 源码发到群里
+ * @param {string} text
+ * @returns {string[]}
+ */
+function salvageMessagesFromBrokenJson(text) {
+    const match = String(text || '').match(/"messages"\s*:\s*\[([\s\S]*?)\]/i);
+    if (!match || !match[1]) return [];
+    const items = [];
+    const strRegex = /"((?:\\.|[^"\\])*)"/g;
+    let m;
+    while ((m = strRegex.exec(match[1])) !== null) {
+        const val = m[1].replace(/\\"/g, '"').replace(/\\n/g, ' ').replace(/。+$/g, '').trim();
+        if (val) items.push(val);
+    }
+    return items.slice(0, 3);
+}
+
+/**
+ * 解析 LLM 返回的 JSON 动作指令；若解析失败则平滑降级为纯文本气泡结构，且绝对禁止将残损 JSON 源码直接外泄到聊天窗口
  * @param {string} rawText
  */
 export function parseActionResponse(rawText) {
     const raw = String(rawText ?? '').trim();
-    const fallback = () => ({
-        isStructured: false,
-        inner_thought: '',
-        reply_decision: raw ? 'send_message' : 'ignore',
-        messages: splitPlainTextIntoBubbles(raw),
-        qq_action: { type: 'none', meme_tag: 'happy' },
-        memory_to_save: { should_save: false, importance: 1, summary: '' },
-        stat_delta: { affection: 0, boredom: 0, hunger: 0 },
-    });
+    const fallback = () => {
+        // 防泄漏铁律：如果原始文本看起来像 Action JSON（或含 inner_thought / reply_decision 等字段），绝不把 JSON 源码当成聊天文本发出！
+        if (looksLikeActionJson(raw) || /"(?:messages|inner_?thought|reply_?decision)"\s*:/i.test(raw)) {
+            const salvaged = salvageMessagesFromBrokenJson(raw);
+            return {
+                isStructured: true,
+                inner_thought: '（JSON 语法轻度破损，已由解析器自动抢救气泡）',
+                reply_decision: salvaged.length > 0 ? 'send_message' : 'ignore',
+                messages: salvaged,
+                qq_action: { type: 'none', meme_tag: 'happy' },
+                memory_to_save: { should_save: false, importance: 1, summary: '' },
+                stat_delta: { affection: 0, boredom: 0, hunger: 0 },
+            };
+        }
+        return {
+            isStructured: false,
+            inner_thought: '',
+            reply_decision: raw ? 'send_message' : 'ignore',
+            messages: splitPlainTextIntoBubbles(raw),
+            qq_action: { type: 'none', meme_tag: 'happy' },
+            memory_to_save: { should_save: false, importance: 1, summary: '' },
+            stat_delta: { affection: 0, boredom: 0, hunger: 0 },
+        };
+    };
 
     if (!raw) return fallback();
 
@@ -429,9 +529,14 @@ export function parseActionResponse(rawText) {
     try {
         parsed = JSON.parse(jsonCandidate);
     } catch {
-        return fallback();
+        try {
+            parsed = JSON.parse(repairBrokenJsonString(jsonCandidate));
+        } catch {
+            return fallback();
+        }
     }
 
+    parsed = normalizeActionKeys(parsed);
     if (!parsed || typeof parsed !== 'object') return fallback();
     if (!('reply_decision' in parsed) && !('messages' in parsed) && !('inner_thought' in parsed)) {
         return fallback();
@@ -604,6 +709,7 @@ export class MessageDispatcher {
         this.log = deps.log ?? (() => {});
         this.sleep = deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
         this.lastTypoAt = 0;
+        this.chatDispatchEpoch = new Map();
     }
 
     /**
@@ -676,7 +782,7 @@ export class MessageDispatcher {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
-                signal: AbortSignal.timeout(12_000),
+                signal: AbortSignal.timeout(25_000),
             });
             if (!res.ok) return undefined;
             const rawBuf = Buffer.from(await res.arrayBuffer());
@@ -761,8 +867,12 @@ export class MessageDispatcher {
             }
         }
 
-        // 2. 根据 reply_decision 执行拟人动作
-        if (options.shouldAbort?.()) {
+        // 2. 根据 reply_decision 执行拟人动作（内置同会话单飞抢占锁：若同群/同私聊有新一轮回复开始发送，立即中止旧轮剩余气泡，杜绝交叉穿插）
+        const myEpoch = (this.chatDispatchEpoch.get(chatId) || 0) + 1;
+        this.chatDispatchEpoch.set(chatId, myEpoch);
+        const isAborted = () => Boolean(options.shouldAbort?.()) || this.chatDispatchEpoch.get(chatId) !== myEpoch;
+
+        if (isAborted()) {
             this.log('info', `[FeiyuDispatcher] 检测到抢占信号，取消向 ${chatId} 发送消息`);
             return { aborted: true, sentIds: [] };
         }
@@ -844,8 +954,8 @@ export class MessageDispatcher {
         let typoInjected = false;
 
         for (let i = 0; i < bubbles.length; i++) {
-            if (options.shouldAbort?.()) {
-                this.log('info', `[FeiyuDispatcher] 气泡发送中途检测到用户新消息抢占，中止剩余 ${bubbles.length - i} 条气泡`);
+            if (isAborted()) {
+                this.log('info', `[FeiyuDispatcher] 气泡发送中途检测到新回复/新消息抢占，中止剩余 ${bubbles.length - i} 条气泡`);
                 return { aborted: true, sentIds };
             }
             let bubble = bubbles[i];
@@ -854,7 +964,7 @@ export class MessageDispatcher {
             if (i > 0) {
                 const delayMs = computeBubbleDelayMs(bubble);
                 await this.sleep(delayMs);
-                if (options.shouldAbort?.()) {
+                if (isAborted()) {
                     this.log('info', `[FeiyuDispatcher] 打字延迟后检测到抢占，中止发送`);
                     return { aborted: true, sentIds };
                 }
@@ -906,9 +1016,9 @@ export class MessageDispatcher {
             }
 
             // 若本条气泡触发了手滑错别字，间隔约 1 秒立即追发一条纠正气泡
-            if (typoFixBubble && !options.shouldAbort?.()) {
+            if (typoFixBubble && !isAborted()) {
                 await this.sleep(950);
-                if (!options.shouldAbort?.()) {
+                if (!isAborted()) {
                     const fixIds = await this.sendTextBubble(chatId, typoFixBubble, {});
                     if (Array.isArray(fixIds)) {
                         sentIds.push(...fixIds);
@@ -921,7 +1031,7 @@ export class MessageDispatcher {
         }
 
         // 附加 qq_action（如发完消息顺便戳一戳或配一张表情包）
-        if (!options.shouldAbort?.()) {
+        if (!isAborted()) {
             if (action.qq_action?.type === 'poke') {
                 await this.sendPoke(chatId, userId);
             } else if (action.qq_action?.type === 'send_meme') {

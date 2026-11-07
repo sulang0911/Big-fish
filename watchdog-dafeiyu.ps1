@@ -1,4 +1,4 @@
-﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $BaseDir = $PSScriptRoot
 if (-not $BaseDir) { $BaseDir = "D:\deepseek-harness" }
 
@@ -53,6 +53,18 @@ while ($true) {
         if (Test-Path $napcatDir) {
             Write-WatchdogLog "Port 3001 (NapCat) down! Restarting launcher.bat..."
             Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "launcher.bat", "-q", "2163178914") -WorkingDirectory $napcatDir -WindowStyle Hidden
+        }
+    }
+
+    # 3. 守护 IndexTTS-2.5 语音服务 (端口 9880)
+    $conn9880 = Get-NetTCPConnection -LocalPort 9880 -State Listen -ErrorAction SilentlyContinue
+    if (-not $conn9880) {
+        $indexTtsDir = "D:\IndexTTS-2.5"
+        $indexTtsPython = Join-Path $indexTtsDir ".venv\Scripts\python.exe"
+        $indexTtsServer = Join-Path $indexTtsDir "api_server.py"
+        if ((Test-Path $indexTtsPython) -and (Test-Path $indexTtsServer)) {
+            Write-WatchdogLog "Port 9880 (IndexTTS-2.5) down! Restarting api_server.py..."
+            Start-Process -FilePath $indexTtsPython -ArgumentList @($indexTtsServer) -WorkingDirectory $indexTtsDir -WindowStyle Hidden
         }
     }
 }

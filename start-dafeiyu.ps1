@@ -1,4 +1,4 @@
-﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $BaseDir = $PSScriptRoot
 if (-not $BaseDir) { $BaseDir = "D:\deepseek-harness" }
 
@@ -45,36 +45,22 @@ if (-not $conn3001) {
     Write-Host "[1/5] NapCat QQ 已在运行中 (端口: 3001)。" -ForegroundColor Green
 }
 
-# 2. 检查并启动 GPT-SoVITS 语音服务 (9880)
+# 2. 检查并启动 IndexTTS-2.5 语音服务 (9880)
 $conn9880 = Get-NetTCPConnection -LocalPort 9880 -State Listen -ErrorAction SilentlyContinue
 if (-not $conn9880) {
-    $candidates = @(
-        $env:GPT_SOVITS_HOME,
-        "D:\ollama\GPT-SoVITS-v2pro\GPT-SoVITS-v2pro-20250604",
-        "C:\ollama\GPT-SoVITS-v2pro\GPT-SoVITS-v2pro-20250604",
-        "D:\ollama\GPT-SoVITS",
-        (Join-Path $BaseDir "GPT-SoVITS"),
-        (Join-Path $BaseDir "..\GPT-SoVITS")
-    )
-    $sovitsDir = $null
-    foreach ($cand in $candidates) {
-        if ($cand -and (Test-Path (Join-Path $cand "runtime\python.exe"))) {
-            $sovitsDir = $cand
-            break
-        }
-    }
-    
-    if ($sovitsDir) {
-        $pythonExe = Join-Path $sovitsDir "runtime\python.exe"
-        Write-Host "[2/5] 正在启动 GPT-SoVITS 语音服务 (无弹窗静默模式)..." -ForegroundColor Yellow
-        Start-Process -FilePath $pythonExe -ArgumentList @("api_v2.py", "-a", "127.0.0.1", "-p", "9880", "-c", "GPT_SoVITS/configs/tts_infer.yaml") -WorkingDirectory $sovitsDir -WindowStyle Hidden
+    $indexTtsDir = "D:\IndexTTS-2.5"
+    $indexTtsPython = Join-Path $indexTtsDir ".venv\Scripts\python.exe"
+    $indexTtsServer = Join-Path $indexTtsDir "api_server.py"
+    if ((Test-Path $indexTtsPython) -and (Test-Path $indexTtsServer)) {
+        Write-Host "[2/5] 正在启动 IndexTTS-2.5 语音服务 (无弹窗静默模式)..." -ForegroundColor Yellow
+        Start-Process -FilePath $indexTtsPython -ArgumentList @($indexTtsServer) -WorkingDirectory $indexTtsDir -WindowStyle Hidden
         Start-Sleep -Seconds 3
-        Write-Host "[2/5] GPT-SoVITS 语音服务已启动 (端口: 9880)。" -ForegroundColor Green
+        Write-Host "[2/5] IndexTTS-2.5 语音服务已启动 (端口: 9880)。" -ForegroundColor Green
     } else {
-        Write-Host "[2/5] 提示: 未检测到本地 GPT-SoVITS 目录，语音服务跳过。" -ForegroundColor DarkYellow
+        Write-Host "[2/5] 提示: 未检测到本地 IndexTTS-2.5 目录，语音服务跳过。" -ForegroundColor DarkYellow
     }
 } else {
-    Write-Host "[2/5] GPT-SoVITS 语音服务已在运行中 (端口: 9880)。" -ForegroundColor Green
+    Write-Host "[2/5] IndexTTS-2.5 语音服务已在运行中 (端口: 9880)。" -ForegroundColor Green
 }
 
 # 3. 检查并启动 Ollama 本地视觉服务 (11434)

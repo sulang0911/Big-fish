@@ -441,7 +441,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             });
             if (!response.ok) {
                 const errText = await response.text();
-                throw new Error('GPT-SoVITS 语音合成失败: ' + errText);
+                throw new Error('IndexTTS-2.5 语音合成失败: ' + errText);
             }
             const rawBuffer = Buffer.from(await response.arrayBuffer());
             const buffer = padWavSilence(rawBuffer, 250);
@@ -488,7 +488,8 @@ export function registerTools(ctx, bridge, connection, limits) {
                 prompt_text: voice.prompt_text,
                 prompt_lang: 'zh',
                 text_split_method: 'cut2',
-                fragment_interval: 0.3
+                fragment_interval: 0.3,
+                tone: 'coquettish_happy',
             };
             const response = await fetch(ttsUrl, {
                 method: 'POST',
