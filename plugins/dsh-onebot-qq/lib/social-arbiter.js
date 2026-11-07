@@ -804,6 +804,39 @@ export class SocialArbiter {
             const feedRes = this.tryNaturalFeed(chatId, userId, nickname, cleanText);
             const vocativeHint = buildColloquialVocativeHint(cleanText);
             const isMaster = String(userId) === this.masterQQ;
+
+            // 若老大在私聊中提及“群里/去群里回一下”，自动拉取主群最近上下文并在群里执行回复！
+            let crossGroupContextBlock = '';
+            let pendingCrossGroupReply = null;
+            if (!isGroup && isMaster && /(群|有人问|回它|回他|回她|回一下|去回)/.test(cleanText)) {
+                const targetGroupChatId = this.groupChats[0] || 'group:434137389';
+                const groupWm = this.memoryManager.getWorkingMemory(targetGroupChatId, 10);
+                if (groupWm.length > 0) {
+                    const gLines = groupWm.slice(-8).map(m => `[${m.time || ''} ${m.nickname || m.userId}(QQ:${m.userId})]: ${m.text}`).join('\n');
+                    crossGroupContextBlock = `📡【主群 (${targetGroupChatId}) 实时聊天记录（供你了解群里刚刚谁问了什么问题）】：\n${gLines}`;
+                    const isMasterOrderToReplyGroup = /(?:群里|去群|在群).*?(?:回|答|理|说|看)|(?:回|答|理)(?:一下|下|ta|它|他|她)/i.test(cleanText);
+                    if (isMasterOrderToReplyGroup) {
+                        const recentUserGroupMsgs = groupWm.filter(m => m.role === 'user' && m.userId && m.userId !== 'self' && m.userId !== this.masterQQ);
+                        const lastTargetMsg = recentUserGroupMsgs[recentUserGroupMsgs.length - 1];
+                        if (lastTargetMsg) {
+                            const sameUserRecentTexts = recentUserGroupMsgs
+                                .filter(m => m.userId === lastTargetMsg.userId)
+                                .slice(-3)
+                                .map(m => m.text)
+                                .join('；');
+                            pendingCrossGroupReply = {
+                                chatId: targetGroupChatId,
+                                groupId: targetGroupChatId.replace(/^group:/, ''),
+                                userId: lastTargetMsg.userId,
+                                nickname: lastTargetMsg.nickname || lastTargetMsg.userId,
+                                text: sameUserRecentTexts || lastTargetMsg.text,
+                            };
+                            crossGroupContextBlock += `\n⚡【系统已为你同步执行跨群回复】：系统正自动派你去群 ${targetGroupChatId} 回复 [${pendingCrossGroupReply.nickname}] 刚才问的「${pendingCrossGroupReply.text.slice(0, 60)}」！请在私聊里直接告诉老大你已经看到 [${pendingCrossGroupReply.nickname}] 问的问题并马上过去回ta，绝不要再反问老大“是谁问的/问的啥”！`;
+                        }
+                    }
+                }
+            }
+
             const prompt = [
                 isGroup
                     ? `【群聊点名 / @ / 引用互动（群号：${groupId || chatId}）】`
@@ -811,6 +844,7 @@ export class SocialArbiter {
                 `当前正在和你对话的人是：【${nickname} (QQ: ${userId})】${isMaster ? '（也就是你最信任的老大！）' : ''}，ta 刚刚发来消息："${cleanText}"`,
                 `⚠️【防张冠李戴铁律】：请只针对当前说话人【${nickname}(QQ:${userId})】刚才说的这句话进行回应！近期上下文里其他 QQ 号群友说的话或外号（如记仇榜常客、下头怪等）绝不要扣在当前说话人头上！`,
                 ...(historyBlock ? [`近期对话上下文（注意区分每条消息的 QQ 号，并用于补全当前说话人省略的主语或前文背景）：\n${historyBlock}`] : []),
+                ...(crossGroupContextBlock ? [crossGroupContextBlock] : []),
                 ...(vocativeHint ? [vocativeHint] : []),
                 `回复准则：`,
                 `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
@@ -867,6 +901,13 @@ export class SocialArbiter {
                 voiceProbability,
                 shouldAbort: () => this.fastTurnEpochMap.get(chatId) !== turnEpoch,
             });
+            if (pendingCrossGroupReply) {
+                void this.handleFastChatTurn({
+                    ...pendingCrossGroupReply,
+                    isGroup: true,
+                    wokeUpFromSleep: false,
+                });
+            }
             return true;
         } catch (err) {
             this.log('debug', `[FeiyuArbiter] handleFastChatTurn 异常降级: ${err?.message || err}`);
@@ -1472,7 +1513,7 @@ export class SocialArbiter {
         const hasImage = /\[图片|视觉画面描述:/i.test(cleanText);
         const isMasterUser = String(userId) === String(this.masterQQ);
         // 睡眠中、精力不足 (energy <= 30) 或正在插话中，保持安静潜水（但若有人直接点名喊肥鱼则哪怕犯困也会哼唧回应）
-        const calledByName = (/(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|傻鱼|笨鱼|臭鱼|死鱼|丑鱼|胖头鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼|本鱼|鱼来|鱼出来|鱼呢|小鱼)/i.test(cleanText) || TEASE_BULLY_REGEX.test(cleanText) || (isMasterUser && hasImage)) && !/^\/fish(?:\s|$)/i.test(cleanText);
+        const calledByName = (/(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|傻鱼|笨鱼|臭鱼|死鱼|丑鱼|胖头鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼|本鱼|鱼来|鱼出来|鱼呢|小鱼|(?:^|[，,。！？!?\s])鱼(?:[，,、！!？?\s]|你|本鱼|截至|今天|昨天|刚才|怎么|为什么|为啥|干嘛|在吗|能|会|帮|吃|喝|睡|醒|看|说|讲|唱|画))/i.test(cleanText) || TEASE_BULLY_REGEX.test(cleanText) || (isMasterUser && hasImage)) && !/^\/fish(?:\s|$)/i.test(cleanText);
         const convoActive = this.isGroupConvoActive(chatId, userId);
         const activeConvo = this.activeGroupConvoMap.get(chatId);
         const isFollowUpConvo = Boolean(
