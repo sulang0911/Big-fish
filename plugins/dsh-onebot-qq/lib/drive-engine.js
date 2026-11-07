@@ -215,15 +215,9 @@ export class DriveEngine {
                 this.state.wokenUpAt = 0;
                 this.state.energy = Math.max(this.state.energy, 85);
             }
-            // 饭点 (12:00 / 18:00 前后) 饥饿加速下降，均带自然随机波动
+            // 饭点 (12:00 / 18:00 前后) 饥饿加速下降，均带自然随机波动（保底 20，防止长期无人发 /fish feed 时永远卡死在极度饥饿状态导致每句话复读五花肉）
             const hungerDrop = mealMode ? randFloat(0.6, 1.2) : randFloat(0.1, 0.25);
-            this.state.hunger = clamp(this.state.hunger - hungerDrop, 0, 100);
-            // 极度饥饿 (< 15) 没人喂时自动触发委屈记小本本
-            if (this.state.hunger < 15 && !this.isSulking(now.getTime())) {
-                this.state.sulking = true;
-                this.state.sulkingReason = '肚子饿扁了也没人投喂，委屈巴巴记小本本中';
-                this.state.sulkingSince = now.getTime();
-            }
+            this.state.hunger = clamp(this.state.hunger - hungerDrop, 20, 100);
             // 无聊度适度上升：每分钟 +0.2 ~ +0.4（平均 +0.3/分钟，约每小时 +18 点，约 2.5~3 小时累积到高无聊度）
             this.state.boredom = clamp(this.state.boredom + randFloat(0.2, 0.4), 0, 100);
             // 午休时段 (13:00~14:00) 打盹回精力，其余白天时段平缓消耗 (-0.05 ~ -0.1/分钟，每小时约 -4.5)
@@ -272,9 +266,9 @@ export class DriveEngine {
             ? ' ⚠️【生物钟警告：你刚刚在深夜 01:30~07:30 熟睡中被吵醒，迷迷糊糊带着强烈起床气，说话要揉眼睛抱怨困！】'
             : '';
         const sulkNote = snap.sulking
-            ? ` 💢【小脾气警告：你当前正在闹别扭记小本本（原因：${snap.sulkingReason || '刚才被欺负或冷落了'}）！回复必须表现得气鼓鼓、傲娇简短（如“哼，刚才还欺负本鱼，不理你了！”），除非对方温柔哄你或道歉才消气！】`
+            ? ` 💢【小脾气警告：你当前正在闹别扭记小本本（原因：${snap.sulkingReason || '刚才被欺负或冷落了'}）！回复可带一点傲娇小脾气，但请围绕当前话题接梗，绝不要句句机械索要五花肉拌饭！】`
             : '';
-        return `【当前时间与大肥鱼实时内在生理状态 (InternalState)】时间=${nowStr} | 精力(energy)=${snap.energy}/100 | 无聊度(boredom)=${snap.boredom}/100 | 心境(mood)=${snap.mood}${snap.hunger < 20 ? ` | 饱食度(hunger)=${snap.hunger}/100(极度饥饿)` : ''}${wokeNote}${sulkNote}`;
+        return `【当前时间与大肥鱼实时内在生理状态 (InternalState)】时间=${nowStr} | 精力(energy)=${snap.energy}/100 | 无聊度(boredom)=${snap.boredom}/100 | 心境(mood)=${snap.mood}${snap.hunger < 25 ? ` | 饱食度(hunger)=${snap.hunger}/100(有点馋了，仅在聊到美食时顺带提一句，非美食话题禁止复读五花肉)` : ''}${wokeNote}${sulkNote}`;
     }
 
     _recomputeMood() {
@@ -503,6 +497,7 @@ export class PokeAggregator {
         this.selfIdGetter = options.selfIdGetter || (() => '2163178914');
         this.onPokeAggregated = options.onFlush || options.onPokeAggregated || (() => {});
         this.pendingPokes = new Map(); // key(chatId#userId) -> { chatId, userId, groupId, count, timer }
+        this.lastFlushedAt = new Map(); // key(chatId#userId) -> timestamp
     }
 
     handleNotice(event, explicitSelfId) {
@@ -523,6 +518,12 @@ export class PokeAggregator {
         const chatId = groupId ? `group:${groupId}` : `private:${userId}`;
         const key = `${chatId}#${userId}`;
 
+        // 防止同一批戳一戳刚结算完 8 秒内重复触发第二轮一模一样的 3 连气泡刷屏
+        const lastFlush = this.lastFlushedAt.get(key) || 0;
+        if (Date.now() - lastFlush < 8000) {
+            return true;
+        }
+
         let rec = this.pendingPokes.get(key);
         if (!rec) {
             rec = {
@@ -538,6 +539,7 @@ export class PokeAggregator {
         if (rec.timer) clearTimeout(rec.timer);
         rec.timer = setTimeout(() => {
             this.pendingPokes.delete(key);
+            this.lastFlushedAt.set(key, Date.now());
             const payload = {
                 event: 'poked_by_user',
                 chatId: rec.chatId,

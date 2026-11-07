@@ -218,8 +218,8 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
         '  },',
         '  "memory_to_save": {',
         '    "should_save": false,',
-        '    "importance": 1,',
-        '    "summary": "若包含重要事实/承诺/喜好变更，用一句话概括存入长期记忆"',
+        '    "importance": 5,',
+        '    "summary": "关于当前说话人的记忆（按人独立存档）：若为日常互动/聊到的话题设 should_save=true 且 importance=4~6（归入【一般记忆】，多了自动压缩）；若为对方的身份特征/长期喜好/重要约定或恩怨设 importance=7~10（归入【重要记忆】永久保留）"',
         '  },',
         '  "stat_delta": {',
         '    "affection": 1,',
@@ -298,6 +298,10 @@ export function buildDynamicTurnContext({
 
     if (memoryManager) {
         lines.push(memoryManager.formatSemanticProfileForPrompt(userId, nickname));
+        if (typeof memoryManager.formatMentionedGroupUsersForPrompt === 'function') {
+            const mentionedProfiles = memoryManager.formatMentionedGroupUsersForPrompt(chatId, userId, queryText);
+            if (mentionedProfiles) lines.push(mentionedProfiles);
+        }
         if (typeof memoryManager.formatGroupLoreForPrompt === 'function') {
             const groupLore = memoryManager.formatGroupLoreForPrompt(chatId);
             if (groupLore) lines.push(groupLore);
@@ -720,18 +724,28 @@ export class MessageDispatcher {
             if (
                 action.memory_to_save &&
                 action.memory_to_save.should_save &&
-                Number(action.memory_to_save.importance) >= 6 &&
                 action.memory_to_save.summary
             ) {
-                this.memoryManager.addEpisodicMemory({
-                    summary: action.memory_to_save.summary,
-                    importance: action.memory_to_save.importance,
-                    userId,
-                });
-                if (ref.kind === 'group' && typeof this.memoryManager.addGroupLore === 'function') {
-                    this.memoryManager.addGroupLore(ref.target, action.memory_to_save.summary);
+                const imp = Number(action.memory_to_save.importance) || 5;
+                if (typeof this.memoryManager.addUserMemory === 'function') {
+                    this.memoryManager.addUserMemory(userId, {
+                        content: action.memory_to_save.summary,
+                        importance: imp,
+                        tier: imp >= 7 ? 'important' : 'normal',
+                        chatId,
+                    });
                 }
-                this.log('info', `[FeiyuMemory] 已存入重要情景记忆 (importance=${action.memory_to_save.importance}): ${action.memory_to_save.summary}`);
+                if (imp >= 7) {
+                    this.memoryManager.addEpisodicMemory({
+                        summary: action.memory_to_save.summary,
+                        importance: imp,
+                        userId,
+                    });
+                    if (ref.kind === 'group' && imp >= 8 && typeof this.memoryManager.addGroupLore === 'function') {
+                        this.memoryManager.addGroupLore(ref.target, action.memory_to_save.summary);
+                    }
+                }
+                this.log('info', `[FeiyuMemory] 已存入用户(${userId})[${imp >= 7 ? '重要' : '一般'}记忆 importance=${imp}]: ${action.memory_to_save.summary}`);
                 if (typeof this.memoryManager.maybeTriggerReflection === 'function') {
                     void this.memoryManager.maybeTriggerReflection(userId);
                 }
@@ -773,7 +787,17 @@ export class MessageDispatcher {
 
         // decision === 'send_message' 或 'voice_only'
         const bubbles = Array.isArray(action.messages) ? [...action.messages] : [];
-        const useQuote = action.qq_action?.type === 'quote_reply' && options.replyToMessageId !== undefined;
+        let autoGroupQuote = false;
+        if (String(chatId).startsWith('group:') && options.replyToMessageId !== undefined && this.memoryManager?.getWorkingMemory) {
+            const nowTs = Date.now();
+            const recentGroupUsers = new Set(
+                this.memoryManager.getWorkingMemory(chatId, 8)
+                    .filter(m => m.role === 'user' && m.userId && (nowTs - (m.ts || nowTs)) < 45_000)
+                    .map(m => String(m.userId))
+            );
+            autoGroupQuote = recentGroupUsers.size >= 2;
+        }
+        const useQuote = (action.qq_action?.type === 'quote_reply' || autoGroupQuote) && options.replyToMessageId !== undefined;
         const toneHint = action.qq_action?.voice_tone || action.qq_action?.meme_tag || '';
 
         // 决定本轮是否使用语音条回答（支持显式指定 send_voice / voice_only，或按概率把其中一条气泡转成真实语音条）

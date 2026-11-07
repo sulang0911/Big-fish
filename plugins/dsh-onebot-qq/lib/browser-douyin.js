@@ -1,10 +1,11 @@
 import puppeteer from 'puppeteer-core';
-import { existsSync, mkdirSync, promises as fsPromises } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, promises as fsPromises } from 'node:fs';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import https from 'node:https';
 import http from 'node:http';
-import { describeImage } from './vision.js';
+import { describeImage, inspectAndVerifyMeme } from './vision.js';
 
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const PROFILE_DIR = 'C:\\Users\\25362\\.dsh\\chrome-douyin-profile';
@@ -172,7 +173,9 @@ async function _searchDouyin(keyword, options = {}) {
 
         console.log(`[dsh-onebot] 抖音搜索 "${keyword}" 成功，抓取到 ${searchItems.length} 条真实结果。`);
 
-        // 8. 抖音表情包质检与保存：经过本地 minicpm-v 视觉质检，确认后以对应心情标签存入 memes/ 并自动写入 index.json 填补情绪空缺
+        // 8. 抖音表情包严格视觉质检与去重保存：
+        // 必须同时满足：(a) MD5 未在本地库重复；(b) 包含纯正大肥鱼特征；(c) 视觉识别出的表情/图中文字与目标名称一致。
+        // 若不符则立即抛弃删除临时文件，并自动向下滚动页面重新获取新候选图二次质检！
         let savedCount = 0;
         const savedFiles = [];
         if (options.saveMemes !== false && searchItems.length > 0) {
@@ -183,6 +186,18 @@ async function _searchDouyin(keyword, options = {}) {
                 .replace(/大肥鱼|肥鱼|表情包/g, '')
                 .replace(/[\\/:*?"<>|#@\s]/g, '')
                 .trim() || '新心情';
+
+            // 计算当前本地表情包库所有图片的 MD5 集合，严禁同一张图换壳重复保存
+            const existingHashes = new Set();
+            try {
+                const existingImgs = readdirSync(MEMES_DIR).filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f));
+                for (const ef of existingImgs) {
+                    try {
+                        const h = crypto.createHash('md5').update(readFileSync(path.join(MEMES_DIR, ef))).digest('hex');
+                        existingHashes.add(h);
+                    } catch {}
+                }
+            } catch {}
 
             const indexPath = path.join(MEMES_DIR, 'index.json');
             let indexData = [];
@@ -195,49 +210,93 @@ async function _searchDouyin(keyword, options = {}) {
                 }
             }
 
-            for (let i = 0; i < searchItems.length; i++) {
-                const it = searchItems[i];
-                if (!it.coverUrl || !it.coverUrl.startsWith('http')) continue;
-                const cleanTitle = (it.title || `meme_${i}`).replace(/[\\/:*?"<>|#@\s]/g, '_').slice(0, 20);
-                const idPart = it.aweme_id || `${Date.now()}_${i}`;
-                const tempDest = path.join(otherDir, `temp_${idPart}.jpg`);
-                try {
-                    await downloadFile(it.coverUrl, tempDest);
-                    // 本地视觉质检
-                    let isBigFish = false;
-                    let visualDesc = '';
-                    try {
-                        const desc = await describeImage(tempDest, '请用一句话回答：这张图的主体是不是蓝色头发的二次元动漫少女/大肥鱼卡通角色？若是，简述动作表情；若不是，简述图里是什么：');
-                        visualDesc = String(desc || '').trim();
-                        if (visualDesc && (visualDesc.includes('是') || visualDesc.includes('蓝色头发') || visualDesc.includes('鲸鱼娘') || visualDesc.includes('二次元') || visualDesc.includes('少女') || visualDesc.includes('动漫')) && !visualDesc.includes('不是') && !visualDesc.includes('并非')) {
-                            isBigFish = true;
-                        }
-                    } catch {}
+            const seenUrls = new Set();
+            const verifyBatch = async (candidates) => {
+                for (let i = 0; i < candidates.length; i++) {
+                    const it = candidates[i];
+                    if (!it.coverUrl || !it.coverUrl.startsWith('http') || seenUrls.has(it.coverUrl)) continue;
+                    seenUrls.add(it.coverUrl);
 
-                    if (isBigFish) {
-                        const realFilename = `dafeiyu_douyin_${emotionTag}_${cleanTitle}_${Date.now()}.jpg`;
+                    const idPart = it.aweme_id || `${Date.now()}_${i}`;
+                    const tempDest = path.join(otherDir, `temp_${idPart}.jpg`);
+                    try {
+                        const buf = await downloadFile(it.coverUrl, tempDest);
+                        const md5 = crypto.createHash('md5').update(buf).digest('hex');
+                        if (existingHashes.has(md5)) {
+                            await fsPromises.unlink(tempDest).catch(() => {});
+                            console.log(`[dsh-onebot][表情包去重] 候选图已在本地库存在 (MD5=${md5.slice(0, 8)})，抛弃跳过`);
+                            continue;
+                        }
+
+                        // 调用视觉模型识别特征、图中文字与真实情绪，校验是否与 emotionTag 相符
+                        const verifyRes = await inspectAndVerifyMeme(tempDest, emotionTag);
+                        if (!verifyRes.pass) {
+                            await fsPromises.unlink(tempDest).catch(() => {});
+                            console.log(`[dsh-onebot][表情包质检未通过] 抛弃候选图 (原因: ${verifyRes.reason})`);
+                            continue;
+                        }
+
+                        const verifiedTag = verifyRes.trueTag || emotionTag;
+                        const realFilename = `dafeiyu_douyin_${emotionTag}_${verifiedTag}_${Date.now()}.jpg`;
                         const realDest = path.join(MEMES_DIR, realFilename);
                         await fsPromises.rename(tempDest, realDest);
+                        existingHashes.add(md5);
                         savedCount++;
                         savedFiles.push(realFilename);
                         indexData.push({
                             file: realFilename,
                             newName: realFilename,
-                            emotion: `${emotionTag} ${cleanTitle.replace(/_/g, ' ')}`.trim(),
-                            desc: visualDesc || `大肥鱼「${emotionTag}」表情包（来自抖音自动补全）`,
+                            emotion: [...new Set([emotionTag, ...(verifyRes.inferredTags || [verifiedTag])])].join(' '),
+                            desc: verifyRes.desc,
                         });
+                        console.log(`[dsh-onebot][表情包质检通过] 成功入库: ${realFilename} (${verifyRes.desc.slice(0, 50)})`);
+                        if (savedCount >= 2) break;
+                    } catch (e) {
+                        await fsPromises.unlink(tempDest).catch(() => {});
+                        console.warn(`[dsh-onebot] 下载或质检表情包失败:`, e.message);
                     }
-                } catch (e) {
-                    console.warn(`[dsh-onebot] 下载或质检表情包失败:`, e.message);
+                }
+            };
+
+            await verifyBatch(searchItems);
+
+            // 若首批候选全部因“不含大肥鱼特征”或“画面/文字与名称不符”被抛弃，自动下拉滚动页面加载新图重新获取！
+            if (savedCount === 0) {
+                console.log(`[dsh-onebot] 首批候选表情包均不符合「${emotionTag}」，正在向下滚动页面重新获取新一批候选图...`);
+                try {
+                    await page.evaluate(() => window.scrollBy(0, 1800));
+                    await new Promise(r => setTimeout(r, 3200));
+                    const moreDomImgs = await page.$$eval('img', imgs =>
+                        imgs
+                            .map(img => ({
+                                src: img.currentSrc || img.src || '',
+                                alt: img.alt || '',
+                                w: img.naturalWidth || img.width || 0,
+                                h: img.naturalHeight || img.height || 0,
+                            }))
+                            .filter(it => it.src.startsWith('http') && (it.src.includes('douyinpic') || it.src.includes('byteimg')) && it.w >= 100 && it.h >= 100)
+                    );
+                    const retryItems = moreDomImgs.slice(0, 12).map((img, idx) => ({
+                        title: img.alt || `${emotionTag}_retry_${idx + 1}`,
+                        author: '@抖音表情包',
+                        aweme_id: `retry_${Date.now()}_${idx}`,
+                        url: 'https://www.douyin.com/',
+                        diggCount: 0,
+                        coverUrl: img.src,
+                    }));
+                    await verifyBatch(retryItems);
+                } catch (retryErr) {
+                    console.warn('[dsh-onebot] 重新滚动获取候选表情包失败:', retryErr.message);
                 }
             }
+
             if (savedCount > 0) {
                 try {
                     await fsPromises.writeFile(indexPath, JSON.stringify(indexData, null, 2), 'utf8');
                 } catch (idxErr) {
                     console.warn('[dsh-onebot] 更新 memes/index.json 失败:', idxErr.message);
                 }
-                console.log(`[dsh-onebot] 已从抖音爬取 ${savedCount} 张「${emotionTag}」新表情包填补本地库空缺并更新 index.json: ${MEMES_DIR}`);
+                console.log(`[dsh-onebot] 已从抖音爬取并通过视觉质检 ${savedCount} 张「${emotionTag}」表情包入库: ${MEMES_DIR}`);
             }
         }
 

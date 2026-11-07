@@ -109,26 +109,32 @@ export async function searchDouyinMeme(keyword = '傲娇') {
         }
     }
 
-    // 2. 本地未命中该新心情时，主动前往抖音搜索爬取「大肥鱼 <心情> 表情包」并经视觉质检后入库填补空缺
+    // 2. 本地未命中该新心情时，主动前往抖音搜索爬取「大肥鱼 <心情> 表情包」，经视觉模型严格校验特征与文字/表情相符后才入库；若首批不符被抛弃则自动换词二次重新获取！
     try {
-        console.log(`[dsh-onebot] 本地表情包库暂无「${keyword}」心情，正在前往抖音搜索获取新表情包填补空缺...`);
-        const searchKw = keyword.includes('大肥鱼') ? keyword : `大肥鱼 ${keyword} 表情包`;
-        const dyRes = await searchDouyin(searchKw, { saveMemes: true, emotionTag: keyword });
-        if (dyRes.success && dyRes.savedFiles && dyRes.savedFiles.length > 0) {
-            const sampleName = dyRes.savedFiles[0];
-            const samplePath = path.join(memesDir, sampleName);
-            if (fs.existsSync(samplePath)) {
-                const buf = await fs.promises.readFile(samplePath);
-                return {
-                    success: true,
-                    filePath: samplePath,
-                    filename: sampleName,
-                    url: '',
-                    base64: buf.toString('base64'),
-                    pageScreenshotBase64: dyRes.pageScreenshotBase64,
-                    source: 'douyin_real_verified'
-                };
+        console.log(`[dsh-onebot] 本地表情包库暂无「${keyword}」心情，正在前往抖音搜索并执行视觉质检...`);
+        const searchQueries = [
+            keyword.includes('大肥鱼') ? keyword : `大肥鱼 ${keyword} 表情包`,
+            `蓝色大肥鱼 ${keyword} 表情`,
+        ];
+        for (const searchKw of searchQueries) {
+            const dyRes = await searchDouyin(searchKw, { saveMemes: true, emotionTag: keyword });
+            if (dyRes.success && dyRes.savedFiles && dyRes.savedFiles.length > 0) {
+                const sampleName = dyRes.savedFiles[0];
+                const samplePath = path.join(memesDir, sampleName);
+                if (fs.existsSync(samplePath)) {
+                    const buf = await fs.promises.readFile(samplePath);
+                    return {
+                        success: true,
+                        filePath: samplePath,
+                        filename: sampleName,
+                        url: '',
+                        base64: buf.toString('base64'),
+                        pageScreenshotBase64: dyRes.pageScreenshotBase64,
+                        source: 'douyin_real_verified'
+                    };
+                }
             }
+            console.log(`[dsh-onebot] 搜索词 "${searchKw}" 获取的候选图均未通过视觉质检，准备换词重新获取...`);
         }
     } catch (dyErr) {
         console.warn('[dsh-onebot] 真实抖音表情包搜索异常，启动正版兜底:', dyErr.message);

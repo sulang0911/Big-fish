@@ -150,7 +150,7 @@ export class InboundPipeline {
         }
 
         // 群聊唤醒准则：老大或群友在群聊中喊肥鱼执行工具任务（唱歌/画画/换音色/老大系统指令）时走完整 Agent 通道；日常喊肥鱼名字闲聊则交由下方 evaluateGroupLurkAndChime 走灵动多气泡秒回通道
-        const botNamePattern = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼|本鱼)/i;
+        const botNamePattern = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|傻鱼|笨鱼|臭鱼|死鱼|丑鱼|胖头鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼|本鱼|鱼来|鱼出来|鱼呢|小鱼)/i;
         const publicMediaToolPattern = /(唱歌|点歌|唱首|唱个|唱一首|唱支|来首歌|来一首|哼一首|给我唱|用.*声音唱|用.*音色唱|唱《|(?:^|[，。！？\s]|肥鱼|飞鱼|本鱼|声音|音色)唱(?!反调|衰|高调|双簧|白脸|红脸|黑脸)\S+|我的歌呢|歌呢|怎么不唱|还没唱|画画|画个|画张|画一只|画幅|生成图片|生图|自拍|自画像|什么音色|音色库|有哪些音色|有哪些声音|(?:切换|换成?|改用|变成).*(?:芭芭拉|可莉|芙宁娜|胡桃|神里|绫华|雷电|将军|八重|神子|迪奥娜|纳西妲|音色|声音))/i;
         const adminToolPattern = /(打开|浏览器|搜索|查一下|看看|截图|执行|运行|代码|文件|天气|帮我|切换.*(?:音色|声音|芭芭拉|可莉|芙宁娜|胡桃|神里|绫华|雷电|将军|八重|神子|迪奥娜|纳西妲)|换.*(?:音色|声音|芭芭拉|可莉|芙宁娜|胡桃|神里|绫华|雷电|将军|八重|神子|迪奥娜|纳西妲))/i;
         const adminCalledByName = (isAdmin || botNamePattern.test(textContent) || Boolean(feiyu?.isGroupConvoActive?.(chatId))) && (
@@ -241,7 +241,9 @@ export class InboundPipeline {
                 let chimeInbound = inbound;
                 const hasImg = Array.isArray(inbound.media) && inbound.media.some(m => m.kind === 'image');
                 const shouldResolveMediaForChime = (hasImg || inbound.replyId !== undefined) && (
-                    feiyu.isGroupConvoActive?.(chatId) ||
+                    isAdmin ||
+                    hasImg ||
+                    feiyu.isGroupConvoActive?.(chatId, userId) ||
                     /(肥鱼|飞鱼|大肥鱼|五花肉|好吃|夜宵|烧烤|火锅|奶茶|干饭|饿|图|看|吃|投喂|喂|饭|肉|菜|给|赏|请)/i.test(textContent)
                 );
                 if (shouldResolveMediaForChime) {
@@ -255,6 +257,7 @@ export class InboundPipeline {
                         const combinedChimeText = [chimeQuote, chimeBody].filter(Boolean).join('\n');
                         if (combinedChimeText) {
                             chimeInbound = { ...inbound, text: combinedChimeText };
+                            feiyu.memoryManager?.updateLatestWorkingMemoryText?.(chatId, userId, combinedChimeText);
                         }
                     } catch {}
                 }

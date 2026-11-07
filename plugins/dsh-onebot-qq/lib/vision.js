@@ -140,3 +140,150 @@ export async function describeImage(imagePath, customPrompt) {
         return null;
     }
 }
+
+/**
+ * 情绪大类与视觉特征映射规则：用于校验视觉识别出的真实画面/配字是否与目标表情包名称一致
+ */
+const EMOTION_VISUAL_RULES = [
+    {
+        targetPattern: /(哭|泪|委屈|难过|伤心|悲伤|呜呜|可怜|叹气|忧郁)/i,
+        mustMatch: /(哭|泪|悲伤|难过|委屈|抱膝|伤心|叹气|忧郁|困扰|低头|失落|苦|呜)/i,
+        mustNotMatch: /(表情愉悦|表情是愉快的|笑逐颜开|欢呼|得意|自豪|满足|享受|开心地笑|签署|签字|握手|太阳镜)/i,
+        canonicalTag: '委屈流泪',
+    },
+    {
+        targetPattern: /(生气|愤怒|炸毛|暴躁|打人|尾巴拍|拍你|抽你|气鼓鼓|恼羞|嫌弃|鄙视|不爽|滚)/i,
+        mustMatch: /(生气|愤怒|恼羞|不悦|严肃|握拳|双拳|炸毛|叉腰|双臂交叉|咬|瞪|凶|嫌弃|打|怒|哼|不服)/i,
+        mustNotMatch: /(闭着眼睛微笑|表情愉悦|表情是愉快的|显得很满足和开心|温柔安慰|正在签署|拿着笔准备|握手)/i,
+        canonicalTag: '生气炸毛',
+    },
+    {
+        targetPattern: /(干饭|讨食|讨饭|饿|嘴馋|五花肉|白米饭|吃饭|好吃|香)/i,
+        mustMatch: /(饭|吃|筷子|碗|茶壶|喝|嘴馋|饿|肉|咬|美食|食物|流口水|张嘴)/i,
+        mustNotMatch: /(正在签署|拿着笔|坐在笔记本电脑前|握手|太阳镜)/i,
+        canonicalTag: '嘴馋干饭',
+    },
+    {
+        targetPattern: /(困|睡觉|摸鱼|趴桌|慵懒|累|躺平|晚安|打哈欠)/i,
+        mustMatch: /(趴|困|慵懒|睡|摸鱼|累|休息|闭眼|枕|哈欠|无聊)/i,
+        mustNotMatch: /(欢呼|跳舞|双臂张开|震惊|张大嘴|签署)/i,
+        canonicalTag: '犯困摸鱼',
+    },
+    {
+        targetPattern: /(震惊|惊讶|目瞪口呆|瞳孔地震|卧槽|疑惑|问号|发呆|懵)/i,
+        mustMatch: /(震惊|惊讶|目瞪口呆|张大嘴|嘴巴微张|眼睛睁大|眉毛拱起|眉毛上扬|困惑|疑惑|呆|咬)/i,
+        mustNotMatch: /(闭着眼睛微笑|闭眼满脸得意|正在签署|拿着笔)/i,
+        canonicalTag: '震惊疑惑',
+    },
+    {
+        targetPattern: /(傲娇|叉腰|得意|自豪|骄傲|哼|略略略|臭屁)/i,
+        mustMatch: /(叉腰|抱胸|双臂交叉|得意|自豪|傲娇|俏皮|顽皮|自信|嘴角上扬|太阳镜)/i,
+        mustNotMatch: /(哭泣|流泪|悲伤|绝望|抱膝)/i,
+        canonicalTag: '傲娇得意',
+    },
+    {
+        targetPattern: /(开心|高兴|欢呼|兴奋|快乐|比耶|卖萌|可爱|微笑|打招呼|wink)/i,
+        mustMatch: /(开心|愉悦|愉快|微笑|笑容|欢呼|兴奋|比耶|剪刀手|可爱|眨眼|招手|跳舞)/i,
+        mustNotMatch: /(哭泣|流泪|悲伤|绝望|抱膝|愤怒|不悦)/i,
+        canonicalTag: '开心卖萌',
+    },
+    {
+        targetPattern: /(认真|学习|写字|干活|工作|签字|思考|琢磨)/i,
+        mustMatch: /(写字|签字|签署|笔|工作|学习|电脑|专注|思考|严肃)/i,
+        mustNotMatch: /(哭泣|流泪|跳舞|欢呼)/i,
+        canonicalTag: '认真思考',
+    },
+];
+
+/**
+ * 根据视觉描述文本推断其真实的表情包情绪标签与是否符合目标名称
+ * @param {string} visualDesc 视觉模型返回的描述（含画面与图中文字）
+ * @param {string} [targetEmotion] 期望获取的目标表情包名称/情绪词
+ */
+export function evaluateMemeDescription(visualDesc, targetEmotion = '') {
+    const desc = String(visualDesc || '').trim();
+    if (!desc || desc.length < 5) {
+        return { pass: false, reason: '视觉模型未返回有效描述', trueTag: '', desc };
+    }
+
+    // 1. 严格校验是否包含大肥鱼角色特征（蓝发二次元动漫少女/小蓝鲸女仆），剔除企鹅/黄鸭/真人/教程封面/无关杂图
+    const hasFeiyu = /(蓝色头发|蓝发|大肥鱼少女|鲸鱼娘|蓝白.*女仆)/.test(desc);
+    const hasNoiseOrReject = /(不是蓝色头发|并非|没有动漫|真人|企鹅角色|黄色卡通角色|教程-3分钟|邀请观看者学习|与一个穿女仆装的角色握手)/.test(desc);
+    if (!hasFeiyu || hasNoiseOrReject) {
+        return {
+            pass: false,
+            reason: `不包含纯正大肥鱼特征或混入无关杂图 (${desc.slice(0, 45)})`,
+            trueTag: '',
+            desc,
+        };
+    }
+
+    // 2. 提取该图片真实的视觉情绪标签 (`trueTag`)
+    let inferredTags = [];
+    for (const rule of EMOTION_VISUAL_RULES) {
+        if (rule.mustMatch.test(desc) && !rule.mustNotMatch.test(desc)) {
+            inferredTags.push(rule.canonicalTag);
+        }
+    }
+    const trueTag = inferredTags[0] || '日常可爱';
+
+    // 3. 若指定了目标名称 `targetEmotion`，严格核对“画面真实表情/图中文字”是否符合该名称！
+    const cleanTarget = String(targetEmotion || '')
+        .replace(/大肥鱼|肥鱼|飞鱼|表情包|图片/g, '')
+        .trim();
+
+    if (cleanTarget && !/^(通用|日常|随机|新心情)$/.test(cleanTarget)) {
+        // 检查图中文字或描述是否直接包含目标词
+        const directTextHit = desc.includes(cleanTarget);
+        const matchedRule = EMOTION_VISUAL_RULES.find(r => r.targetPattern.test(cleanTarget));
+
+        if (matchedRule) {
+            const matchesVisual = matchedRule.mustMatch.test(desc);
+            const hasConflict = matchedRule.mustNotMatch.test(desc);
+            if ((!matchesVisual && !directTextHit) || hasConflict) {
+                return {
+                    pass: false,
+                    reason: `画面内容/文字(真实为「${trueTag}」: ${desc.slice(0, 40)}...)与目标表情包名称「${cleanTarget}」不符`,
+                    trueTag,
+                    desc,
+                };
+            }
+        } else if (!directTextHit) {
+            // 若是特殊自定义词（如“暗中观察”、“警惕狐疑”），检查单字重合度或冲突词
+            const chars = [...cleanTarget].filter(c => /[\u4e00-\u9fa5]/.test(c));
+            const charHit = chars.some(c => desc.includes(c));
+            if (!charHit) {
+                return {
+                    pass: false,
+                    reason: `画面内容与文字(${desc.slice(0, 40)}...)未体现「${cleanTarget}」特征`,
+                    trueTag,
+                    desc,
+                };
+            }
+        }
+    }
+
+    return {
+        pass: true,
+        reason: '符合大肥鱼特征且内容与表情名称一致',
+        trueTag,
+        inferredTags,
+        desc,
+    };
+}
+
+/**
+ * 对下载的候选表情包执行完整视觉模型识别与一致性核验
+ * @param {string} imagePath
+ * @param {string} [targetEmotion]
+ */
+export async function inspectAndVerifyMeme(imagePath, targetEmotion = '') {
+    const prompt = [
+        '请仔细观察这张图片并按以下3点用中文如实回答（1~2句话）：',
+        '1. 主体是否为“蓝色头发的二次元动漫少女（大肥鱼/小蓝鲸女仆）”，如果图里有企鹅、黄鸭、真人或纯文字截图请如实指出；',
+        '2. 完整读出图片里的所有配字/文字（如果没有文字请写“图中无文字”）；',
+        '3. 准确描述她此刻的真实面部表情（如开心微笑、闭眼得意、委屈流泪、生气皱眉、震惊张嘴、犯困趴桌）和肢体动作（如叉腰抱胸、端碗吃饭、拿笔写字、抱膝坐地）。',
+    ].join('');
+    const visualDesc = await describeImage(imagePath, prompt);
+    return evaluateMemeDescription(visualDesc, targetEmotion);
+}

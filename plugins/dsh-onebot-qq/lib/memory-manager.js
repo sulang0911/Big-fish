@@ -27,6 +27,10 @@ const MEMORY_DB_PATH = join(DEFAULT_STORAGE_DIR, 'feiyu_memory.db');
 const WORKING_MEMORY_CAP = 20;
 const EPISODIC_MAX_PER_USER = 120;
 const INTRADAY_COMPRESS_THRESHOLD = 24;
+const USER_COMPRESS_LOG_THRESHOLD = 10;
+const USER_COMPRESS_CHAR_THRESHOLD = 450;
+const USER_IMPORTANT_CAP = 15;
+const USER_NORMAL_CAP = 8;
 
 export function toDayKey(tsOrDate = Date.now()) {
     const d = tsOrDate instanceof Date ? tsOrDate : new Date(tsOrDate);
@@ -205,7 +209,9 @@ export class MemoryManager {
         this.now = options.now || (() => Date.now());
         this.llmReflector = options.llmReflector || null;
         this.llmDailyCompressor = options.llmDailyCompressor || null;
+        this.llmUserCompressor = options.llmUserCompressor || null;
         this.isCompressing = false;
+        this.compressingUsers = new Set();
         this.working = new Map(); // chatId -> Array<{ role, userId, nickname, time, text, ts, messageId }>
 
         this.state = this._loadJsonFallback();
@@ -292,10 +298,25 @@ export class MemoryManager {
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS user_memories (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    tier TEXT NOT NULL DEFAULT 'normal',
+                    importance INTEGER NOT NULL DEFAULT 5,
+                    content TEXT NOT NULL,
+                    chat_id TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_user_memories_uid_tier ON user_memories(user_id, tier, importance DESC, updated_at_ms DESC);
             `);
-            try {
-                this.db.exec("ALTER TABLE user_profiles ADD COLUMN pet_nickname TEXT NOT NULL DEFAULT ''");
-            } catch {}
+            try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN pet_nickname TEXT NOT NULL DEFAULT ''"); } catch {}
+            try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN rolling_summary TEXT NOT NULL DEFAULT ''"); } catch {}
+            try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN important_memories_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
+            try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN normal_memories_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
+            try { this.db.exec("ALTER TABLE raw_interaction_logs ADD COLUMN user_compressed INTEGER NOT NULL DEFAULT 0"); } catch {}
+            try { this.db.exec("CREATE INDEX IF NOT EXISTS idx_raw_logs_user_comp ON raw_interaction_logs(user_id, user_compressed, ts ASC)"); } catch {}
 
             // 首次启动时将旧版 JSON 中的 users 与 episodic 平滑同步至 SQLite，并从 SQLite 加载最新状态
             this._syncStateWithSqliteOnBoot();
@@ -364,7 +385,14 @@ export class MemoryManager {
         for (const row of dbUsers) {
             if (!/^\d{5,12}$/.test(String(row.user_id))) continue;
             let facts = [];
+            let importantMems = [];
+            let normalMems = [];
             try { facts = JSON.parse(row.known_facts_json || '[]'); } catch {}
+            try { importantMems = JSON.parse(row.important_memories_json || '[]'); } catch {}
+            try { normalMems = JSON.parse(row.normal_memories_json || '[]'); } catch {}
+            if (importantMems.length === 0 && facts.length > 0) {
+                importantMems = facts.slice(0, USER_IMPORTANT_CAP);
+            }
             const rawNick = String(row.nickname || '').replace(/^[\s\u3000]+|[\s\u3000]+$/g, '');
             const safeNick = (rawNick && rawNick.length <= 20 && !/(提醒我|分钟后|小时后)/.test(rawNick))
                 ? rawNick
@@ -374,14 +402,21 @@ export class MemoryManager {
                     this.db.prepare('UPDATE user_profiles SET nickname = ? WHERE user_id = ?').run(safeNick, row.user_id);
                 } catch {}
             }
+            const rawPet = row.pet_nickname || this.state.users[row.user_id]?.pet_nickname || '';
+            const safePet = (rawPet && !this.isGenericCategoryNickname(rawPet))
+                ? rawPet
+                : (String(row.user_id) === this.masterQQ ? '老大' : this.derivePersonalNick(safeNick, row.user_id));
             this.state.users[row.user_id] = {
                 ...(this.state.users[row.user_id] || {}),
                 user_id: row.user_id,
                 nickname: safeNick,
-                pet_nickname: row.pet_nickname || this.state.users[row.user_id]?.pet_nickname || '',
+                pet_nickname: safePet,
                 affection: row.affection,
                 relationship_tag: row.relationship_tag,
                 known_facts: facts,
+                rolling_summary: row.rolling_summary || this.state.users[row.user_id]?.rolling_summary || '',
+                important_memories: importantMems,
+                normal_memories: normalMems,
                 last_interaction_time: row.last_interaction_time,
                 last_interaction_ts: row.last_interaction_ts,
                 last_late_night_ts: row.last_late_night_ts,
@@ -463,27 +498,37 @@ export class MemoryManager {
         if (!this.db) return;
         try {
             const upsertUser = this.db.prepare(`
-                INSERT INTO user_profiles (user_id, nickname, pet_nickname, affection, relationship_tag, known_facts_json, last_interaction_time, last_interaction_ts, last_late_night_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO user_profiles (user_id, nickname, pet_nickname, affection, relationship_tag, known_facts_json, rolling_summary, important_memories_json, normal_memories_json, last_interaction_time, last_interaction_ts, last_late_night_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     nickname = excluded.nickname,
                     pet_nickname = excluded.pet_nickname,
                     affection = excluded.affection,
                     relationship_tag = excluded.relationship_tag,
                     known_facts_json = excluded.known_facts_json,
+                    rolling_summary = excluded.rolling_summary,
+                    important_memories_json = excluded.important_memories_json,
+                    normal_memories_json = excluded.normal_memories_json,
                     last_interaction_time = excluded.last_interaction_time,
                     last_interaction_ts = excluded.last_interaction_ts,
                     last_late_night_ts = excluded.last_late_night_ts
             `);
             for (const [uid, u] of Object.entries(this.state.users || {})) {
                 if (!u || typeof u !== 'object') continue;
+                const impList = Array.isArray(u.important_memories) && u.important_memories.length > 0
+                    ? u.important_memories
+                    : (Array.isArray(u.known_facts) ? u.known_facts : []);
+                const normList = Array.isArray(u.normal_memories) ? u.normal_memories : [];
                 upsertUser.run(
                     String(uid),
                     String(u.nickname || uid),
                     String(u.pet_nickname || ''),
                     Number(u.affection ?? 55),
                     String(u.relationship_tag || '群友/饭票候选'),
-                    JSON.stringify(Array.isArray(u.known_facts) ? u.known_facts : []),
+                    JSON.stringify(impList),
+                    String(u.rolling_summary || ''),
+                    JSON.stringify(impList),
+                    JSON.stringify(normList),
                     String(u.last_interaction_time || new Date().toISOString()),
                     Number(u.last_interaction_ts || Date.now()),
                     Number(u.last_late_night_ts || 0),
@@ -555,6 +600,18 @@ export class MemoryManager {
                 if (row && Number(row.cnt) >= INTRADAY_COMPRESS_THRESHOLD && !this.isCompressing) {
                     void this.compressDailyMemory(dayKey);
                 }
+
+                // 按人独立统计未压缩流水：当该用户未压缩发言满 10 条或累计字数 >= 450 字时，自动触发该用户的记忆分级压缩
+                if (role === 'user' && /^\d{5,12}$/.test(userId) && !this.compressingUsers.has(userId)) {
+                    const uRow = this.db.prepare(`
+                        SELECT COUNT(*) AS cnt, COALESCE(SUM(LENGTH(content)), 0) AS chars
+                        FROM raw_interaction_logs
+                        WHERE user_id = ? AND role = 'user' AND user_compressed = 0
+                    `).get(userId);
+                    if (uRow && (Number(uRow.cnt) >= USER_COMPRESS_LOG_THRESHOLD || Number(uRow.chars) >= USER_COMPRESS_CHAR_THRESHOLD)) {
+                        void this.compressUserMemory(userId);
+                    }
+                }
             } catch (err) {
                 console.warn('[MemoryManager] 写入 raw_interaction_logs 失败:', err.message);
             }
@@ -579,6 +636,34 @@ export class MemoryManager {
     getWorkingMemory(chatId, limit = 15) {
         const list = this.working.get(chatId) || [];
         return list.slice(-limit);
+    }
+
+    /**
+     * 当入站纯图片消息 (`[图片]`) 随后完成视觉识别 (`[图片: ... 视觉画面描述: ...]`) 时，
+     * 同步刷新最近一条 Working Memory 与 SQLite 流水，避免记忆里只留下空壳 `[图片]`
+     */
+    updateLatestWorkingMemoryText(chatId, userId, newText) {
+        const clean = String(newText || '').replace(/\r?\n/g, ' ').trim().slice(0, 300);
+        if (!chatId || !clean) return;
+        const list = this.working.get(chatId) || [];
+        for (let i = list.length - 1; i >= 0; i--) {
+            if (list[i].role === 'user' && String(list[i].userId) === String(userId)) {
+                list[i].text = clean;
+                break;
+            }
+        }
+        if (this.db) {
+            try {
+                const latestRow = this.db.prepare(`
+                    SELECT id FROM raw_interaction_logs
+                    WHERE chat_id = ? AND user_id = ? AND role = 'user'
+                    ORDER BY id DESC LIMIT 1
+                `).get(String(chatId), String(userId));
+                if (latestRow?.id) {
+                    this.db.prepare('UPDATE raw_interaction_logs SET content = ? WHERE id = ?').run(clean, latestRow.id);
+                }
+            } catch {}
+        }
     }
 
     // ── 2. 每日记忆压缩机制 (Daily Memory Compression & Temporary Digest) ────────
@@ -655,22 +740,39 @@ export class MemoryManager {
                 this.db.prepare('UPDATE raw_interaction_logs SET compressed = 1 WHERE day_key = ? AND id <= ?').run(dayKey, maxId);
             }
 
-            // 若压缩过程中提炼出了高重要度的长期事件，顺带存入长期情景记忆库
+            // 若压缩过程中提炼出了高重要度的长期事件，按真实归属人存入长期情景记忆库与个人分级记忆库
             for (const ep of extractedEpisodic) {
-                if (ep && ep.summary && Number(ep.importance) >= 7) {
-                    this.addEpisodicMemory({
-                        userId: this.masterQQ,
-                        summary: `[${dayKey}] ${ep.summary}`,
-                        importance: Number(ep.importance),
+                if (ep && ep.summary && Number(ep.importance) >= 5) {
+                    let targetUid = ep.user_id && /^\d{5,12}$/.test(String(ep.user_id)) ? String(ep.user_id) : '';
+                    if (!targetUid) {
+                        const matchedLog = [...rawLogs].reverse().find(
+                            r => r.role === 'user' && /^\d{5,12}$/.test(String(r.user_id)) && r.nickname && ep.summary.includes(r.nickname)
+                        );
+                        targetUid = matchedLog ? String(matchedLog.user_id) : this.masterQQ;
+                    }
+                    const imp = Number(ep.importance) || 6;
+                    this.addUserMemory(targetUid, {
+                        content: `[${dayKey}] ${ep.summary}`,
+                        importance: imp,
                     });
+                    if (imp >= 7) {
+                        this.addEpisodicMemory({
+                            userId: targetUid,
+                            summary: `[${dayKey}] ${ep.summary}`,
+                            importance: imp,
+                        });
+                    }
                 }
             }
 
-            // 若压缩过程中提炼出了群梗黑话或群友印象，顺带存入对应群的 group_lore 表
+            // 若压缩过程中提炼出了群梗黑话或群友印象，顺带存入对应群的 group_lore 表（按发言人所在群精准归属，杜绝跨群串台）
             if (extractedGroupLore.length > 0) {
                 const groupChats = [...new Set(rawLogs.map(r => r.chat_id).filter(c => String(c).startsWith('group:')))];
-                const targetGroup = groupChats[0] || 'group:434137389';
                 for (const lore of extractedGroupLore) {
+                    const matchedGroupLog = [...rawLogs].reverse().find(
+                        r => String(r.chat_id).startsWith('group:') && r.nickname && lore.includes(r.nickname)
+                    );
+                    const targetGroup = matchedGroupLog?.chat_id || groupChats[0] || 'group:434137389';
                     this.addGroupLore(targetGroup, lore);
                 }
             }
@@ -787,15 +889,15 @@ export class MemoryManager {
         const todayDigest = digests.find(d => d.day_key === todayKey);
         const pastDigests = digests.filter(d => d.day_key !== todayKey).slice(0, 3);
 
-        // 提取今天尚未压缩的最近 6 条交互流水作为实时暂时记忆
+        // 提取今天尚未压缩的最近 6 条交互流水作为实时暂时记忆（严格限定当前会话 chat_id，标注说话人 QQ 号防串台）
         const recentUncompressed = chatId
             ? this.db.prepare(`
-                SELECT time_str, nickname, role, content FROM raw_interaction_logs
-                WHERE day_key = ? AND (chat_id = ? OR role = 'event')
+                SELECT time_str, user_id, nickname, role, content FROM raw_interaction_logs
+                WHERE day_key = ? AND chat_id = ?
                 ORDER BY ts DESC LIMIT 6
             `).all(todayKey, String(chatId)).reverse()
             : this.db.prepare(`
-                SELECT time_str, nickname, role, content FROM raw_interaction_logs
+                SELECT time_str, user_id, nickname, role, content FROM raw_interaction_logs
                 WHERE day_key = ?
                 ORDER BY ts DESC LIMIT 6
             `).all(todayKey).reverse();
@@ -820,10 +922,10 @@ export class MemoryManager {
             if (recentUncompressed.length > 0) {
                 const rawLines = recentUncompressed.map(r => {
                     if (r.role === 'event') return `[${r.time_str} 事件] ${r.content}`;
-                    if (r.role === 'assistant') return `[${r.time_str} 大肥鱼] ${r.content}`;
-                    return `[${r.time_str} ${r.nickname}] ${r.content}`;
+                    if (r.role === 'assistant') return `[${r.time_str} 大肥鱼(我)] ${r.content}`;
+                    return `[${r.time_str} ${r.nickname}(QQ:${r.user_id})] ${r.content}`;
                 });
-                lines.push(`  - 刚刚的实时流水:\n    ${rawLines.join('\n    ')}`);
+                lines.push(`  - 本会话刚刚的实时流水:\n    ${rawLines.join('\n    ')}`);
             }
         }
 
@@ -877,10 +979,15 @@ export class MemoryManager {
         const userCount = this.db.prepare('SELECT COUNT(*) AS c FROM user_profiles').get()?.c || 0;
         const groupLoreCount = this.db.prepare('SELECT COUNT(*) AS c FROM group_lore').get()?.c || 0;
         const reminderPendingCount = this.db.prepare('SELECT COUNT(*) AS c FROM reminders WHERE triggered = 0').get()?.c || 0;
+        const userMemImportant = this.db.prepare("SELECT COUNT(*) AS c FROM user_memories WHERE tier = 'important'").get()?.c || 0;
+        const userMemNormal = this.db.prepare("SELECT COUNT(*) AS c FROM user_memories WHERE tier = 'normal'").get()?.c || 0;
         return {
             sqliteEnabled: true,
             dbPath: this.dbPath,
             userCount,
+            userMemTotal: userMemImportant + userMemNormal,
+            userMemImportant,
+            userMemNormal,
             epCount,
             digestCount,
             rawTotal,
@@ -1013,6 +1120,9 @@ export class MemoryManager {
                 affection: isMaster ? 92 : 55,
                 relationship_tag: isMaster ? '首席饲主/老大' : '群友/饭票候选',
                 known_facts: isMaster ? ['大肥鱼的首席饲主（老大）'] : [],
+                rolling_summary: '',
+                important_memories: isMaster ? ['大肥鱼的首席饲主（老大）'] : [],
+                normal_memories: [],
                 last_interaction_time: new Date().toISOString(),
                 last_interaction_ts: Date.now(),
                 last_late_night_ts: 0,
@@ -1020,6 +1130,14 @@ export class MemoryManager {
             this.save();
         } else if (isValidNick && !isMaster) {
             this.state.users[uid].nickname = cleanNick;
+        }
+        if (!Array.isArray(this.state.users[uid].important_memories)) {
+            this.state.users[uid].important_memories = Array.isArray(this.state.users[uid].known_facts)
+                ? [...this.state.users[uid].known_facts]
+                : [];
+        }
+        if (!Array.isArray(this.state.users[uid].normal_memories)) {
+            this.state.users[uid].normal_memories = [];
         }
         return this.state.users[uid];
     }
@@ -1059,28 +1177,315 @@ export class MemoryManager {
     }
 
     addKnownFact(userId, fact) {
-        const clean = String(fact || '').trim();
-        if (!clean) return;
-        const profile = this.getUserProfile(userId);
-        if (!profile) return;
-        if (!Array.isArray(profile.known_facts)) profile.known_facts = [];
-        if (!profile.known_facts.includes(clean)) {
-            profile.known_facts.unshift(clean);
-            profile.known_facts = profile.known_facts.slice(0, 15);
+        this.addUserMemory(userId, { content: fact, importance: 8, tier: 'important' });
+    }
+
+    /**
+     * 按人分别存放分级记忆（分为 `important` 重要记忆 [importance 7..10] 与 `normal` 一般记忆 [importance 1..6]）
+     * @param {string} userId
+     * @param {{ content: string, importance?: number, tier?: 'important' | 'normal', chatId?: string, nickname?: string }} entry
+     */
+    addUserMemory(userId, entry = {}) {
+        const uid = String(userId || '').replace(/^(private|group):/i, '').trim();
+        if (!/^\d{5,12}$/.test(uid)) return null;
+        const clean = String(entry.content || entry.summary || '').replace(/\r?\n/g, ' ').trim().slice(0, 120);
+        if (!clean) return null;
+
+        const profile = this.getUserProfile(uid, entry.nickname || '');
+        if (!profile) return null;
+
+        const importance = Math.max(1, Math.min(10, Math.round(Number(entry.importance) || (entry.tier === 'important' ? 8 : 5))));
+        const tier = entry.tier || (importance >= 7 ? 'important' : 'normal');
+        const now = this.now();
+
+        if (tier === 'important') {
+            const list = Array.isArray(profile.important_memories) ? profile.important_memories : [];
+            const filtered = list.filter(item => item !== clean && computeKeywordMatch(item, clean) < 0.72);
+            filtered.unshift(clean);
+            profile.important_memories = filtered.slice(0, USER_IMPORTANT_CAP);
+            profile.known_facts = [...profile.important_memories];
+        } else {
+            // 若该信息已经在重要记忆中存在，则不重复塞入一般记忆
+            const impList = Array.isArray(profile.important_memories) ? profile.important_memories : [];
+            if (impList.some(item => item === clean || computeKeywordMatch(item, clean) >= 0.72)) {
+                return profile;
+            }
+            const list = Array.isArray(profile.normal_memories) ? profile.normal_memories : [];
+            const filtered = list.filter(item => item !== clean && computeKeywordMatch(item, clean) < 0.72);
+            filtered.unshift(clean);
+            profile.normal_memories = filtered;
+        }
+
+        if (this.db) {
+            try {
+                const memId = `um_${uid}_${now}_${Math.random().toString(36).slice(2, 6)}`;
+                this.db.prepare(`
+                    INSERT INTO user_memories (id, user_id, tier, importance, content, chat_id, created_at_ms, updated_at_ms)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(memId, uid, tier, importance, clean, String(entry.chatId || ''), now, now);
+            } catch {}
+        }
+
+        this.save();
+
+        // 若该用户的「一般记忆」条数超过上限 (8 条) 或总字数过大，自动触发该用户的记忆压缩
+        const normChars = (profile.normal_memories || []).join('').length;
+        if (((profile.normal_memories || []).length > USER_NORMAL_CAP || normChars > 360) && !this.compressingUsers.has(uid)) {
+            void this.compressUserMemory(uid);
+        }
+        return profile;
+    }
+
+    /**
+     * 按人独立压缩记忆 (`compressUserMemory`)：
+     * 将某用户的未压缩聊天流水与过多的「一般记忆」合并浓缩为 `rolling_summary` (<=120字)，
+     * 并筛选划分出「重要记忆 (`important`, 永久保留)」与精简的「一般记忆 (`normal`, 近期日常)」。
+     */
+    async compressUserMemory(userId, opts = {}) {
+        const uid = String(userId || '').replace(/^(private|group):/i, '').trim();
+        if (!/^\d{5,12}$/.test(uid) || !this.db || this.compressingUsers.has(uid)) return null;
+        this.compressingUsers.add(uid);
+
+        try {
+            const rawLogs = opts.forceAll
+                ? this.db.prepare("SELECT * FROM raw_interaction_logs WHERE user_id = ? AND role = 'user' ORDER BY ts DESC LIMIT 30").all(uid).reverse()
+                : this.db.prepare("SELECT * FROM raw_interaction_logs WHERE user_id = ? AND role = 'user' AND user_compressed = 0 ORDER BY ts ASC LIMIT 30").all(uid);
+
+            const profile = this.getUserProfile(uid, rawLogs[rawLogs.length - 1]?.nickname || '');
+            if (!profile) return null;
+            if (rawLogs.length === 0 && (profile.normal_memories || []).length <= USER_NORMAL_CAP && profile.rolling_summary) {
+                return profile;
+            }
+
+            let compressedRes = null;
+            if (typeof this.llmUserCompressor === 'function') {
+                try {
+                    compressedRes = await this.llmUserCompressor(uid, profile, rawLogs);
+                } catch (err) {
+                    console.warn(`[MemoryManager] 用户(${uid}) LLM 记忆压缩降级至本地规则:`, err.message);
+                }
+            }
+
+            const impArr = compressedRes?.important_memories || compressedRes?.important;
+            const normArr = compressedRes?.normal_memories || compressedRes?.normal;
+            if (!compressedRes || (!compressedRes.rolling_summary && !Array.isArray(impArr) && !Array.isArray(normArr))) {
+                compressedRes = this._buildRuleBasedUserCompression(uid, profile, rawLogs);
+            }
+
+            const finalImpArr = compressedRes.important_memories || compressedRes.important;
+            const finalNormArr = compressedRes.normal_memories || compressedRes.normal;
+
+            if (typeof compressedRes.rolling_summary === 'string' && compressedRes.rolling_summary.trim()) {
+                profile.rolling_summary = compressedRes.rolling_summary.trim().slice(0, 120);
+            }
+            if (Array.isArray(finalImpArr) && finalImpArr.length > 0) {
+                const mergedImp = [...finalImpArr.map(s => String(s).trim()).filter(Boolean), ...(profile.important_memories || [])];
+                const dedupImp = [];
+                for (const item of mergedImp) {
+                    if (!dedupImp.some(x => x === item || computeKeywordMatch(x, item) >= 0.72)) {
+                        dedupImp.push(item.slice(0, 80));
+                    }
+                }
+                profile.important_memories = dedupImp.slice(0, USER_IMPORTANT_CAP);
+                profile.known_facts = [...profile.important_memories];
+            }
+            if (Array.isArray(finalNormArr)) {
+                const dedupNorm = [];
+                for (const rawItem of finalNormArr) {
+                    const item = String(rawItem || '').trim().slice(0, 70);
+                    if (!item) continue;
+                    if ((profile.important_memories || []).some(x => x === item || computeKeywordMatch(x, item) >= 0.72)) continue;
+                    if (!dedupNorm.some(x => x === item || computeKeywordMatch(x, item) >= 0.72)) {
+                        dedupNorm.push(item);
+                    }
+                }
+                profile.normal_memories = dedupNorm.slice(0, 6);
+            }
+            if (compressedRes.pet_nickname && uid !== this.masterQQ) {
+                this.setPetNickname(uid, compressedRes.pet_nickname, profile.nickname);
+            } else if (!profile.pet_nickname && uid !== this.masterQQ) {
+                this.setPetNickname(uid, this.derivePersonalNick(profile.nickname, uid), profile.nickname);
+            }
+
+            if (this.db) {
+                try {
+                    const now = this.now();
+                    this.db.prepare('DELETE FROM user_memories WHERE user_id = ?').run(uid);
+                    const insMem = this.db.prepare(`
+                        INSERT INTO user_memories (id, user_id, tier, importance, content, chat_id, created_at_ms, updated_at_ms)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    `);
+                    for (const [idx, item] of (profile.important_memories || []).entries()) {
+                        insMem.run(`um_${uid}_imp_${idx}_${now}`, uid, 'important', 8, item, '', now - idx, now);
+                    }
+                    for (const [idx, item] of (profile.normal_memories || []).entries()) {
+                        insMem.run(`um_${uid}_norm_${idx}_${now}`, uid, 'normal', 5, item, '', now - idx, now);
+                    }
+                } catch {}
+            }
+
+            if (rawLogs.length > 0) {
+                const maxId = rawLogs[rawLogs.length - 1]?.id;
+                if (maxId !== undefined) {
+                    this.db.prepare('UPDATE raw_interaction_logs SET user_compressed = 1 WHERE user_id = ? AND id <= ?').run(uid, maxId);
+                }
+            }
+
             this.save();
+            return profile;
+        } finally {
+            this.compressingUsers.delete(uid);
         }
     }
 
-    setPetNickname(userId, petNickname, fallbackNickname = '') {
-        const clean = String(petNickname || '').replace(/[\r\n"“”'‘’「」【】]/g, '').trim().slice(0, 14);
-        if (!clean) return null;
-        const profile = this.getUserProfile(userId, fallbackNickname);
-        if (!profile) return null;
-        if (String(userId) === this.masterQQ) {
-            profile.pet_nickname = '老大';
-        } else {
-            profile.pet_nickname = clean;
+    _buildRuleBasedUserCompression(uid, profile, rawLogs = []) {
+        const important = [...(profile.important_memories || [])];
+        const normal = [];
+        const snippets = [];
+
+        for (const r of rawLogs) {
+            const txt = String(r.content || '').replace(/\r?\n/g, ' ').trim();
+            if (!txt || txt.startsWith('/')) continue;
+            snippets.push(txt.slice(0, 26));
+            if (/(投喂|请你吃|给你吃|五花肉|白米饭|红烧肉|奶茶|喜欢|讨厌|最爱|我是|我在|工作|上班|上学|生日|约定|提醒我)/i.test(txt)) {
+                important.unshift(`曾对本鱼说：“${txt.slice(0, 38)}”`);
+            } else if (txt.length >= 2) {
+                normal.unshift(`[${r.day_key || '近期'}] 聊了：“${txt.slice(0, 32)}”`);
+            }
         }
+        for (const oldNorm of (profile.normal_memories || [])) {
+            normal.push(oldNorm);
+        }
+
+        const uniqueTopics = [...new Set(snippets)].slice(-4);
+        const rolling_summary = uniqueTopics.length > 0
+            ? `近期共互动 ${rawLogs.length} 次，主要聊过：${uniqueTopics.join('；')}`.slice(0, 120)
+            : (profile.rolling_summary || `群内熟面孔（好感度 ${profile.affection}/100）`);
+
+        return {
+            rolling_summary,
+            important: important.slice(0, USER_IMPORTANT_CAP),
+            normal: normal.slice(0, 6),
+        };
+    }
+
+    /**
+     * 批量扫描并压缩所有存在历史流水但尚未生成个人分级记忆的群友档案
+     */
+    async compressAllUsersIfNeeded(opts = {}) {
+        if (!this.db) return [];
+        const rows = this.db.prepare(`
+            SELECT user_id, COUNT(*) AS cnt
+            FROM raw_interaction_logs
+            WHERE role = 'user' AND user_id GLOB '[0-9]*'
+            GROUP BY user_id
+            HAVING cnt >= 1
+            ORDER BY cnt DESC
+        `).all();
+        const updated = [];
+        for (const r of rows) {
+            const uid = String(r.user_id);
+            const prof = this.getUserProfile(uid);
+            const hasTiered = Boolean(prof?.rolling_summary || (prof?.important_memories?.length > 0) || (prof?.normal_memories?.length > 0));
+            if (opts.forceAll || !hasTiered || r.cnt >= USER_COMPRESS_LOG_THRESHOLD) {
+                const res = await this.compressUserMemory(uid, { forceAll: true });
+                if (res) updated.push(uid);
+            }
+        }
+        return updated;
+    }
+
+    /**
+     * 按 QQ 号或昵称模糊查找用户档案（供 `/fish mem <QQ或昵称>` 检索）
+     */
+    findUserByQuery(query) {
+        const q = String(query || '').trim();
+        if (!q) return null;
+        if (/^\d{5,12}$/.test(q)) {
+            return this.getUserProfile(q);
+        }
+        const allUsers = Object.values(this.state.users || {});
+        return allUsers.find(
+            u => u && (
+                String(u.nickname || '').toLowerCase().includes(q.toLowerCase()) ||
+                String(u.public_nickname || '').toLowerCase().includes(q.toLowerCase()) ||
+                String(u.pet_nickname || '').toLowerCase().includes(q.toLowerCase())
+            )
+        ) || null;
+    }
+
+    /**
+     * 获取当前全库已被其他群友占用的专属外号列表（防止不同群友撞名）
+     */
+    getTakenPetNicknames(excludeUserId = '') {
+        const ex = String(excludeUserId || '');
+        const taken = new Set();
+        for (const [uid, u] of Object.entries(this.state.users || {})) {
+            if (uid === ex || !u?.pet_nickname) continue;
+            taken.add(String(u.pet_nickname).trim());
+        }
+        return [...taken];
+    }
+
+    /**
+     * 判断某个外号是否属于同质化的大类标签（禁止将分类标签当作个人称呼）
+     */
+    isGenericCategoryNickname(nick) {
+        const s = String(nick || '').trim();
+        if (!s) return true;
+        return /^(记仇榜常客|烤鱼狂魔|炖鱼大厨|下头怪|五花肉菩萨|熬夜冠军|熟人群友|普通路人|铁杆饭票|饭票候选|群友|臭肥鱼|肥鱼|大肥鱼|本鱼|损友|小损友|投喂员)$/i.test(s)
+            || /(记仇榜|常客|饭票候选|熟人群友|普通路人|臭肥鱼)/.test(s);
+    }
+
+    /**
+     * 从群友本人的 QQ 昵称提取自然、不撞名的 2~4 字个人简称/俏皮称呼
+     */
+    derivePersonalNick(nickname, userId = '') {
+        const uid = String(userId || '');
+        if (uid === this.masterQQ) return '老大';
+        const raw = String(nickname || '')
+            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}❤✨⭐🌙🔥💧🐟🐾]/gu, '')
+            .replace(/^群友_/, '')
+            .trim();
+        if (!raw || /^\d+$/.test(raw)) return `小鱼干${uid.slice(-2) || '号'}`;
+        if (raw.includes('的')) {
+            const parts = raw.split('的').map(s => s.trim()).filter(Boolean);
+            const tail = parts[parts.length - 1];
+            if (tail && tail.length >= 2 && tail.length <= 4 && !/^(致意|你)$/.test(tail)) {
+                return tail;
+            }
+            if (parts[0] && parts[0].length >= 2 && parts[0].length <= 4) {
+                return parts[0];
+            }
+        }
+        if (/^是(.+?)[诶呀呢啊啦]?$/.test(raw)) {
+            return raw.replace(/^是(.+?)[诶呀呢啊啦]?$/, '$1').slice(0, 4);
+        }
+        if (/^(.+)了个\1$/.test(raw)) {
+            return `阿${raw[0]}`;
+        }
+        if (raw.length <= 4) return raw;
+        return raw.slice(0, 3);
+    }
+
+    setPetNickname(userId, petNickname, fallbackNickname = '') {
+        const uid = String(userId || '').replace(/^(private|group):/i, '').trim();
+        const profile = this.getUserProfile(uid, fallbackNickname);
+        if (!profile) return null;
+        if (uid === this.masterQQ) {
+            profile.pet_nickname = '老大';
+            this.save();
+            return '老大';
+        }
+        let clean = String(petNickname || '').replace(/[\r\n"“”'‘’「」【】]/g, '').trim().slice(0, 12);
+        const taken = new Set(this.getTakenPetNicknames(uid));
+
+        // 若传入的是通用大类词或已被其他群友占用，则自动回退为绑定本人昵称的唯一简称
+        if (!clean || this.isGenericCategoryNickname(clean) || taken.has(clean)) {
+            const baseShort = this.derivePersonalNick(profile.nickname || fallbackNickname, uid);
+            clean = !taken.has(baseShort) ? baseShort : `${baseShort}(${uid.slice(-2)})`;
+        }
+        profile.pet_nickname = clean;
         this.save();
         return profile.pet_nickname;
     }
@@ -1356,7 +1761,7 @@ export class MemoryManager {
                 if (Array.isArray(mergedFacts) && mergedFacts.length > 0 && profile) {
                     profile.known_facts = mergedFacts.map(f => String(f).trim()).filter(Boolean).slice(0, 10);
                     if (res?.pet_nickname && uid !== this.masterQQ) {
-                        profile.pet_nickname = String(res.pet_nickname).trim().slice(0, 12);
+                        this.setPetNickname(uid, res.pet_nickname, profile.nickname);
                     }
                     this.state.lastReflectionAt = now;
                     this.save();
@@ -1402,20 +1807,123 @@ export class MemoryManager {
     formatStaticUserProfilePrompt(userId, nickname = '') {
         const profile = this.getUserProfile(userId, nickname);
         if (!profile) return '';
-        const facts = Array.isArray(profile.known_facts) && profile.known_facts.length > 0
-            ? profile.known_facts.map((f, i) => `  ${i + 1}. ${f}`).join('\n')
-            : '  （暂未收录特殊偏好，待聊天中发掘）';
-        const petNickLine = profile.pet_nickname && profile.user_id !== this.masterQQ
-            ? `- 本鱼给ta起的专属外号 (pet_nickname): 「${profile.pet_nickname}」（聊天时可自然喊这个专属外号调侃ta！）`
+        const isMaster = String(profile.user_id) === String(this.masterQQ);
+        const impMems = Array.isArray(profile.important_memories) && profile.important_memories.length > 0
+            ? profile.important_memories
+            : (Array.isArray(profile.known_facts) ? profile.known_facts : []);
+        const normMems = Array.isArray(profile.normal_memories) ? profile.normal_memories : [];
+        const impLines = impMems.length > 0
+            ? impMems.slice(0, 8).map((f, i) => `  ${i + 1}. ${f}`).join('\n')
+            : '  （暂未收录重要长期事实，待聊天中发掘）';
+        const normLines = normMems.length > 0
+            ? normMems.slice(0, 5).map((f, i) => `  ${i + 1}. ${f}`).join('\n')
+            : '';
+
+        const shortNick = this.derivePersonalNick(profile.nickname, profile.user_id);
+        const validPetNick = (profile.pet_nickname && !this.isGenericCategoryNickname(profile.pet_nickname))
+            ? profile.pet_nickname
+            : shortNick;
+        const attitudeGuide = isMaster
+            ? '最偏爱、最信任的首席饲主（老大），嘴硬心软、爱撒娇讨夸奖'
+            : (profile.affection >= 75
+                ? '铁杆熟人，态度亲近熟稔、可以傲娇护短或开玩笑'
+                : (profile.affection >= 50
+                    ? '日常熟面孔群友，态度随性自然、机灵接梗互怼'
+                    : '老爱逗鱼/惹本鱼炸毛的损友，态度傲娇嫌弃、随时准备拿尾巴抽ta'));
+        const summaryLine = profile.rolling_summary
+            ? `- 近期浓缩印象 (rolling_summary): ${profile.rolling_summary}`
             : '';
         return [
-            `【目标 QQ 用户长期画像 (Semantic Memory)】`,
+            `【当前对话目标 QQ 用户专属档案 (Per-User Isolated Memory)】`,
             `- 用户 QQ: ${profile.user_id}`,
-            `- 称呼/昵称: ${profile.nickname}`,
-            ...(petNickLine ? [petNickLine] : []),
-            `- 关系定位: ${profile.relationship_tag}`,
-            `- 当前好感度 (affection): ${profile.affection}/100`,
-            `- 长期事实与习惯 (known_facts):\n${facts}`,
+            `- 原始昵称: ${profile.nickname}`,
+            `- 🗣️【专属称呼指南 (千人千面，拒绝同质化)】：${isMaster ? '称呼ta为「老大」（但不用每句话都喊）' : `平时水群接话约 70% 直接自然回话（不必句句带称呼）；需要喊ta名字时（约 30%），请喊ta的个人简称「${shortNick}」或专属外号「${validPetNick}」！绝对禁止喊别人“记仇榜常客”、“烤鱼狂魔”、“熟人群友”、“饭票”等大类标签！`}`,
+            `- 🎭【说话态度定位 (仅决定语气，严禁当称呼喊出口)】：${profile.relationship_tag}（好感度 ${profile.affection}/100 —— ${attitudeGuide}）`,
+            ...(summaryLine ? [summaryLine] : []),
+            `- 🔴 重要记忆 (Important, 永久核心事实):\n${impLines}`,
+            ...(normLines ? [`- 🔵 一般记忆 (Normal, 近期日常互动):\n${normLines}`] : []),
         ].join('\n');
+    }
+
+    /**
+     * 群聊跨人档案检索：当群友 A 在聊天中提及/八卦群友 B（或 B 刚在前 3 句内跟 A 搭话）时，
+     * 自动附上被提及群友 B 的浓缩印象与重要记忆，解决“群里聊到别人时肥鱼一问三不知”的问题。
+     */
+    formatMentionedGroupUsersForPrompt(chatId, currentUserId, queryText = '') {
+        if (!chatId || !String(chatId).startsWith('group:')) return '';
+        const curUid = String(currentUserId || '').trim();
+        const recent = this.getWorkingMemory(chatId, 5);
+        const searchCorpus = [
+            String(queryText || ''),
+            ...recent.slice(-3).map(m => `${m.nickname || ''} ${m.text || ''}`),
+        ].join(' ');
+        if (!searchCorpus.trim()) return '';
+
+        const matchedUsers = [];
+        const seenUids = new Set([curUid, 'self', 'unknown']);
+
+        // 1. 先检查当前消息文本是否直接点名了某个群友的昵称/简称/专属外号/QQ号
+        for (const [uid, u] of Object.entries(this.state.users || {})) {
+            if (seenUids.has(uid) || !u) continue;
+            const rawNick = String(u.nickname || '').trim();
+            const shortNick = this.derivePersonalNick(rawNick, uid);
+            const petNick = String(u.pet_nickname || '').trim();
+            const candidates = [rawNick, shortNick, petNick, uid].filter(s => s && s.length >= 2 && !s.startsWith('群友_') && !s.startsWith('小鱼干'));
+            if (candidates.some(token => queryText.includes(token))) {
+                matchedUsers.push(u);
+                seenUids.add(uid);
+                if (matchedUsers.length >= 2) break;
+            }
+        }
+
+        // 2. 若未满 2 人，再补充本群最近 3 条消息内刚发过言的其他在场群友（仅限有记忆沉淀的群友）
+        if (matchedUsers.length < 2) {
+            for (let i = recent.length - 1; i >= 0; i--) {
+                const m = recent[i];
+                const uid = String(m?.userId || '');
+                if (!uid || seenUids.has(uid)) continue;
+                const u = this.state.users?.[uid];
+                if (u && (u.rolling_summary || (u.important_memories?.length > 0))) {
+                    matchedUsers.push(u);
+                    seenUids.add(uid);
+                    if (matchedUsers.length >= 2) break;
+                }
+            }
+        }
+
+        if (matchedUsers.length === 0) return '';
+        const blocks = matchedUsers.map(u => {
+            const shortNick = this.derivePersonalNick(u.nickname, u.user_id);
+            const imp = (u.important_memories || u.known_facts || []).slice(0, 3).join('；') || '暂无特别记录';
+            return `  • [${u.nickname} (QQ:${u.user_id} | 简称/外号:「${u.pet_nickname || shortNick}」 | 好感:${u.affection}/100)] 印象: ${u.rolling_summary || '群内熟人'} | 核心记忆: ${imp}`;
+        });
+        return `【👥 本轮顺带提及/在场的其他群友档案（供八卦/对比/接梗参考，注意区分谁是当前说话人）】\n${blocks.join('\n')}`;
+    }
+
+    /**
+     * 获取指定群聊最近活跃的 2~3 位熟人群友摘要（供群冷场主动暖场 `triggerGroupIdleBubble` 使用，严格按群隔离）
+     */
+    getRecentGroupActiveUsersSummary(chatId, limit = 3) {
+        if (!this.db || !chatId || !String(chatId).startsWith('group:')) return '';
+        try {
+            const rows = this.db.prepare(`
+                SELECT user_id, MAX(nickname) AS nick, MAX(ts) AS last_ts
+                FROM raw_interaction_logs
+                WHERE chat_id = ? AND role = 'user' AND user_id GLOB '[0-9]*'
+                GROUP BY user_id
+                ORDER BY last_ts DESC
+                LIMIT ?
+            `).all(String(chatId), limit);
+            if (!rows || rows.length === 0) return '';
+            const items = rows.map(r => {
+                const u = this.getUserProfile(r.user_id, r.nick);
+                const callName = u?.pet_nickname || this.derivePersonalNick(u?.nickname || r.nick, r.user_id);
+                const recentNorm = (u?.normal_memories || [])[0] || u?.rolling_summary?.slice(0, 35) || '常在群里摸鱼';
+                return `「${callName}」(原名:${u?.nickname || r.nick}，${recentNorm})`;
+            });
+            return `本群近期常驻熟面孔：${items.join('、')}`;
+        } catch {
+            return '';
+        }
     }
 }

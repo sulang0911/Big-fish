@@ -113,10 +113,13 @@ export class ChatRegistry {
             // dsh-acp).
             const install = installModelSelection;
             if (install.length >= 2) {
-                const selection = this.deps.defaultModel?.();
-                if (selection !== undefined) {
-                    install(agentCtx, { current: selection, assembled: undefined });
-                }
+                const self = this;
+                install(agentCtx, {
+                    get current() {
+                        return self.deps.defaultModel?.();
+                    },
+                    assembled: undefined,
+                });
             }
             else {
                 install(agentCtx);

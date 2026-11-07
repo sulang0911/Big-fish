@@ -20,6 +20,7 @@
     workspacePath: "C:\\Users\\25362\\Documents\\deepseek-harness\\default-workspace"
     textImageThreshold: 0
     interimMessages: false
+    traceEnabled: true
     logLevel: debug
     idleGroupChats:
       - "group:927066977"
@@ -64,7 +65,7 @@
       luna-provider:
         displayName: "Luna"
         api: openai-completions
-        baseURL: "https://sub2api.echovoid.top/v1"
+        baseURL: "https://sub2api.emberanvil.dev/v1"
         apiKeyEnv: LUNA_API_KEY
         models:
           - id: gpt-6-luna

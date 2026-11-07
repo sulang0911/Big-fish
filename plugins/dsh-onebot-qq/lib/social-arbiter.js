@@ -245,6 +245,7 @@ export class SocialArbiter {
             now: this.now,
             llmReflector: (userId, profile, facts) => this.reflectProfileViaLLM(userId, profile, facts),
             llmDailyCompressor: (dayKey, existingDigest, rawLogs) => this.compressDailyMemoryViaLLM(dayKey, existingDigest, rawLogs),
+            llmUserCompressor: (userId, profile, rawLogs) => this.compressUserMemoryViaLLM(userId, profile, rawLogs),
         });
 
         // 从 SQLite 恢复各监听群最近一次发言时间戳，防止服务重启后 2~2.5h 冷场计时器归零
@@ -322,6 +323,7 @@ export class SocialArbiter {
         this.groupCooldownUntilMap = new Map();
         this.activeGroupConvoMap = new Map(); // chatId -> { userId, nickname, expiresAt, turns }
         this.groupBurstTimestamps = new Map();
+        this.groupChimeRunningSet = new Set();
         this.isGroupChimeRunning = false;
 
         // Fetch 注入点（方便单测 mock）
@@ -525,9 +527,15 @@ export class SocialArbiter {
                 }
                 if (resolvedUserId && resolvedUserId !== this.masterQQ) {
                     this.memoryManager.applyAffectionDelta?.(resolvedUserId, -5, nickname);
-                    this.memoryManager.setPetNickname?.(resolvedUserId, '下头怪', nickname);
+                    this.memoryManager.addUserMemory?.(resolvedUserId, {
+                        content: `曾对本鱼开黄腔说“${cleanGrpText.slice(0, 24)}”，被本鱼痛骂回击`,
+                        importance: 8,
+                        tier: 'important',
+                        chatId,
+                        nickname,
+                    });
                 }
-                this.driveEngine.enterSulking(`刚才被下头怪 ${nickname || resolvedUserId} 开黄腔冒犯了，正在炸毛拿大尾巴抽人`);
+                this.driveEngine.enterSulking(`刚才被 ${nickname || resolvedUserId} 开黄腔冒犯了，正在炸毛拿大尾巴抽人`);
             } else if (TEASE_BULLY_REGEX.test(cleanGrpText)) {
                 if (String(chatId).startsWith('group:')) {
                     this.memoryManager.addGroupLore?.(
@@ -536,12 +544,13 @@ export class SocialArbiter {
                     );
                 }
                 if (resolvedUserId && resolvedUserId !== this.masterQQ) {
-                    const petNick = /烤/.test(cleanGrpText)
-                        ? '烤鱼狂魔'
-                        : /炖|蒸|红烧/.test(cleanGrpText)
-                            ? '炖鱼大厨'
-                            : '记仇榜常客';
-                    this.memoryManager.setPetNickname?.(resolvedUserId, petNick, nickname);
+                    this.memoryManager.addUserMemory?.(resolvedUserId, {
+                        content: `曾调侃欺负本鱼说“${cleanGrpText.slice(0, 24)}”，被记入小本本`,
+                        importance: 7,
+                        tier: 'important',
+                        chatId,
+                        nickname,
+                    });
                 }
             }
 
@@ -674,9 +683,13 @@ export class SocialArbiter {
             chatId,
             uid
         );
-        if ( uid !== this.masterQQ && rec.feedCount >= 2) {
-            this.memoryManager.setPetNickname?.(uid, '五花肉菩萨', nick);
-        }
+        this.memoryManager.addUserMemory?.(uid, {
+            content: `投喂过本鱼吃「${foodName}」${isFav ? '（本鱼最爱的本命美食！）' : ''}`,
+            importance: isFav ? 7 : 5,
+            tier: isFav ? 'important' : 'normal',
+            chatId,
+            nickname: nick,
+        });
         this.persistArbiterMeta();
 
         const st = this.driveEngine.getState();
@@ -721,20 +734,22 @@ export class SocialArbiter {
         try {
             const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
             const historyBlock = recentMsgs
-                .map(m => `[${m.nickname || m.userId}]: ${m.text}`)
+                .map(m => `[${m.time || ''} ${m.nickname || m.userId}(QQ:${m.userId})]: ${m.text}`)
                 .join('\n');
 
             const hasImage = /\[图片:|视觉画面描述:/i.test(cleanText);
             const feedRes = this.tryNaturalFeed(chatId, userId, nickname, cleanText);
+            const isMaster = String(userId) === this.masterQQ;
             const prompt = [
                 isGroup
                     ? `【群聊点名 / @ / 引用互动（群号：${groupId || chatId}）】`
                     : `【私聊实时对话（对方：${nickname}(${userId})）】`,
-                `对方刚刚发来消息："${cleanText}"`,
-                ...(historyBlock ? [`近期对话上下文：\n${historyBlock}`] : []),
+                `当前正在和你对话的人是：【${nickname} (QQ: ${userId})】${isMaster ? '（也就是你最信任的老大！）' : ''}，ta 刚刚发来消息："${cleanText}"`,
+                `⚠️【防张冠李戴铁律】：请只针对当前说话人【${nickname}(QQ:${userId})】刚才说的这句话进行回应！近期上下文里其他 QQ 号群友说的话或外号（如记仇榜常客、下头怪等）绝不要扣在当前说话人头上！`,
+                ...(historyBlock ? [`近期对话上下文（注意区分每条消息的 QQ 号）：\n${historyBlock}`] : []),
                 `回复准则：`,
                 `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
-                `2. 以傲娇、机灵、爱吃白米饭和五花肉的小蓝鲸“大肥鱼”口吻，拆分为 1~3 条简短自然的气泡（每条 <= 25 字，句尾绝不加句号），像真人秒回微信/QQ一样有灵气！（聊美食/投喂时可开心馋五花肉和白米饭，聊其他话题时自然顺着话题接梗，不要句句硬扯五花肉）`,
+                `2. 以傲娇、机灵的小蓝鲸“大肥鱼”口吻，拆分为 1~3 条简短自然的气泡（每条 <= 25 字，句尾绝不加句号），像真人秒回微信/QQ一样有灵气！（聊美食/投喂时可开心馋五花肉和白米饭，聊其他话题时自然顺着话题接梗，绝不要句句硬扯五花肉）`,
                 ...(hasImage ? [`3. 对方消息中包含图片/表情包（见“视觉画面描述”），请结合图片画面内容进行流口水、吐槽或配表情包斗图！`] : []),
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
@@ -807,22 +822,31 @@ export class SocialArbiter {
         const { chatId, userId, count } = pokePayload;
         this.log('info', `[FeiyuArbiter] 收到聚合戳一戳事件: chat=${chatId}, user=${userId}, count=${count}`);
 
+        const pokerProfile = this.memoryManager.getUserProfile(userId);
+        const pokerName = pokerProfile?.nickname && pokerProfile.nickname !== String(userId) ? pokerProfile.nickname : `群友(${userId})`;
         const wokeUpFromSleep = this.driveEngine.isSleeping(new Date(this.now()));
         this.driveEngine.applyStatDelta({ boredom: -10 });
         if (count >= 3) {
-            this.driveEngine.enterSulking(`刚才被 ${userId} 连续狂戳了 ${count} 下脑门，气鼓鼓记小本本中`);
+            this.driveEngine.enterSulking(`刚才被 ${pokerName} 连续狂戳了 ${count} 下脑门，气鼓鼓记小本本中`);
+            this.memoryManager.addUserMemory(userId, {
+                content: `${pokerName} 连续狂戳大肥鱼脑门 ${count} 下`,
+                importance: 4,
+                tier: 'normal',
+                chatId,
+            });
         }
 
         const prompt = [
-            `用户 (QQ: ${userId}) 刚刚在 5 秒内连续戳了你 ${count} 下！`,
+            `用户 [${pokerName} (QQ: ${userId})] 刚刚在 5 秒内连续戳了你 ${count} 下！`,
             count >= 3
                 ? '你被戳得脸颊鼓起、呆毛炸立，非常傲娇不服气（已经记进小本本闹别扭了），请立刻在 JSON 中输出 1~2 条短气泡吐槽并设置 qq_action.type = "poke" 反戳回去（或发 angry/fish_slap 表情包）！'
-                : '请根据你当前的心情和生理状态，输出 JSON 动作协议回应这次戳一戳（可以傲娇哼唧、讨食、或者反戳回去）。',
+                : '请根据你当前的心情和生理状态，输出 JSON 动作协议回应这次戳一戳（可以傲娇哼唧、或者反戳回去，不要无脑提五花肉）。',
             buildDynamicTurnContext({
                 driveEngine: this.driveEngine,
                 memoryManager: this.memoryManager,
                 chatId,
                 userId,
+                nickname: pokerName,
                 queryText: '戳一戳',
                 eventPayload: pokePayload,
                 wokeUpFromSleep,
@@ -844,6 +868,15 @@ export class SocialArbiter {
                 memory_to_save: { should_save: false, importance: 1, summary: '' },
                 stat_delta: { affection: 1, boredom: -10, hunger: 0 },
             };
+        }
+        if (String(chatId).startsWith('group:')) {
+            const activeConvo = this.activeGroupConvoMap.get(chatId);
+            this.activeGroupConvoMap.set(chatId, {
+                userId,
+                nickname: pokerName,
+                expiresAt: this.now() + 3 * 60_000,
+                turns: (activeConvo?.userId === userId ? (activeConvo.turns || 0) : 0) + 1,
+            });
         }
         await this.dispatcher.dispatch(chatId, action, {
             userId,
@@ -984,10 +1017,12 @@ export class SocialArbiter {
 
     async triggerGroupIdleBubble(chatId, idleHours = 2.2, mode = 'idle') {
         const st = this.driveEngine.getState();
+        const activeRegulars = this.memoryManager?.getRecentGroupActiveUsersSummary?.(chatId, 3) || '';
         const prompt = mode === 'high_boredom'
             ? [
                 `【系统内部事件：group_boredom_bubble（大肥鱼无聊度爆表主动在群里找人玩）】`,
                 `当前你的无聊度高达 ${st.boredom}/100，尾巴都快无聊得长蘑菇了！群聊 ${chatId} 刚好安静了一会儿。`,
+                ...(activeRegulars ? [`${activeRegulars}（你可以通用抱怨无聊，也可以自然点名其中1~2位熟人的外号/简称问他们在干嘛！）`] : []),
                 `请以傲娇团宠大肥鱼的口吻，主动在群里发 1~2 条简短搞怪的气泡（每条 <= 25 字，句尾不加句号），抱怨无聊、问大家在干嘛、或者傲娇地让人来摸鱼头/投喂你！`,
                 `可搭配 send_meme，挑选一张符合你无聊/求关注心境的表情包！`,
                 buildDynamicTurnContext({
@@ -1001,6 +1036,7 @@ export class SocialArbiter {
             : [
                 `【系统内部事件：group_idle_bubble（群聊冷场主动暖场冒泡）】`,
                 `群聊 ${chatId} 已经安静冷场约 ${idleHours} 小时了，群友们都在潜水没说话。`,
+                ...(activeRegulars ? [`${activeRegulars}（你可以发通用沙雕吐槽，也可以顺带cue一下本群的这几位熟面孔出来唠嗑摸鱼！）`] : []),
                 `你作为群里的傲娇团宠大肥鱼，现在主动冒个泡，打破冷场，发 1~2 条简短沙雕/傲娇/搞怪的文案活跃气氛（绝不发抖音！不要长篇大论，每条 <= 25 字，句尾不加句号）。`,
                 `可搭配 send_meme，挑选一张符合你傲娇/摸鱼/干饭心境的大肥鱼表情包！`,
                 buildDynamicTurnContext({
@@ -1304,6 +1340,35 @@ export class SocialArbiter {
     }
 
     /**
+     * 检查当前群聊是否处于 3 分钟连续对话余温窗口内（同时支持从 Working Memory 自动恢复余温状态，防止重启或戳一戳后断连）
+     */
+    isGroupConvoActive(chatId, userId = '') {
+        if (!chatId || !String(chatId).startsWith('group:')) return false;
+        const nowMs = this.now();
+        let activeConvo = this.activeGroupConvoMap.get(chatId);
+        if (activeConvo && nowMs < activeConvo.expiresAt && activeConvo.turns < 8) {
+            return true;
+        }
+        // 兜底：若最近 3 分钟内大肥鱼在该群刚刚发过言（如刚回复完戳一戳或重启前刚聊过），自动恢复连续对话窗口
+        const wm = this.memoryManager?.getWorkingMemory?.(chatId, 8) || [];
+        const lastBotMsg = [...wm].reverse().find(m => m.role === 'assistant');
+        if (lastBotMsg && lastBotMsg.ts && (nowMs - lastBotMsg.ts) < 3 * 60_000) {
+            const lastUserMsg = [...wm].reverse().find(m => m.role === 'user' && m.userId && m.userId !== 'self');
+            const restoredUid = lastUserMsg?.userId || userId || this.masterQQ;
+            const restoredNick = lastUserMsg?.nickname || restoredUid;
+            activeConvo = {
+                userId: restoredUid,
+                nickname: restoredNick,
+                expiresAt: lastBotMsg.ts + 3 * 60_000,
+                turns: 1,
+            };
+            this.activeGroupConvoMap.set(chatId, activeConvo);
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * 群聊潜伏吃瓜与智能插话评估 (`group_chime_in_check`)
      * @param {object} inbound - NormalizedInbound
      * @returns {Promise<boolean>} - 若返回 true 表示已由智能插话接管响应，外层无需走普通唤醒流
@@ -1324,15 +1389,19 @@ export class SocialArbiter {
         tsList.push(nowMs);
         this.groupBurstTimestamps.set(groupId, tsList);
 
+        const hasImage = /\[图片|视觉画面描述:/i.test(cleanText);
+        const isMasterUser = String(userId) === String(this.masterQQ);
         // 睡眠中、精力不足 (energy <= 30) 或正在插话中，保持安静潜水（但若有人直接点名喊肥鱼则哪怕犯困也会哼唧回应）
-        const calledByName = /(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼|本鱼)/i.test(cleanText) && !/^\/fish(?:\s|$)/i.test(cleanText);
+        const calledByName = (/(肥鱼|飞鱼|大肥鱼|小肥鱼|胖鱼|鱼鱼|呆鱼|傻鱼|笨鱼|臭鱼|死鱼|丑鱼|胖头鱼|蓝鲸|鲸鱼|鲸鲸|开心飞鱼|本鱼|鱼来|鱼出来|鱼呢|小鱼)/i.test(cleanText) || TEASE_BULLY_REGEX.test(cleanText) || (isMasterUser && hasImage)) && !/^\/fish(?:\s|$)/i.test(cleanText);
+        const convoActive = this.isGroupConvoActive(chatId, userId);
         const activeConvo = this.activeGroupConvoMap.get(chatId);
         const isFollowUpConvo = Boolean(
+            convoActive &&
             activeConvo &&
             nowMs < activeConvo.expiresAt &&
-            activeConvo.turns < 6 &&
+            activeConvo.turns < 8 &&
             !cleanText.startsWith('/') &&
-            (activeConvo.userId === userId || SEXUAL_HARASS_REGEX.test(cleanText) || /(你|你们|烤|炖|红烧|清蒸|吃|香|臭|五花肉|略略略|哈哈|鱼)/i.test(cleanText))
+            (activeConvo.userId === userId || isMasterUser || hasImage || SEXUAL_HARASS_REGEX.test(cleanText) || /(你|你们|烤|炖|红烧|清蒸|吃|香|臭|五花肉|略略略|哈哈|鱼)/i.test(cleanText))
         );
 
         const naturalFeedPreview = parseNaturalFeedIntent(cleanText);
@@ -1342,23 +1411,22 @@ export class SocialArbiter {
             if (this.driveEngine.isSleeping(new Date(nowMs))) return false;
             if (this.driveEngine.state.energy <= 30) return false;
         }
-        if (this.isGroupChimeRunning) {
+        if (this.groupChimeRunningSet.has(chatId) || this.isGroupChimeRunning) {
             // 若是点名、连续对话或投喂（如老大连发 🍚 和 🥓），等待上一条气泡发完再处理，绝不静默丢弃！
             if (calledByName || isFollowUpConvo || isExplicitGroupFeed) {
                 let waited = 0;
-                while (this.isGroupChimeRunning && waited < 4000) {
+                while ((this.groupChimeRunningSet.has(chatId) || this.isGroupChimeRunning) && waited < 10000) {
                     await this.dispatcher.sleep(250);
                     waited += 250;
                 }
             }
-            if (this.isGroupChimeRunning) return false;
+            if (this.groupChimeRunningSet.has(chatId) || this.isGroupChimeRunning) return false;
         }
 
         // 检查群插话冷却（仅对“无人点名且非连续对话”的野生潜水插话生效；被点名、连续对话或投喂时直接穿透冷却！）
         const cooldownUntil = this.groupCooldownUntilMap.get(chatId) || 0;
         if (!calledByName && !isFollowUpConvo && !isExplicitGroupFeed && nowMs < cooldownUntil) return false;
 
-        const hasImage = /\[图片:|视觉画面描述:/i.test(cleanText);
         const hitInterestKeyword = GROUP_INTEREST_REGEX.test(cleanText) || hasImage || isExplicitGroupFeed;
         const isHotBurst = tsList.length >= 5;
         const boredom = Number(this.driveEngine.state.boredom) || 0;
@@ -1381,11 +1449,12 @@ export class SocialArbiter {
             if (Math.random() > triggerProb) return false;
         }
 
+        this.groupChimeRunningSet.add(chatId);
         this.isGroupChimeRunning = true;
         try {
             const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
             const historyBlock = recentMsgs
-                .map(m => `[${m.nickname || m.userId}]: ${m.text}`)
+                .map(m => `[${m.time || ''} ${m.nickname || m.userId}(QQ:${m.userId})]: ${m.text}`)
                 .join('\n');
 
             const isHarass = SEXUAL_HARASS_REGEX.test(cleanText);
@@ -1394,7 +1463,8 @@ export class SocialArbiter {
                 : null;
             const prompt = [
                 `【系统内部事件：group_chime_in_check（群聊互动与插话评估）】`,
-                `当前群号：${groupId}，刚刚群友 [${nickname}(${userId})] 说了："${cleanText}"`,
+                `当前群号：${groupId}，刚刚群友 [${nickname}(QQ:${userId})] 说了："${cleanText}"`,
+                `⚠️【防张冠李戴铁律】当前跟你说话的人是 [${nickname}(QQ:${userId})]！请看清近期群聊上下文中每句话前面的 [昵称(QQ号)]，绝对禁止把其他群友说的话或外号算在 [${nickname}] 头上！`,
                 `近期群聊上下文：\n${historyBlock}`,
                 ...(isHarass ? [`🚨【反性骚扰回击指令】检测到该群友正在对你开黄腔/性骚扰/问猥琐下头问题！绝对禁止呆呆傻傻顺着问题正经回答或科普，也严禁设为 ignore！必须将 reply_decision 设为 "send_message"，立刻开启毒舌暴躁模式，用犀利嫌弃的口吻连发 1~2 条短气泡狠狠痛骂回击对方（喊ta「下头怪」），并将 qq_action.type 设为 "send_meme" (meme_tag="尾巴拍" 或 "生气")！`] : []),
                 ...(hasImage ? [`🖼️【视觉感知提示】群友消息中包含图片或表情包（见其中的“视觉画面描述”），你可以针对图片内容吐槽，或者设置 reply_decision = "meme_only" / qq_action.type = "send_meme" 发表情包跟对方斗图！`] : []),
@@ -1465,7 +1535,8 @@ export class SocialArbiter {
             this.log('debug', `[FeiyuArbiter] 群聊插话评估异常: ${err?.message || err}`);
             return false;
         } finally {
-            this.isGroupChimeRunning = false;
+            this.groupChimeRunningSet.delete(chatId);
+            this.isGroupChimeRunning = this.groupChimeRunningSet.size > 0;
         }
     }
 
@@ -1830,16 +1901,18 @@ export class SocialArbiter {
             if (['compress', '压缩'].includes(sub)) {
                 const targetDay = parts[1]?.trim() || undefined;
                 const digest = await this.memoryManager.compressDailyMemory(targetDay, { forceAll: true });
-                if (!digest) {
+                const updatedUsers = await this.memoryManager.compressAllUsersIfNeeded?.({ forceAll: true }) || [];
+                const userCompressedCount = Array.isArray(updatedUsers) ? updatedUsers.length : Number(updatedUsers) || 0;
+                if (!digest && !userCompressedCount) {
                     const msg = '📭 当前日期还没有可压缩的互动流水记录捏~';
                     await this.bridge.sendToChat(chatId, msg, { bypassFeiyuInterceptor: true });
                     return msg;
                 }
-                const hlLines = (digest.highlights || []).map((h, i) => `  ${i + 1}. ${h}`).join('\n') || '  （无具体条目）';
+                const hlLines = (digest?.highlights || []).map((h, i) => `  ${i + 1}. ${h}`).join('\n') || '  （无具体条目）';
                 const msg = [
-                    `🗜️ 【大肥鱼每日记忆压缩完成 (${digest.day_key})】`,
-                    `• 累计压缩流水: ${digest.msg_count} 条`,
-                    `• 当日浓缩总结: ${digest.summary}`,
+                    `🗜️ 【大肥鱼记忆压缩完成 (${digest?.day_key || '今日'})】`,
+                    `• 每日流水压缩: ${digest?.msg_count || 0} 条 | 分用户记忆压缩: ${userCompressedCount} 人`,
+                    `• 当日浓缩总结: ${digest?.summary || '（无新增每日流水）'}`,
                     `• 主要干了什么:\n${hlLines}`,
                 ].join('\n');
                 await this.bridge.sendToChat(chatId, msg, { bypassFeiyuInterceptor: true });
@@ -1904,6 +1977,31 @@ export class SocialArbiter {
             }
 
             if (sub === 'mem' || sub === 'memory') {
+                const targetQuery = parts.slice(1).join(' ').trim();
+                if (targetQuery) {
+                    const targetProfile = this.memoryManager.findUserByQuery?.(targetQuery) || this.memoryManager.getUserProfile(targetQuery);
+                    if (!targetProfile) {
+                        const notFound = `📭 未在记忆库中找到匹配「${targetQuery}」的群友档案。`;
+                        await this.bridge.sendToChat(chatId, notFound, { bypassFeiyuInterceptor: true });
+                        return notFound;
+                    }
+                    const impList = Array.isArray(targetProfile.important_memories) && targetProfile.important_memories.length > 0
+                        ? targetProfile.important_memories
+                        : (targetProfile.known_facts || []);
+                    const normList = Array.isArray(targetProfile.normal_memories) ? targetProfile.normal_memories : [];
+                    const userReport = [
+                        `🧠 【群友专属分层记忆档案: ${targetProfile.nickname} (${targetProfile.user_id})】`,
+                        `• 好感度 / 关系 : ${targetProfile.affection}/100 (${targetProfile.relationship_tag})${targetProfile.pet_nickname ? ` | 专属外号: 「${targetProfile.pet_nickname}」` : ''}`,
+                        `• 🗜️ 浓缩印象摘要: ${targetProfile.rolling_summary || '（暂无浓缩摘要）'}`,
+                        `• 🔴 重要记忆 (Important, ${impList.length} 条):`,
+                        impList.length > 0 ? impList.map((f, i) => `  ${i + 1}. ${f}`).join('\n') : '  （暂无重要记忆）',
+                        `• 🔵 一般记忆 (Normal, ${normList.length} 条):`,
+                        normList.length > 0 ? normList.map((f, i) => `  ${i + 1}. ${f}`).join('\n') : '  （暂无一般记忆）',
+                    ].join('\n');
+                    await this.bridge.sendToChat(chatId, userReport, { bypassFeiyuInterceptor: true });
+                    return userReport;
+                }
+
                 const profile = this.memoryManager.getSemanticProfile(this.masterQQ);
                 const dbStats = this.memoryManager.getDatabaseStats?.() || {};
                 const recentDigests = this.memoryManager.getRecentDailyDigests?.(3) || [];
@@ -1914,10 +2012,14 @@ export class SocialArbiter {
                     }).join('\n')
                     : '  （暂无已生成的每日压缩摘要，可发 /fish compress 立即提炼今日记忆）';
 
-                const recentEp = this.memoryManager.getRecentEpisodicMemories(5);
-                const epLines = recentEp.length > 0
-                    ? recentEp.map((m, idx) => `  ${idx + 1}. [重要度:${m.importance}/10 | ${String(m.created_at || '').slice(0, 10)}] ${m.summary}`).join('\n')
-                    : '  （暂无已沉淀的高重要度情景记忆）';
+                const allProfiles = Object.values(this.memoryManager.state.users || {})
+                    .sort((a, b) => ((b.important_memories?.length || 0) * 3 + (b.normal_memories?.length || 0) + (b.affection || 0) * 0.1) - ((a.important_memories?.length || 0) * 3 + (a.normal_memories?.length || 0) + (a.affection || 0) * 0.1));
+                const userMemLines = allProfiles.slice(0, 10).map(u => {
+                    const impCnt = (u.important_memories || []).length;
+                    const normCnt = (u.normal_memories || []).length;
+                    const sumPreview = u.rolling_summary ? ` | 印象: ${u.rolling_summary.slice(0, 34)}` : '';
+                    return `  • ${u.nickname}(${u.user_id}) [好感:${u.affection} | 🔴重要:${impCnt} | 🔵一般:${normCnt}]${sumPreview}`;
+                }).join('\n') || '  （暂无群友记忆档案）';
 
                 const primaryGroup = this.groupChats[0] || 'group:434137389';
                 const groupLoreList = this.memoryManager.getGroupLore?.(primaryGroup) || [];
@@ -1934,28 +2036,30 @@ export class SocialArbiter {
                     : '  （暂无待触发的定时提醒，说“X分钟后提醒我...”即可登记）';
 
                 const report = [
-                    '🧠 【大肥鱼 SQLite 四层记忆数据库面板 (/fish mem)】',
+                    '🧠 【大肥鱼 SQLite 分人分层记忆数据库面板 (/fish mem)】',
                     `▍数据库状态 (SQLite WAL)`,
                     `• 存储引擎  : ${dbStats.sqliteEnabled ? '🟢 node:sqlite (feiyu_memory.db)' : '🟡 JSON Fallback'}`,
-                    `• 表数据统计: 用户档案 ${dbStats.userCount ?? 0} 人 | 群梗库 ${dbStats.groupLoreCount ?? 0} 群 | 待办提醒 ${dbStats.reminderPendingCount ?? 0} 条 | 每日摘要 ${dbStats.digestCount ?? 0} 天 | 长期记忆 ${dbStats.epCount ?? 0} 条 | 原始流水 ${dbStats.rawTotal ?? 0} 条 (待压缩 ${dbStats.rawUncompressed ?? 0} 条)`,
+                    `• 表数据统计: 用户档案 ${dbStats.userCount ?? 0} 人 | 分层记忆 ${dbStats.userMemTotal ?? 0} 条 (🔴重要 ${dbStats.userMemImportant ?? 0} / 🔵一般 ${dbStats.userMemNormal ?? 0}) | 群梗库 ${dbStats.groupLoreCount ?? 0} 群 | 每日摘要 ${dbStats.digestCount ?? 0} 天 | 原始流水 ${dbStats.rawTotal ?? 0} 条`,
                     '',
-                    '▍鱼脑定时备忘录 (Pending Reminders)',
-                    remLines,
+                    '▍按人分别存放的分层记忆概览 (Top 10，发 `/fish mem <昵称或QQ>` 查看单人详情)',
+                    userMemLines,
                     '',
-                    '▍近期每日压缩摘要 (Daily Digests - 每天主要干了什么)',
+                    '▍老大个人分层记忆预览',
+                    `• QQ / 称呼 : ${profile.user_id} (${profile.nickname}) | 好感度: ${profile.affection}/100`,
+                    `• 🗜️ 浓缩印象: ${profile.rolling_summary || '（暂无）'}`,
+                    `• 🔴 重要记忆:\n  - ${(profile.important_memories || profile.known_facts || []).slice(0, 5).join('\n  - ')}`,
+                    `• 🔵 一般记忆:\n  - ${(profile.normal_memories || []).slice(0, 4).join('\n  - ') || '（暂无）'}`,
+                    '',
+                    '▍近期每日压缩摘要 (Daily Digests)',
                     digestLines,
                     '',
                     `▍群聊共同记忆与群梗黑话 (${primaryGroup})`,
                     loreLines,
                     '',
-                    '▍语义记忆 (Semantic Memory - 老大档案)',
-                    `• QQ / 称呼 : ${profile.user_id} (${profile.nickname}) | 好感度: ${profile.affection}/100`,
-                    `• 核心画像  :\n  - ${(profile.known_facts || []).slice(0, 6).join('\n  - ')}`,
-                    '',
-                    '▍最近 5 条长期情景记忆 (Episodic Memory)',
-                    epLines,
+                    '▍鱼脑定时备忘录 (Pending Reminders)',
+                    remLines,
                     '──────────────────',
-                    '💡 记忆管理指令：/fish compress (手动压缩提炼今日记忆) | /fish search <关键词> (搜索历史记忆) | /fish remember <事实>',
+                    '💡 记忆指令：/fish mem <QQ或昵称> (查单人记忆) | /fish compress (压缩全员&今日记忆) | /fish search <关键词>',
                 ].join('\n');
 
                 await this.bridge.sendToChat(chatId, report, { bypassFeiyuInterceptor: true });
@@ -2070,6 +2174,7 @@ export class SocialArbiter {
         const apiKey = getDeepSeekApiKey();
         if (!apiKey) return null;
         try {
+            const takenNicks = this.memoryManager?.getTakenPetNicknames?.(userId) || [];
             const res = await this.fetchImpl('https://api.deepseek.com/chat/completions', {
                 method: 'POST',
                 headers: {
@@ -2082,11 +2187,16 @@ export class SocialArbiter {
                     messages: [
                         {
                             role: 'system',
-                            content: '你是傲娇小蓝鲸“大肥鱼”的记忆提炼器。请将关于目标用户的多条碎片事实合并为不超过 6 条精炼特征，并根据ta与大肥鱼的互动习惯给ta起一个 3~5 字的可爱/傲娇专属外号（pet_nickname，如“五花肉菩萨”、“烤鱼狂魔”、“熬夜冠军”），输出 JSON: {"known_facts": ["事实1", "事实2"], "pet_nickname": "专属外号"}',
+                            content: '你是傲娇小蓝鲸“大肥鱼”的记忆提炼器。请将关于目标用户的多条碎片事实合并为不超过 6 条精炼特征，并结合【ta本人的昵称关键字】或【独有聊天梗】给ta起一个 2~5 字的全群唯一专属称呼（pet_nickname，严禁使用“记仇榜常客/烤鱼狂魔/下头怪/五花肉菩萨/熬夜冠军”等通用大类词，严禁与 taken_nicknames_to_avoid 重名），输出 JSON: {"known_facts": ["事实1", "事实2"], "pet_nickname": "专属称呼"}',
                         },
                         {
                             role: 'user',
-                            content: JSON.stringify({ user_id: userId, facts }),
+                            content: JSON.stringify({
+                                user_id: userId,
+                                nickname: profile?.nickname || userId,
+                                facts,
+                                taken_nicknames_to_avoid: takenNicks,
+                            }),
                         },
                     ],
                     temperature: 0.3,
@@ -2104,6 +2214,74 @@ export class SocialArbiter {
     }
 
     /**
+     * 异步按用户分层压缩记忆 (`compressUserMemory` LLM 回调)
+     * 将单用户的历史画像、一般记忆和近期未压缩发言记录合并压缩为：
+     * - rolling_summary (<= 90字浓缩印象)
+     * - important_memories (<= 8条重要核心记忆，长期保留)
+     * - normal_memories (<= 6条近期一般互动记忆，自动淘汰旧琐事)
+     * - pet_nickname (专属外号)
+     */
+    async compressUserMemoryViaLLM(userId, profile, rawLogs) {
+        const apiKey = getDeepSeekApiKey();
+        if (!apiKey) return null;
+        try {
+            const takenNicks = this.memoryManager?.getTakenPetNicknames?.(userId) || [];
+            const logText = (rawLogs || [])
+                .slice(-30)
+                .map(r => `[${r.day_key || ''} ${r.time_str || ''} ${r.chat_id || ''}] ${r.content}`)
+                .join('\n');
+            const res = await this.fetchImpl('https://api.deepseek.com/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                    model: 'deepseek-chat',
+                    response_format: { type: 'json_object' },
+                    messages: [
+                        {
+                            role: 'system',
+                            content: [
+                                '你是傲娇小蓝鲸“大肥鱼”的分用户记忆压缩器。',
+                                '请将该用户的【已有浓缩印象】、【已有重要记忆】、【已有一般记忆】与【最新原始发言流水】合并压缩，严格区分“重要记忆”与“一般记忆”，防止信息膨胀：',
+                                '1. rolling_summary: 用大肥鱼视角写一段 <= 80 字的该用户浓缩印象总结（包含ta的性格、常聊话题、对本鱼的态度）。',
+                                '2. important_memories: 数组（最多 8 条，每条 <= 35 字），只保留【重要信息】：真实身份/职业/学业、固定喜好或雷区、与大肥鱼的核心关系/长期恩怨、重大约定或里程碑。',
+                                '3. normal_memories: 数组（最多 6 条，每条 <= 30 字），保留【近期一般信息】：最近聊过的日常话题、近期投喂/调侃/点歌/斗嘴小事（把过时重复的琐事合并或淘汰）。',
+                                '4. pet_nickname: 给ta起一个全群独一无二的 2~5 字专属称呼，必须结合【ta本人的昵称字眼】或【ta个人独有聊天梗】（例如昵称“咬一口的苹果”叫“脆苹果/苹果仔”，昵称“空气會說谎”叫“恋爱空气”，昵称“是伊蕾娜诶”叫“魔女伊蕾娜”，昵称“凡了个凡”叫“魔改阿凡”）。严禁使用“记仇榜常客”、“烤鱼狂魔”、“下头怪”、“五花肉菩萨”、“熬夜冠军”、“臭肥鱼”等大类模板词，且严禁与 taken_nicknames_to_avoid 中的已占用外号重名！',
+                                '必须严格输出 JSON 对象：{"rolling_summary": "...", "important_memories": ["..."], "normal_memories": ["..."], "pet_nickname": "..."}',
+                            ].join('\n'),
+                        },
+                        {
+                            role: 'user',
+                            content: JSON.stringify({
+                                user_id: userId,
+                                nickname: profile?.nickname || userId,
+                                affection: profile?.affection || 35,
+                                existing_rolling_summary: profile?.rolling_summary || '',
+                                existing_important_memories: profile?.important_memories || profile?.known_facts || [],
+                                existing_normal_memories: profile?.normal_memories || [],
+                                taken_nicknames_to_avoid: takenNicks,
+                                recent_raw_logs: logText,
+                            }),
+                        },
+                    ],
+                    temperature: 0.25,
+                    max_tokens: 450,
+                }),
+                signal: AbortSignal.timeout(18_000),
+            });
+            if (!res.ok) return null;
+            const data = await res.json();
+            const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+            if (!parsed || typeof parsed !== 'object') return null;
+            return parsed;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * 异步压缩提炼大肥鱼每日记忆 (`compressDailyMemory` LLM 回调)
      */
     async compressDailyMemoryViaLLM(dayKey, existingDigest, rawLogs) {
@@ -2112,7 +2290,7 @@ export class SocialArbiter {
         try {
             const logText = (rawLogs || [])
                 .slice(-40)
-                .map(r => `[${r.time_str} ${r.role === 'event' ? '事件' : r.nickname}] ${r.content}`)
+                .map(r => `[${r.time_str} ${r.role === 'event' ? '事件' : `${r.nickname}(QQ:${r.user_id})`}] ${r.content}`)
                 .join('\n');
             const prevSummary = existingDigest?.summary || '（无）';
             const prevHighlights = JSON.stringify(existingDigest?.highlights || []);
@@ -2131,9 +2309,9 @@ export class SocialArbiter {
                             role: 'system',
                             content: [
                                 '你是傲娇贪吃的小蓝鲸“大肥鱼”的每日记忆压缩器。',
-                                '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情。',
+                                '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情。注意看清每条流水的 `昵称(QQ:xxx)`，严禁张冠李戴！',
                                 '必须严格输出 JSON 对象：',
-                                '{"summary": "以大肥鱼第一人称（本鱼）写的今日浓缩总结，不超过100字", "highlights": ["带时间或主体的关键事项1", "事项2"], "episodic": [{"summary": "若包含值得长期永久铭记的重要事件则提取，否则留空数组", "importance": 8}], "group_lore": ["若流水中有群友与大肥鱼的有趣群梗、外号或恩怨（如某群友总想烤肥鱼、某群友常投喂），提取1~2条，否则留空数组"]}',
+                                '{"summary": "以大肥鱼第一人称（本鱼）写的今日浓缩总结，不超过100字", "highlights": ["带时间或具体群友昵称的关键事项1", "事项2"], "episodic": [{"summary": "若包含值得长期永久铭记的重要事件则提取，必须写明具体是谁，否则留空数组", "importance": 8, "user_id": "对应的QQ号"}], "group_lore": ["若流水中有群友与大肥鱼的有趣群梗、外号或恩怨（写明群友昵称），提取1~2条，否则留空数组"]}',
                             ].join('\n'),
                         },
                         {
