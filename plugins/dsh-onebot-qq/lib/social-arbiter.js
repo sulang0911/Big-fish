@@ -105,6 +105,8 @@ export function classifyFoodTaste(foodName = '') {
  * @param {string} rawText
  * @returns {{ mode: 'spoken' | 'photo' | 'emoji', foodName: string, taste: string } | null}
  */
+const FOOD_NOUN_REGEX = /(脆皮五花肉|红烧五花肉|烤五花肉|五花肉拌饭|五花肉|热腾腾的白米饭|大白米饭|白米饭|大米饭|米饭|大白饭|白饭|红烧肉|隆江猪脚饭|猪脚饭|卤肉饭|扣肉|把子肉|烤肉|牛排|排骨|大鸡腿|鸡腿|炸鸡|火锅|烧烤|烤串|麻辣烫|关东煮|螺蛳粉|牛肉面|拉面|面条|米粉|酸辣粉|河粉|包子|饺子|小笼包|煎饺|汉堡|薯条|披萨|寿司|三明治|小龙虾|大闸蟹|螃蟹|大虾|虾仁|珍珠奶茶|奶茶|杨枝甘露|果茶|柠檬水|咖啡|可乐|雪碧|果汁|牛奶|酸奶|小蛋糕|蛋糕|甜甜圈|泡芙|布丁|巧克力|棒棒糖|冰淇淋|雪糕|草莓|榴莲|西瓜|苹果|香蕉|葡萄|水蜜桃|橘子|橙子|车厘子|樱桃|煎蛋|荷包蛋|茶叶蛋|鸡蛋|烤肠|火腿肠|章鱼小丸子|肉丸|臭豆腐|豆腐|沙拉|曲奇|饼干|薯片|辣条|坚果|夜宵|甜点|甜品|大餐|便当|盒饭|外卖|鸡汤|排骨汤|肉汤|白粥|皮蛋瘦肉粥|香菜|折耳根|鱼腥草|苦瓜|烤鱼|水煮鱼|酸菜鱼|剁椒鱼头|红烧鱼|清蒸鱼|生鱼片|三文鱼|刺身|鱼肉|鱼翅|鱼丸|鱼片|西北风|空气)/i;
+
 export function parseNaturalFeedIntent(rawText = '') {
     const text = String(rawText || '').trim();
     if (!text || text.startsWith('/')) return null;
@@ -119,27 +121,24 @@ export function parseNaturalFeedIntent(rawText = '') {
     }
     const isBribeTease = /(生小鱼|下小鱼|产卵|下崽|生猴子|生孩子|怀上|怀孕|当我老婆|给我当老婆|嫁给我|陪睡|暖床)/.test(userCaption);
 
-    // 1. 口语自然投喂（如：“肥鱼请你吃红烧肉”、“给本鱼塞一碗白米饭”、“赏你一块五花肉”、“你吃西北风吗”、“来碗猪脚饭”）
-    const verbMatch = userCaption.match(/(?:投喂(?:肥鱼|飞鱼|大肥鱼|本鱼|你)?|喂(?:你|本鱼|肥鱼|飞鱼|大肥鱼)(?:吃|喝)?|(?:给你|给肥鱼|给飞鱼|给本鱼|请你|请肥鱼|请本鱼|赏你|赏肥鱼|赏本鱼|奖励你|犒劳你)(?:吃|喝|炫|来一[碗盘份块杯串个顿包桶勺口])?|塞(?:给你|你嘴里)|拿去(?:吃|干饭|加餐)|张嘴吃|(?:你吃|吃不吃|来[一碗盘份块杯串个顿包桶口])\s*(?=脆皮五花肉|五花肉|白米饭|大米饭|米饭|红烧肉|猪脚饭|卤肉饭|扣肉|烤肉|火锅|烧烤|奶茶|炸鸡|汉堡|薯条|披萨|蛋糕|草莓|鸡腿|螺蛳粉|面条|包子|饺子|香菜|折耳根|苦瓜|烤鱼|水煮鱼|酸菜鱼|生鱼片|刺身|西北风|空气))\s*(?:一[碗盘份块杯串个顿包桶勺口]|点|些|碗|份|块|杯)?\s*([^\s，。！？!?,~～呢吧啦呀嘛捏吗]{1,14})?/i);
-    if (verbMatch) {
-        let candidate = String(verbMatch[1] || '').replace(/^(了|个|份|碗|块|盘|杯|串|点|些|口)+/, '').trim();
-        if (!candidate || /^(吃|喝|加餐|干饭|饭|东西|好吃的|夜宵|零食)$/.test(candidate) || isBribeTease) {
-            // 尝试在整句里提取明确的食物词
-            const kw = userCaption.match(/(脆皮五花肉|五花肉|白米饭|大米饭|米饭|红烧肉|隆江猪脚饭|猪脚饭|卤肉饭|扣肉|把子肉|烤肉|火锅|烧烤|珍珠奶茶|奶茶|杨枝甘露|炸鸡|汉堡|薯条|披萨|小蛋糕|蛋糕|草莓|大鸡腿|鸡腿|螺蛳粉|牛肉面|面条|包子|饺子|小笼包|巧克力|冰淇淋|棒棒糖|香菜|折耳根|苦瓜|烤鱼|水煮鱼|酸菜鱼|生鱼片|刺身|西北风|空气)/i);
-            candidate = kw ? kw[1] : '白米饭';
-        }
+    // 1. 口语自然投喂（必须包含投喂动作词 + 明确的食物名称，杜绝“给你回复频率降低了吗”等日常句误判为食物！）
+    const hasExplicitFeedVerb = /(?:投喂(?:肥鱼|飞鱼|大肥鱼|本鱼|你)?|喂(?:你|本鱼|肥鱼|飞鱼|大肥鱼)(?:吃|喝)?|(?:给你|给肥鱼|给飞鱼|给本鱼|请你|请肥鱼|请本鱼|赏你|赏肥鱼|赏本鱼|奖励你|犒劳你)(?:吃|喝|炫|尝|塞|来一[碗盘份块杯串个顿包桶勺口])|塞(?:给你|你嘴里)|拿去(?:吃|干饭|加餐)|张嘴吃)/i.test(userCaption);
+    const hasDativeOrOfferPrefix = /(?:给你|给肥鱼|给飞鱼|给本鱼|请你|请肥鱼|请本鱼|赏你|赏肥鱼|赏本鱼|奖励你|犒劳你|你吃|吃不吃|来[一碗盘份块杯串个顿包桶勺口])/i.test(userCaption);
+    const foodMatch = userCaption.match(FOOD_NOUN_REGEX);
+    if ((hasExplicitFeedVerb && foodMatch) || (hasDativeOrOfferPrefix && foodMatch) || /^(?:投喂|喂你|喂肥鱼|喂飞鱼|喂大肥鱼|给你吃|请你吃|给肥鱼吃)[！!~～啦呀捏]*$/.test(userCaption)) {
+        const candidate = foodMatch ? foodMatch[1] : '白米饭';
         return { mode: 'spoken', foodName: candidate, taste: isBribeTease ? 'bribe_tease' : classifyFoodTaste(candidate) };
     }
 
-    // 2. “发美食照片”赛博投喂（包含视觉画面描述且画面内容为真实美食/饮品）
+    // 2. “发美食照片”赛博投喂（包含视觉画面描述且画面内容为真实美食/饮品，排除漫画/表情包/粉红色爪子等误判）
     const visMatch = text.match(/视觉画面描述:\s*([^）\]]+)/i);
     if (visMatch && visMatch[1]) {
         const visDesc = visMatch[1].trim();
-        const isFoodPhoto = /(米饭|白饭|五花肉|红烧肉|猪脚饭|卤肉|烤肉|牛排|排骨|鸡腿|炸鸡|火锅|烧烤|烤串|麻辣烫|螺蛳粉|面条|拉面|粉|饺子|包子|汉堡|薯条|披萨|寿司|小龙虾|螃蟹|虾|菜肴|美食|一盘|一碗|一锅|餐桌|外卖|便当|盒饭|奶茶|咖啡|蛋糕|甜点|甜品|面包|草莓|冰淇淋|夜宵)/i.test(visDesc)
-            && !/(聊天记录|代码|终端|网页截图|三视图|动漫人物立绘)/i.test(visDesc);
+        const isFoodPhoto = /(米饭|白饭|五花肉|红烧肉|猪脚饭|卤肉|烤肉|牛排|排骨|鸡腿|炸鸡|火锅|烧烤|烤串|麻辣烫|螺蛳粉|面条|拉面|米粉|酸辣粉|饺子|包子|汉堡|薯条|披萨|寿司|小龙虾|螃蟹|菜肴|美食|一盘菜|一碗面|一碗饭|一锅|餐桌|便当|盒饭|奶茶|咖啡|蛋糕|甜点|甜品|冰淇淋)/i.test(visDesc)
+            && !/(聊天记录|代码|终端|网页截图|三视图|动漫|立绘|漫画|两格|四格|表情包|梗图|软件|图标|羊驼|爪子|小白兽|猫|狗)/i.test(visDesc);
         if (isFoodPhoto) {
-            const foodKw = (userCaption + ' ' + visDesc).match(/(脆皮五花肉|五花肉|白米饭|米饭|红烧肉|猪脚饭|卤肉|烤肉|牛排|排骨|鸡腿|炸鸡|火锅|烧烤|烤串|麻辣烫|螺蛳粉|面条|拉面|饺子|包子|汉堡|薯条|披萨|寿司|小龙虾|奶茶|咖啡|蛋糕|甜点|甜品|草莓|冰淇淋|外卖|夜宵)/i);
-            const dishName = foodKw ? `照片里的${foodKw[1]}` : `照片里的美食（${visDesc.slice(0, 16)}）`;
+            const foodKw = (userCaption + ' ' + visDesc).match(FOOD_NOUN_REGEX);
+            const dishName = foodKw ? `照片里的${foodKw[1]}` : `照片里的美食`;
             return { mode: 'photo', foodName: dishName, taste: classifyFoodTaste(dishName) };
         }
     }
@@ -644,6 +643,8 @@ export class SocialArbiter {
 
         const uid = String(userId || this.masterQQ).trim() || this.masterQQ;
         const isAdmin = uid === this.masterQQ;
+        const isGroupNonMaster = String(chatId || '').startsWith('group:') && !isAdmin;
+        const bubbleCountHint = isGroupNonMaster ? '1 条' : '1~2 条';
         const nick = String(nickname || uid).trim();
         const dedupKey = `${chatId}:${uid}:${intent.foodName}:${Math.floor(this.now() / 3000)}`;
         if (this.lastNaturalFeedKey === dedupKey && this.lastNaturalFeedResult) {
@@ -664,7 +665,7 @@ export class SocialArbiter {
                 foodName,
                 taste,
                 voiceBoost: 0.40,
-                promptHint: `💢【最高优先级·识破糖衣炮弹拒吃退货！】对方想拿「${foodName}」当诱饵骗你生小鱼/占便宜！⚠️绝对禁止说“饭本鱼炫了/吃下了/真香”，你一眼识破了对方的诡计并把碗推了回去拒吃！请用 1~2 条傲娇机灵的短气泡嫌弃吐槽对方想得美（如“？想得美！一碗${foodName}就想骗本鱼给你生小鱼，本鱼是高贵的小蓝鲸不是鱼塘母鱼，拿走不吃哼”），绝不要生硬复读“下头怪/去局子”！`,
+                promptHint: `💢【最高优先级·识破糖衣炮弹拒吃退货！】对方想拿「${foodName}」当诱饵骗你生小鱼/占便宜！⚠️绝对禁止说“饭本鱼炫了/吃下了/真香”，你一眼识破了对方的诡计并把碗推了回去拒吃！请用 ${bubbleCountHint}傲娇机灵的短气泡嫌弃吐槽对方想得美（如“？想得美！一碗${foodName}就想骗本鱼给你生小鱼，本鱼是高贵的小蓝鲸不是鱼塘母鱼，拿走不吃哼”），绝不要生硬复读“下头怪/去局子”！`,
             };
             this.lastNaturalFeedKey = dedupKey;
             this.lastNaturalFeedResult = res;
@@ -683,7 +684,7 @@ export class SocialArbiter {
                 foodName,
                 taste,
                 voiceBoost: 0.45,
-                promptHint: `💢【投喂彩蛋·同类相残警报！】对方居然拿鱼类料理「${foodName}」投喂你！你是小蓝鲸大肥鱼，绝不吃鱼类同类！你现在吓得鱼尾炸毛并把对方记进了小本本，请立刻用 1~2 条超短气泡气鼓鼓吐槽对方心狠手辣，并将 qq_action.type 设为 "poke" 反戳回去（或发 angry 表情包）！`,
+                promptHint: `💢【投喂彩蛋·同类相残警报！】对方居然拿鱼类料理「${foodName}」投喂你！你是小蓝鲸大肥鱼，绝不吃鱼类同类！你现在吓得鱼尾炸毛并把对方记进了小本本，请立刻用 ${bubbleCountHint}超短气泡气鼓鼓吐槽对方心狠手辣，并将 qq_action.type 设为 "poke" 反戳回去（或发 angry 表情包）！`,
             };
             this.lastNaturalFeedKey = dedupKey;
             this.lastNaturalFeedResult = res;
@@ -765,7 +766,7 @@ export class SocialArbiter {
             voiceBoost: isFav ? 0.55 : 0.35,
             promptHint: isFav
                 ? `💖【最高优先级·无感投喂成功（本命最爱双倍暴击！）】对方刚刚${modeDesc}，你已经一口吃进肚子里啦！（当前饱食度已飙升至 ${st.hunger}/100${wasSulking ? '，且你原本记小本本的脾气瞬间被这顿美食彻底哄好啦' : ''}）。⚠️绝对禁止抱怨“就一个？”或追问别的食物，也严禁输出死板的系统属性面板！必须立刻表现为已经大口吃下「${foodName}」、嚼得超香超开心满足（如“哇！！热腾腾的${foodName}本鱼一口炫完！”、“嚼嚼嚼太香了捏”），并可设 qq_action.type = "send_meme" (meme_tag="happy")！`
-                : `😋【最高优先级·无感投喂成功（开心干饭！）】对方刚刚${modeDesc}，你已经开心吃下啦（饱食度已升至 ${st.hunger}/100${wasSulking ? '，你的小脾气也被哄好啦' : ''}）！⚠️绝对禁止抱怨挑刺或输出死板的系统属性面板，请直接表现为已经吃下「${foodName}」，用 1~2 条自然可爱的短气泡夸赞味道、开心干饭！`,
+                : `😋【最高优先级·无感投喂成功（开心干饭！）】对方刚刚${modeDesc}，你已经开心吃下啦（饱食度已升至 ${st.hunger}/100${wasSulking ? '，你的小脾气也被哄好啦' : ''}）！⚠️绝对禁止抱怨挑刺或输出死板的系统属性面板，请直接表现为已经吃下「${foodName}」，用 ${bubbleCountHint}自然可爱的短气泡夸赞味道、开心干饭！`,
         };
         this.lastNaturalFeedKey = dedupKey;
         this.lastNaturalFeedResult = res;

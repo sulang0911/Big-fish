@@ -1,4 +1,4 @@
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $BaseDir = $PSScriptRoot
 if (-not $BaseDir) { $BaseDir = "D:\deepseek-harness" }
 
@@ -33,6 +33,11 @@ while ($true) {
     $conn3080 = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue
     if (-not $conn3080) {
         Write-WatchdogLog "Port 3080 (DSH) down! Cleaning lock files and restarting..."
+        $srcPluginLib = Join-Path $BaseDir "plugins\dsh-onebot-qq\lib"
+        $dstPluginLib = Join-Path $dshHomeDir "profiles\web\node_modules\dsh-onebot-qq\lib"
+        if ((Test-Path $srcPluginLib) -and (Test-Path $dstPluginLib)) {
+            Copy-Item -Path (Join-Path $srcPluginLib "*") -Destination $dstPluginLib -Recurse -Force -ErrorAction SilentlyContinue
+        }
         if (Test-Path $dshHomeDir) {
             Get-ChildItem -Path $dshHomeDir -Filter ".credentials.yaml.lock*" -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
         }

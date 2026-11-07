@@ -905,11 +905,13 @@ export class MessageDispatcher {
         }
 
         // decision === 'send_message' 或 'voice_only'
-        const isMasterUser = String(userId) === String(DEFAULT_MASTER_QQ);
+        const isMasterUser = ref.kind === 'private'
+            ? String(ref.target) === String(DEFAULT_MASTER_QQ)
+            : String(options.userId || '') === String(DEFAULT_MASTER_QQ);
         let bubbles = Array.isArray(action.messages) ? [...action.messages].filter(Boolean) : [];
         // 群聊防刷屏收敛：仅对普通群友严格收敛为 1 条气泡（和老大聊天时保持活泼多气泡不变！）
         if (ref.kind === 'group' && !isMasterUser && bubbles.length > 1) {
-            if ((bubbles[0].length + bubbles[1].length) <= 28) {
+            if ((bubbles[0].length + bubbles[1].length) <= 24) {
                 bubbles = [`${bubbles[0]}，${bubbles[1]}`];
             } else {
                 bubbles = [bubbles[0]];

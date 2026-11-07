@@ -1,4 +1,4 @@
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $BaseDir = $PSScriptRoot
 if (-not $BaseDir) { $BaseDir = "D:\deepseek-harness" }
 
@@ -90,6 +90,11 @@ if (-not $conn11434) {
 }
 
 # 4. 检查并启动 DeepSeek Harness (3080)
+$srcPluginLib = Join-Path $BaseDir "plugins\dsh-onebot-qq\lib"
+$dstPluginLib = Join-Path $env:USERPROFILE ".dsh\profiles\web\node_modules\dsh-onebot-qq\lib"
+if ((Test-Path $srcPluginLib) -and (Test-Path $dstPluginLib)) {
+    Copy-Item -Path (Join-Path $srcPluginLib "*") -Destination $dstPluginLib -Recurse -Force -ErrorAction SilentlyContinue
+}
 $conn3080 = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue
 if (-not $conn3080) {
     # 清理上次强制停止可能残留的 credentials 文件锁，防止启动 30 秒后因锁超时自动掉线退出
