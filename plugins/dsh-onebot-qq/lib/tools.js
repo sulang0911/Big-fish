@@ -454,6 +454,12 @@ export function registerTools(ctx, bridge, connection, limits) {
             const messageId = await bridge.sendSegments(chatId, [
                 { type: 'record', data: { file: await fencedMediaFile(fullPath, limits.maxVoiceBytes, allowedRoots) } },
             ]);
+            bridge.feiyu?.memoryManager?.addWorkingMemory?.(chatId, {
+                role: 'assistant',
+                userId: 'self',
+                nickname: '大肥鱼',
+                text: `[语音:${activeVoice.name}] ${finalText}`,
+            });
             return { sent: true, voice: activeVoice.name, messageId: messageId ?? null };
         },
     }));
@@ -503,6 +509,12 @@ export function registerTools(ctx, bridge, connection, limits) {
             const messageId = await bridge.sendSegments(chatId, [
                 { type: 'record', data: { file: await fencedMediaFile(fullPath, limits.maxVoiceBytes, allowedRoots) } },
             ]);
+            bridge.feiyu?.memoryManager?.addWorkingMemory?.(chatId, {
+                role: 'assistant',
+                userId: 'self',
+                nickname: '大肥鱼',
+                text: `[切换音色语音] ${confirmText}`,
+            });
             return { sent: true, switched_to: voice.name, style: voice.style, messageId: messageId ?? null };
         },
     }));
@@ -569,16 +581,30 @@ export function registerTools(ctx, bridge, connection, limits) {
             const scriptPath = 'D:\\deepseek-harness\\sovits\\sovits_sing.py';
             const safeSongQuery = songQuery.replace(/["'`$\\]/g, ' ').trim() || '爱你';
 
-            const stdout = await new Promise((resolve, reject) => {
-                cpExecFile(pyPath, ['-u', scriptPath, '--song', safeSongQuery], {
-                    timeout: 120000,
-                    windowsHide: true,
-                    env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-                }, (err, stdout, stderr) => {
-                    if (err) return reject(new Error('SoulX-Singer 唱歌生成失败: ' + (stderr || err.message)));
-                    resolve(stdout);
+            // 若超过 2.0 秒仍未返回，说明未命中本地缓存（正在实时下载伴奏与合成新歌），立即发一条“清嗓子”过渡气泡消除等待焦虑
+            const prepTimer = setTimeout(() => {
+                void bridge.sendToChat(
+                    chatId,
+                    `唔，这首《${safeSongQuery}》本鱼得现翻一下歌谱，等本鱼清个嗓子酝酿半分钟捏~`,
+                    { bypassFeiyuInterceptor: true }
+                ).catch(() => {});
+            }, 2000);
+
+            let stdout;
+            try {
+                stdout = await new Promise((resolve, reject) => {
+                    cpExecFile(pyPath, ['-u', scriptPath, '--song', safeSongQuery], {
+                        timeout: 120000,
+                        windowsHide: true,
+                        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+                    }, (err, stdout, stderr) => {
+                        if (err) return reject(new Error('SoulX-Singer 唱歌生成失败: ' + (stderr || err.message)));
+                        resolve(stdout);
+                    });
                 });
-            });
+            } finally {
+                clearTimeout(prepTimer);
+            }
 
             let coverPath = null;
             const match = stdout.match(/\[OUTPUT_COVER\]\s+([^\r\n]+)/);
@@ -608,6 +634,12 @@ export function registerTools(ctx, bridge, connection, limits) {
             const messageId = await bridge.sendSegments(chatId, [
                 { type: 'record', data: { file: await fencedMediaFile(fullPath, limits.maxVoiceBytes, allowedRoots) } },
             ]);
+            bridge.feiyu?.memoryManager?.addWorkingMemory?.(chatId, {
+                role: 'assistant',
+                userId: 'self',
+                nickname: '大肥鱼',
+                text: `[语音翻唱] 已演唱《${songTitle}》`,
+            });
             return { sent: true, song_title: songTitle, messageId: messageId ?? null };
         },
     }));

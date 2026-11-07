@@ -406,7 +406,7 @@ export class InboundPipeline {
         // 若无需调用重型系统/浏览器/语音工具，统一走 Feiyu 快速拟人多气泡通道 (handleFastChatTurn)，消除私聊/@ 与群插话的回复风格割裂
         const activeChat = this.ctx.getChat(chatId);
         const isChatBusy = activeChat !== undefined && activeChat.busy === true;
-        const hasNonImageMedia = Array.isArray(inbound.media) && inbound.media.some(m => m.kind !== 'image');
+        const hasNonImageMedia = Array.isArray(inbound.media) && inbound.media.some(m => m.kind !== 'image' && m.kind !== 'voice');
         const needsHeavyAgentTools = hasNonImageMedia
             || inbound.forwardId !== undefined
             || Boolean(activityRes?.wokeUpFromSleep)
@@ -611,11 +611,23 @@ export class InboundPipeline {
                 return `[图片:${resolved.path}${visualNote}]`;
             }
             case 'voice': {
-                // M3-D4c: dispatch must not wait on STT — the [语音] placeholder ships
-                // now and the transcript steers into the turn when it completes. A
-                // failure/timeout keeps the placeholder as the final state.
                 if (this.ctx.transcriber.enabled) {
-                    void this.transcribeLater(resolved.path, chatId);
+                    try {
+                        const text = await Promise.race([
+                            this.ctx.transcriber.transcribe(resolved.path),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('stt_inline_timeout')), 8000)),
+                        ]);
+                        const label = transcriptLabel(text);
+                        if (label !== '') {
+                            return `[语音] ${label}`;
+                        }
+                    } catch (err) {
+                        if (err?.message === 'stt_inline_timeout') {
+                            void this.transcribeLater(resolved.path, chatId);
+                        } else {
+                            this.ctx.log('debug', 'inline STT fallback to [语音]: ' + describeError(err));
+                        }
+                    }
                 }
                 return '[语音]';
             }

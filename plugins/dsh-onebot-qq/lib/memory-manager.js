@@ -307,16 +307,28 @@ export class MemoryManager {
 
     _syncStateWithSqliteOnBoot() {
         if (!this.db) return;
+        // 清理非数字 QQ 号脏档案与全角空白昵称
+        try {
+            this.db.prepare("DELETE FROM user_profiles WHERE user_id NOT GLOB '[0-9]*'").run();
+        } catch {}
+        for (const k of Object.keys(this.state.users || {})) {
+            if (!/^\d{5,12}$/.test(k)) delete this.state.users[k];
+        }
         // 1. 将 JSON 中已有的 users 写入 SQLite (INSERT OR IGNORE)
         const insertUser = this.db.prepare(`
             INSERT OR IGNORE INTO user_profiles (user_id, nickname, affection, relationship_tag, known_facts_json, last_interaction_time, last_interaction_ts, last_late_night_ts)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const [uid, u] of Object.entries(this.state.users || {})) {
-            if (!u || typeof u !== 'object') continue;
+            if (!u || typeof u !== 'object' || !/^\d{5,12}$/.test(uid)) continue;
+            const cleanNick = String(u.nickname || '').replace(/^[\s\u3000]+|[\s\u3000]+$/g, '');
+            const validNick = (cleanNick && cleanNick.length <= 20 && !/(提醒我|分钟后|小时后)/.test(cleanNick))
+                ? cleanNick
+                : `群友_${uid.slice(-4)}`;
+            u.nickname = validNick;
             insertUser.run(
                 String(uid),
-                String(u.nickname || uid),
+                validNick,
                 Number(u.affection ?? 55),
                 String(u.relationship_tag || '群友/饭票候选'),
                 JSON.stringify(Array.isArray(u.known_facts) ? u.known_facts : []),
@@ -350,12 +362,22 @@ export class MemoryManager {
         // 3. 从 SQLite 反向读取合并回内存缓存，确保两边完全一致
         const dbUsers = this.db.prepare('SELECT * FROM user_profiles').all();
         for (const row of dbUsers) {
+            if (!/^\d{5,12}$/.test(String(row.user_id))) continue;
             let facts = [];
             try { facts = JSON.parse(row.known_facts_json || '[]'); } catch {}
+            const rawNick = String(row.nickname || '').replace(/^[\s\u3000]+|[\s\u3000]+$/g, '');
+            const safeNick = (rawNick && rawNick.length <= 20 && !/(提醒我|分钟后|小时后)/.test(rawNick))
+                ? rawNick
+                : `群友_${String(row.user_id).slice(-4)}`;
+            if (safeNick !== row.nickname) {
+                try {
+                    this.db.prepare('UPDATE user_profiles SET nickname = ? WHERE user_id = ?').run(safeNick, row.user_id);
+                } catch {}
+            }
             this.state.users[row.user_id] = {
                 ...(this.state.users[row.user_id] || {}),
                 user_id: row.user_id,
-                nickname: row.nickname,
+                nickname: safeNick,
                 pet_nickname: row.pet_nickname || this.state.users[row.user_id]?.pet_nickname || '',
                 affection: row.affection,
                 relationship_tag: row.relationship_tag,
@@ -647,7 +669,7 @@ export class MemoryManager {
             // 若压缩过程中提炼出了群梗黑话或群友印象，顺带存入对应群的 group_lore 表
             if (extractedGroupLore.length > 0) {
                 const groupChats = [...new Set(rawLogs.map(r => r.chat_id).filter(c => String(c).startsWith('group:')))];
-                const targetGroup = groupChats[0] || 'group:927066977';
+                const targetGroup = groupChats[0] || 'group:434137389';
                 for (const lore of extractedGroupLore) {
                     this.addGroupLore(targetGroup, lore);
                 }
@@ -973,13 +995,21 @@ export class MemoryManager {
 
     // ── 3. Semantic Memory (QQ 用户专属档案) ─────────────────────────────────
     getUserProfile(userId, fallbackNickname = '') {
-        const uid = String(userId || '').trim();
-        if (!uid) return null;
+        const uid = String(userId || '').replace(/^(private|group):/i, '').trim();
+        if (!/^\d{5,12}$/.test(uid)) return null;
         const isMaster = uid === this.masterQQ;
+        const cleanNick = String(fallbackNickname || '').replace(/^[\s\u3000]+|[\s\u3000]+$/g, '');
+        const isValidNick = Boolean(
+            cleanNick &&
+            cleanNick !== uid &&
+            !cleanNick.startsWith('群友_') &&
+            cleanNick.length <= 20 &&
+            !/(提醒我|分钟后|小时后)/.test(cleanNick)
+        );
         if (!this.state.users[uid]) {
             this.state.users[uid] = {
                 user_id: uid,
-                nickname: fallbackNickname || (isMaster ? '老大' : `群友_${uid.slice(-4)}`),
+                nickname: isMaster ? '老大' : (isValidNick ? cleanNick : `群友_${uid.slice(-4)}`),
                 affection: isMaster ? 92 : 55,
                 relationship_tag: isMaster ? '首席饲主/老大' : '群友/饭票候选',
                 known_facts: isMaster ? ['大肥鱼的首席饲主（老大）'] : [],
@@ -988,8 +1018,8 @@ export class MemoryManager {
                 last_late_night_ts: 0,
             };
             this.save();
-        } else if (fallbackNickname && fallbackNickname !== uid && !isMaster) {
-            this.state.users[uid].nickname = fallbackNickname;
+        } else if (isValidNick && !isMaster) {
+            this.state.users[uid].nickname = cleanNick;
         }
         return this.state.users[uid];
     }

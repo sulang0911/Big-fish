@@ -602,7 +602,10 @@ export class SocialArbiter {
                 stat_delta: { affection: 1, boredom: -10, hunger: 0 },
             };
         }
-        await this.dispatcher.dispatch(chatId, action, { userId });
+        await this.dispatcher.dispatch(chatId, action, {
+            userId,
+            voiceProbability: count >= 2 ? 0.4 : 0,
+        });
     }
 
     /**
@@ -660,10 +663,18 @@ export class SocialArbiter {
         for (const r of dueList) {
             try {
                 const isMaster = String(r.user_id) === this.masterQQ;
+                const isGroup = String(r.chat_id).startsWith('group:');
                 const callName = isMaster ? '老大老大' : (this.memoryManager.getUserProfile(r.user_id)?.pet_nickname || r.nickname || r.user_id);
                 const bubble1 = `⏰ 叮咚！本鱼的备忘录小闹钟响啦！`;
                 const bubble2 = `${callName}，你之前交代本鱼到点提醒你的：【${r.task}】！快去搞定捏，不许拖延！`;
-                await this.dispatcher.sendTextBubble(r.chat_id, bubble1, {});
+                if (isGroup && /^\d+$/.test(String(r.user_id))) {
+                    await this.dispatcher.sendSegments(r.chat_id, [
+                        { type: 'at', data: { qq: String(r.user_id) } },
+                        { type: 'text', data: { text: ' ' + bubble1 } },
+                    ]);
+                } else {
+                    await this.dispatcher.sendTextBubble(r.chat_id, bubble1, {});
+                }
                 await this.dispatcher.sleep(900);
                 await this.dispatcher.sendTextBubble(r.chat_id, bubble2, {});
                 await this.dispatcher.sendPoke(r.chat_id, r.user_id);

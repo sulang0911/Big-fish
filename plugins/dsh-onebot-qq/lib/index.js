@@ -430,7 +430,7 @@ export function apply(ctx, config) {
     });
     const masterQQ = policy.adminUsers?.length > 0 ? String(policy.adminUsers[0]) : '2536218596';
     const targetChat = `private:${masterQQ}`;
-    const idleGroupChats = config.idleGroupChats?.length > 0 ? config.idleGroupChats : ['group:927066977'];
+    const idleGroupChats = config.idleGroupChats?.length > 0 ? config.idleGroupChats : ['group:434137389'];
     const socialArbiter = new SocialArbiter(bridge, {
         masterQQ,
         targetChat,

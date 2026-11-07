@@ -23,10 +23,6 @@ import time
 import re
 import hashlib
 import subprocess
-import numpy as np
-import soundfile as sf
-import librosa
-import torch
 
 SOVITS_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(SOVITS_DIR)
@@ -37,8 +33,6 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["MKL_NUM_THREADS"] = "2"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
-
-from inference.infer_tool import Svc
 
 MAX_SONG_DURATION = 18.0  # 截取 18s 供 UVR5 分离，混音时自动按乐句换气点对齐精简至 15~17s
 
@@ -183,6 +177,8 @@ def get_active_voice_key():
 
 def detect_key_offset(y, sr):
     """根据输入人声的中位数基频，自适应判断升降调（男声+12，女声0）"""
+    import numpy as np
+    import librosa
     try:
         f0 = librosa.yin(y, fmin=65, fmax=500, sr=sr)
         valid_f0 = f0[(f0 > 65) & (f0 < 450)]
@@ -201,6 +197,7 @@ def detect_key_offset(y, sr):
 
 def normalize_vocal(audio_data, target_peak_db=-1.0):
     """峰值平滑归一化至指定 dBFS，防止破音同时保证清唱声音饱满洪亮"""
+    import numpy as np
     peak = np.max(np.abs(audio_data))
     if peak <= 0:
         return audio_data
@@ -234,6 +231,7 @@ class DaFeiYuSoVitsSinger:
 
     def _get_svc(self):
         if self.svc is None:
+            from inference.infer_tool import Svc
             print(f"[SO-VITS] 正在初始化回退歌声转换引擎 (音色: {self.voice}, spk: {self.spk})...")
             t0 = time.time()
             self.svc = Svc(
@@ -291,6 +289,10 @@ class DaFeiYuSoVitsSinger:
             return output_path
 
         # 3. 回退模式: SO-VITS-SVC 4.1
+        import numpy as np
+        import soundfile as sf
+        import librosa
+        import torch
         svc = self._get_svc()
 
         # 1. 读取音频并强制截断至 25.0 秒以内
@@ -487,6 +489,9 @@ def dynamic_sing_flow(song_query, voice=None):
         return fallback_cover
 
     # 4. 截取 16~18 秒精华片段（对齐换气低谷 + 预留 0.8s 伴奏前奏铺垫）
+    import numpy as np
+    import soundfile as sf
+    import librosa
     temp_clip_wav = os.path.join(CACHE_DIR, f"temp_{os.getpid()}_clip.wav")
     try:
         y, sr = librosa.load(downloaded_mp3, sr=44100, mono=True)
