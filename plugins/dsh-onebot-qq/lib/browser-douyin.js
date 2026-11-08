@@ -573,8 +573,8 @@ async function _browseFavoriteSite(options = {}) {
             }
         }
 
-        // 2. 提取页面上看到的有趣标题 / 美食 / 话题
-        const headlines = await page.evaluate(() => {
+        // 2. 提取页面上看到的有趣标题 / 美食 / 话题，并挑选一条最感兴趣的点进去沉浸式吃瓜
+        const pageExtract = await page.evaluate(() => {
             const selectors = [
                 '.bili-video-card__info--tit',
                 '.title',
@@ -586,6 +586,7 @@ async function _browseFavoriteSite(options = {}) {
             ];
             const seen = new Set();
             const list = [];
+            const links = [];
             for (const sel of selectors) {
                 for (const el of document.querySelectorAll(sel)) {
                     const raw = (el.getAttribute('title') || el.innerText || '').replace(/\s+/g, ' ').trim();
@@ -597,12 +598,50 @@ async function _browseFavoriteSite(options = {}) {
                     ) {
                         seen.add(raw);
                         list.push(raw);
-                        if (list.length >= 6) return list;
+                        const anchor = el.tagName === 'A' ? el : el.closest('a');
+                        const href = anchor?.href || '';
+                        if (href.startsWith('http') && !/(login|passport|signin|javascript:)/i.test(href)) {
+                            links.push({ title: raw, url: href });
+                        }
+                        if (list.length >= 6) break;
                     }
                 }
+                if (list.length >= 6) break;
             }
-            return list;
+            return { headlines: list, links };
         });
+        const headlines = pageExtract.headlines || [];
+        let deepSnippet = '';
+        let visitedTitle = headlines[0] || '';
+
+        // 2.5 若无需登录且找到了具体帖子/视频链接，随机挑前 3 条中的 1 条点进去沉浸式浏览详情
+        if (!needsLogin && Array.isArray(pageExtract.links) && pageExtract.links.length > 0) {
+            const topCandidates = pageExtract.links.slice(0, 3);
+            const picked = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+            if (picked?.url) {
+                try {
+                    visitedTitle = picked.title;
+                    await page.goto(picked.url, { waitUntil: 'domcontentloaded', timeout: 10_000 });
+                    await new Promise(r => setTimeout(r, 2000));
+                    deepSnippet = await page.evaluate(() => {
+                        const descSelectors = [
+                            '.desc-info-text', '.video-desc', '.RichContent-inner',
+                            'article', '.content', '.recipe-desc', 'meta[name="description"]',
+                            'p',
+                        ];
+                        for (const sel of descSelectors) {
+                            const el = document.querySelector(sel);
+                            if (!el) continue;
+                            const txt = (el.getAttribute?.('content') || el.innerText || '').replace(/\s+/g, ' ').trim();
+                            if (txt.length >= 15 && !/(扫码登录|请先登录|隐私政策|ICP备)/i.test(txt)) {
+                                return txt.slice(0, 140);
+                            }
+                        }
+                        return '';
+                    });
+                } catch {}
+            }
+        }
 
         // 3. 截取网页画面（如果是登录拦截，截图里刚好包含二维码/登录框）
         let screenshotBase64 = null;
@@ -620,6 +659,8 @@ async function _browseFavoriteSite(options = {}) {
             needsLogin,
             loginReason: loginCheck.reason,
             headlines,
+            visitedTitle,
+            deepSnippet,
             screenshotBase64,
         };
     } catch (err) {

@@ -145,7 +145,7 @@ export class InboundPipeline {
         const feiyu = this.ctx.feiyu?.();
         const activityText = textContent.trim() ? textContent : (inbound.text || '');
         const activityRes = feiyu
-            ? feiyu.notifyUserActivity(chatId, activityText, userId, inbound.nickname)
+            ? feiyu.notifyUserActivity(chatId, activityText, userId, inbound.nickname, inbound.messageId)
             : undefined;
         if (feiyu && inbound.messageId !== undefined && typeof feiyu.maybeReactEmojiToMessage === 'function') {
             void feiyu.maybeReactEmojiToMessage(inbound.messageId, activityText, isAdmin, kind);

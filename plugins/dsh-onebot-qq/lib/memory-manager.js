@@ -226,10 +226,11 @@ export class MemoryManager {
     _initSqliteDb() {
         try {
             mkdirSync(dirname(this.dbPath), { recursive: true });
-            this.db = new DatabaseSync(this.dbPath);
+            this.db = new DatabaseSync(this.dbPath, { timeout: 8000 });
+            try { this.db.exec('PRAGMA busy_timeout = 8000;'); } catch {}
+            try { this.db.exec('PRAGMA journal_mode = WAL;'); } catch {}
+            try { this.db.exec('PRAGMA synchronous = NORMAL;'); } catch {}
             this.db.exec(`
-                PRAGMA journal_mode = WAL;
-                PRAGMA synchronous = NORMAL;
 
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     user_id TEXT PRIMARY KEY,
@@ -326,6 +327,13 @@ export class MemoryManager {
         }
     }
 
+    close() {
+        if (this.db) {
+            try { this.db.close(); } catch {}
+            this.db = null;
+        }
+    }
+
     _syncStateWithSqliteOnBoot() {
         if (!this.db) return;
         // 清理非数字 QQ 号脏档案与全角空白昵称
@@ -380,46 +388,79 @@ export class MemoryManager {
             );
         }
 
-        // 3. 从 SQLite 反向读取合并回内存缓存，确保两边完全一致
+        // 3. 从 SQLite 反向读取合并回内存缓存（若 JSON 中某用户时间戳更新，则先将 JSON 最新记忆回写至 SQLite，防止回滚丢失）
+        const updateNewerJsonToDb = this.db.prepare(`
+            UPDATE user_profiles
+            SET nickname = ?, affection = ?, relationship_tag = ?, known_facts_json = ?,
+                rolling_summary = ?, important_memories_json = ?, normal_memories_json = ?,
+                last_interaction_time = ?, last_interaction_ts = ?
+            WHERE user_id = ?
+        `);
         const dbUsers = this.db.prepare('SELECT * FROM user_profiles').all();
         for (const row of dbUsers) {
             if (!/^\d{5,12}$/.test(String(row.user_id))) continue;
+            const jsonUser = this.state.users[row.user_id];
+            const jsonTs = Number(jsonUser?.last_interaction_ts || 0);
+            const dbTs = Number(row.last_interaction_ts || 0);
             let facts = [];
             let importantMems = [];
             let normalMems = [];
             try { facts = JSON.parse(row.known_facts_json || '[]'); } catch {}
             try { importantMems = JSON.parse(row.important_memories_json || '[]'); } catch {}
             try { normalMems = JSON.parse(row.normal_memories_json || '[]'); } catch {}
+
+            if (jsonUser && jsonTs > dbTs) {
+                if (Array.isArray(jsonUser.known_facts) && jsonUser.known_facts.length > 0) facts = jsonUser.known_facts;
+                if (Array.isArray(jsonUser.important_memories) && jsonUser.important_memories.length > 0) importantMems = jsonUser.important_memories;
+                if (Array.isArray(jsonUser.normal_memories) && jsonUser.normal_memories.length > 0) normalMems = jsonUser.normal_memories;
+            }
             if (importantMems.length === 0 && facts.length > 0) {
                 importantMems = facts.slice(0, USER_IMPORTANT_CAP);
             }
-            const rawNick = String(row.nickname || '').replace(/^[\s\u3000]+|[\s\u3000]+$/g, '');
+            const rawNick = String((jsonTs > dbTs && jsonUser?.nickname) ? jsonUser.nickname : (row.nickname || '')).replace(/^[\s\u3000]+|[\s\u3000]+$/g, '');
             const safeNick = (rawNick && rawNick.length <= 20 && !/(提醒我|分钟后|小时后)/.test(rawNick))
                 ? rawNick
                 : `群友_${String(row.user_id).slice(-4)}`;
-            if (safeNick !== row.nickname) {
+            const mergedAffection = jsonTs > dbTs && Number.isFinite(Number(jsonUser?.affection)) ? Number(jsonUser.affection) : row.affection;
+            const mergedRelTag = (jsonTs > dbTs && jsonUser?.relationship_tag) ? jsonUser.relationship_tag : row.relationship_tag;
+            const mergedSummary = (jsonTs > dbTs && jsonUser?.rolling_summary) ? jsonUser.rolling_summary : (row.rolling_summary || jsonUser?.rolling_summary || '');
+            const mergedTime = jsonTs > dbTs ? (jsonUser.last_interaction_time || row.last_interaction_time) : row.last_interaction_time;
+            const mergedTs = Math.max(jsonTs, dbTs);
+
+            if (jsonTs > dbTs || safeNick !== row.nickname) {
                 try {
-                    this.db.prepare('UPDATE user_profiles SET nickname = ? WHERE user_id = ?').run(safeNick, row.user_id);
+                    updateNewerJsonToDb.run(
+                        safeNick,
+                        mergedAffection,
+                        mergedRelTag,
+                        JSON.stringify(facts),
+                        mergedSummary,
+                        JSON.stringify(importantMems),
+                        JSON.stringify(normalMems),
+                        mergedTime,
+                        mergedTs,
+                        row.user_id,
+                    );
                 } catch {}
             }
-            const rawPet = row.pet_nickname || this.state.users[row.user_id]?.pet_nickname || '';
+            const rawPet = row.pet_nickname || jsonUser?.pet_nickname || '';
             const safePet = (rawPet && !this.isGenericCategoryNickname(rawPet))
                 ? rawPet
                 : (String(row.user_id) === this.masterQQ ? '老大' : this.derivePersonalNick(safeNick, row.user_id));
             this.state.users[row.user_id] = {
-                ...(this.state.users[row.user_id] || {}),
+                ...(jsonUser || {}),
                 user_id: row.user_id,
                 nickname: safeNick,
                 pet_nickname: safePet,
-                affection: row.affection,
-                relationship_tag: row.relationship_tag,
+                affection: mergedAffection,
+                relationship_tag: mergedRelTag,
                 known_facts: facts,
-                rolling_summary: row.rolling_summary || this.state.users[row.user_id]?.rolling_summary || '',
+                rolling_summary: mergedSummary,
                 important_memories: importantMems,
                 normal_memories: normalMems,
-                last_interaction_time: row.last_interaction_time,
-                last_interaction_ts: row.last_interaction_ts,
-                last_late_night_ts: row.last_late_night_ts,
+                last_interaction_time: mergedTime,
+                last_interaction_ts: mergedTs,
+                last_late_night_ts: Math.max(Number(jsonUser?.last_late_night_ts || 0), Number(row.last_late_night_ts || 0)),
             };
         }
 
@@ -1129,6 +1170,27 @@ export class MemoryManager {
             };
             this.save();
         } else if (isValidNick && !isMaster) {
+            const prevNick = String(this.state.users[uid].nickname || '').trim();
+            if (
+                prevNick &&
+                prevNick !== cleanNick &&
+                prevNick !== uid &&
+                !prevNick.startsWith('群友_') &&
+                ((this.state.users[uid].important_memories?.length || 0) > 0 || (this.state.users[uid].normal_memories?.length || 0) > 0 || Boolean(this.state.users[uid].rolling_summary))
+            ) {
+                const nowMs = this.now();
+                this.state.users[uid].pending_rename_hint = {
+                    oldName: prevNick,
+                    newName: cleanNick,
+                    ts: nowMs,
+                };
+                const normList = Array.isArray(this.state.users[uid].normal_memories) ? this.state.users[uid].normal_memories : [];
+                const renameFact = `曾用昵称「${prevNick}」，后改名为「${cleanNick}」`;
+                if (!normList.includes(renameFact)) {
+                    normList.unshift(renameFact);
+                    this.state.users[uid].normal_memories = normList.slice(0, 8);
+                }
+            }
             this.state.users[uid].nickname = cleanNick;
         }
         if (!Array.isArray(this.state.users[uid].important_memories)) {
@@ -1143,9 +1205,29 @@ export class MemoryManager {
     }
 
     touchUserInteraction(userId, nickname = '') {
+        const uid = String(userId || '').replace(/^(private|group):/i, '').trim();
+        const existingPrevTs = Number(this.state.users?.[uid]?.last_interaction_ts || 0);
         const profile = this.getUserProfile(userId, nickname);
         if (!profile) return null;
         const now = this.now();
+        // 跨天/长间隔“记挂追问”检测：若距上次冒泡超过 6 小时，且有值得记挂的近期事件，生成本轮一次性问候提示
+        if (existingPrevTs > 0 && (now - existingPrevTs) >= 6 * 3600_000) {
+            const gapHours = Math.round(((now - existingPrevTs) / 3600_000) * 10) / 10;
+            const candidates = [
+                ...(profile.normal_memories || []),
+                ...(profile.important_memories || []),
+            ].filter(m => m && !/^(大肥鱼的首席饲主|拥有电脑最高控制权限|投喂过本鱼吃|曾用昵称)/.test(String(m)));
+            const followupTopic = candidates.find(m => /(问题|找不到|报错|bug|熬夜|生病|感冒|头疼|考试|面试|上班|加班|折腾|设置|账户|密码|渲染|建模|游戏|深渊|抽卡)/i.test(m))
+                || candidates[0]
+                || '';
+            if (followupTopic) {
+                profile.pending_followup_hint = {
+                    gapHours,
+                    topic: String(followupTopic).slice(0, 70),
+                    ts: now,
+                };
+            }
+        }
         profile.last_interaction_time = new Date(now).toISOString();
         profile.last_interaction_ts = now;
         const hour = new Date(now).getHours();
@@ -1155,6 +1237,16 @@ export class MemoryManager {
         }
         this.save();
         return profile;
+    }
+
+    clearPendingUserTurnHints(userId) {
+        const uid = String(userId || '').replace(/^(private|group):/i, '').trim();
+        const u = this.state.users?.[uid];
+        if (!u) return;
+        if (u.pending_rename_hint || u.pending_followup_hint) {
+            delete u.pending_rename_hint;
+            delete u.pending_followup_hint;
+        }
     }
 
     updateAffection(userId, delta = 0, fallbackNickname = '') {
@@ -1859,6 +1951,13 @@ export class MemoryManager {
         const summaryLine = profile.rolling_summary
             ? `- 近期浓缩印象 (rolling_summary): ${profile.rolling_summary}`
             : '';
+        const nowMs = this.now();
+        const renameHint = profile.pending_rename_hint && (nowMs - (profile.pending_rename_hint.ts || 0)) < 30_000
+            ? `🕵️‍♀️【熟人改名换马甲察觉彩蛋】：你敏锐发现这位熟人刚刚把昵称从「${profile.pending_rename_hint.oldName}」改成了「${profile.pending_rename_hint.newName}」！请在回应正事的同时，顺嘴傲娇调侃半句ta换名字/换马甲的事（如“哟，${profile.pending_rename_hint.oldName}你咋突然改名叫${profile.pending_rename_hint.newName}啦，以为换个马甲本鱼就不认识你了吗”），本轮调侃一次即可！`
+            : '';
+        const followupHint = profile.pending_followup_hint && (nowMs - (profile.pending_followup_hint.ts || 0)) < 30_000
+            ? `🌙【跨天/久别记挂追问提示】：这是对方时隔 ${profile.pending_followup_hint.gapHours} 小时后第一次冒泡！你脑海里记挂着上次跟ta有关的事：「${profile.pending_followup_hint.topic}」。如果当前对方只是日常打招呼或闲聊，你可以顺嘴傲娇关心/追问半句那件事后续怎么样了；如果对方正在问十万火急的新正事，则优先回答新正事！`
+            : '';
         return [
             `【当前对话目标 QQ 用户专属档案 (Per-User Isolated Memory)】`,
             `- 用户 QQ: ${profile.user_id}`,
@@ -1868,6 +1967,8 @@ export class MemoryManager {
             ...(summaryLine ? [summaryLine] : []),
             `- 🔴 重要记忆 (Important, 永久核心事实):\n${impLines}`,
             ...(normLines ? [`- 🔵 一般记忆 (Normal, 近期日常互动):\n${normLines}`] : []),
+            ...(renameHint ? [renameHint] : []),
+            ...(followupHint ? [followupHint] : []),
         ].join('\n');
     }
 

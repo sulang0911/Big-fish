@@ -170,14 +170,20 @@ export function formatTextAndParamsForTts(rawText, toneHint = '', driveState = n
     };
 }
 
-/** 基础英文枚举别名转中文真实心情词（绝不强行绑定无关现有图，未命中本地库时自动去抖音抓取新表情包填补空缺） */
+/** 基础英文与中文心情同义词映射表（优先毫秒级命中本地 80+ 张已审核单图，未命中时后台异步去抖音扩充图库，绝不阻塞当前对话 4 分钟） */
 const MEME_TAG_KEYWORDS = {
-    happy: ['开心'],
-    sleepy: ['困'],
-    angry: ['生气'],
-    begging_food: ['讨食', '馋', '饿'],
-    fish_slap: ['尾巴拍', '巴掌'],
+    happy: ['开心', '高兴', '好耶', '比心', '卖萌', '可爱', '贴贴', '爱你', '喜欢'],
+    sleepy: ['困', '睡觉', '晚安', '哈欠', '摸鱼', '躺平', '累'],
+    angry: ['生气', '怒', '炸毛', '记仇', '哼', '讨厌', '不理'],
+    tsundere: ['傲娇', '得意', '叉腰', '略略略', '哼', '嘴硬'],
+    begging_food: ['讨食', '馋', '饿', '干饭', '白饭', '米饭', '五花肉', '好吃', '流口水'],
+    fish_slap: ['尾巴拍', '巴掌', '打你', '抽你', '揍'],
+    speechless: ['无语', '嫌弃', '汗', '翻白眼', '鄙视', '盯'],
+    sad: ['委屈', '哭', '流泪', '可怜', '害怕', '求饶', '呜呜'],
+    curious: ['疑惑', '问号', '震惊', '发呆', '暗中观察', '吃瓜', '偷看'],
 };
+
+const backgroundMemeCrawlSet = new Set();
 
 /**
  * 构建静态前缀缓存 Prompt（置于 System Prompt 最前端，命中 DeepSeek KV Cache）
@@ -650,7 +656,15 @@ export async function selectLocalMemeBase64(memeTag = 'happy', memeDir = MEME_DI
         }
 
         const tagKey = String(memeTag || 'happy').toLowerCase().trim();
-        const keywords = MEME_TAG_KEYWORDS[tagKey] || [tagKey];
+        let keywords = MEME_TAG_KEYWORDS[tagKey] || [tagKey];
+        if (!MEME_TAG_KEYWORDS[tagKey]) {
+            for (const synList of Object.values(MEME_TAG_KEYWORDS)) {
+                if (synList.some(kw => tagKey.includes(kw) || kw.includes(tagKey))) {
+                    keywords = [...new Set([tagKey, ...synList])];
+                    break;
+                }
+            }
+        }
         const matched = imgFiles.filter(f => {
             const lower = f.toLowerCase();
             if (keywords.some(kw => lower.includes(kw))) return true;
@@ -661,26 +675,34 @@ export async function selectLocalMemeBase64(memeTag = 'happy', memeDir = MEME_DI
             return false;
         });
 
-        // 1. 本地已有匹配该心情的表情包：直接返回
+        // 1. 本地已有匹配该心情的表情包：毫秒级直接返回
         if (matched.length > 0) {
             const chosen = matched[Math.floor(Math.random() * matched.length)];
             const buf = await fs.promises.readFile(path.join(memeDir, chosen));
             return { base64: buf.toString('base64'), file: chosen, fromDouyin: false };
         }
 
-        // 2. 本地没有该新心情：自动前往抖音搜索爬取「大肥鱼 <新心情> 表情包」入库填补空缺！
+        // 2. 本地尚无该细分新心情：
+        // 若本地图库为空（或显式要求同步等待），则同步抓取；否则转为【后台异步静默抓取入库】，当前回合立即返回本地精品图，彻底杜绝聊完天 4 分钟后才突然蹦出一张滞后表情包！
         if (options.allowDouyinCrawl !== false) {
             const crawlMood = keywords[0] || tagKey;
-            try {
-                const crawlRes = await searchDouyinMeme(crawlMood);
-                if (crawlRes && crawlRes.base64) {
-                    return {
-                        base64: crawlRes.base64,
-                        file: crawlRes.filename,
-                        fromDouyin: crawlRes.source === 'douyin_real_verified',
-                    };
-                }
-            } catch {}
+            if (imgFiles.length === 0 || options.syncDouyinCrawl === true) {
+                try {
+                    const crawlRes = await searchDouyinMeme(crawlMood);
+                    if (crawlRes && crawlRes.base64) {
+                        return {
+                            base64: crawlRes.base64,
+                            file: crawlRes.filename,
+                            fromDouyin: crawlRes.source === 'douyin_real_verified',
+                        };
+                    }
+                } catch {}
+            } else if (!backgroundMemeCrawlSet.has(crawlMood) && backgroundMemeCrawlSet.size < 2) {
+                backgroundMemeCrawlSet.add(crawlMood);
+                void searchDouyinMeme(crawlMood)
+                    .catch(() => {})
+                    .finally(() => backgroundMemeCrawlSet.delete(crawlMood));
+            }
         }
 
         // 3. 仅当抖音抓取超时或离线单测禁用抓取时，才用现有图片兜底防崩
@@ -920,15 +942,21 @@ export class MessageDispatcher {
         let autoGroupQuote = false;
         if (String(chatId).startsWith('group:') && options.replyToMessageId !== undefined && this.memoryManager?.getWorkingMemory) {
             const nowTs = Date.now();
-            const recentGroupUsers = new Set(
-                this.memoryManager.getWorkingMemory(chatId, 8)
-                    .filter(m => m.role === 'user' && m.userId && (nowTs - (m.ts || nowTs)) < 45_000)
-                    .map(m => String(m.userId))
+            const wmList = this.memoryManager.getWorkingMemory(chatId, 8);
+            const recentUserMsgs = wmList.filter(m => m.role === 'user' && m.userId && (nowTs - (m.ts || nowTs)) < 60_000);
+            const recentGroupUsers = new Set(recentUserMsgs.map(m => String(m.userId)));
+            const lastUserMsg = recentUserMsgs[recentUserMsgs.length - 1];
+            const isReplyingToOlderMsg = Boolean(
+                lastUserMsg &&
+                ((lastUserMsg.messageId && String(lastUserMsg.messageId) !== String(options.replyToMessageId)) ||
+                    (lastUserMsg.userId && String(lastUserMsg.userId) !== String(userId)))
             );
-            autoGroupQuote = recentGroupUsers.size >= 2;
+            autoGroupQuote = recentGroupUsers.size >= 2 || isReplyingToOlderMsg;
         }
         const useQuote = (action.qq_action?.type === 'quote_reply' || autoGroupQuote) && options.replyToMessageId !== undefined;
+        let quoteApplied = false;
         const toneHint = action.qq_action?.voice_tone || action.qq_action?.meme_tag || '';
+        this.memoryManager?.clearPendingUserTurnHints?.(userId);
 
         // 决定本轮是否使用语音条回答（支持显式指定 send_voice / voice_only，或按概率把其中一条气泡转成真实语音条）
         const explicitVoice = decision === 'voice_only'
@@ -1018,7 +1046,7 @@ export class MessageDispatcher {
                 }
             }
 
-            const sendOpts = (i === 0 && useQuote) ? { replyTo: options.replyToMessageId } : {};
+            const sendOpts = (!quoteApplied && useQuote) ? (quoteApplied = true, { replyTo: options.replyToMessageId }) : {};
             const ids = await this.sendTextBubble(chatId, bubble, sendOpts);
             if (Array.isArray(ids)) {
                 sentIds.push(...ids);
@@ -1031,22 +1059,22 @@ export class MessageDispatcher {
                     role: 'assistant',
                     userId: 'self',
                     nickname: '大肥鱼',
-                    text: bubble,
+                    text: typoFixBubble
+                        ? `${bubble} （本鱼手滑打错字，已立即秒纠正：“${typoFixBubble}”）`
+                        : bubble,
                 });
             }
 
-            // 若本条气泡触发了手滑错别字，间隔约 1 秒立即追发一条纠正气泡
-            if (typoFixBubble && !isAborted()) {
-                await this.sleep(950);
-                if (!isAborted()) {
-                    const fixIds = await this.sendTextBubble(chatId, typoFixBubble, {});
-                    if (Array.isArray(fixIds)) {
-                        sentIds.push(...fixIds);
-                    } else if (fixIds !== undefined) {
-                        sentIds.push(fixIds);
-                    }
-                    this.log('info', `[FeiyuDispatcher] 触发拟人手滑错别字秒纠正: "${typoFixBubble}"`);
+            // 若本条气泡触发了手滑错别字，间隔约 650ms 立即追发一条纠正气泡（即使期间有新消息也把纠正发完，防止留下一句未纠正的“笨鱼”被群友截图笑话）
+            if (typoFixBubble) {
+                await this.sleep(650);
+                const fixIds = await this.sendTextBubble(chatId, typoFixBubble, {});
+                if (Array.isArray(fixIds)) {
+                    sentIds.push(...fixIds);
+                } else if (fixIds !== undefined) {
+                    sentIds.push(fixIds);
                 }
+                this.log('info', `[FeiyuDispatcher] 触发拟人手滑错别字秒纠正: "${typoFixBubble}"`);
             }
         }
 
