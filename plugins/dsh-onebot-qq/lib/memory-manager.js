@@ -336,12 +336,48 @@ export class MemoryManager {
 
     _syncStateWithSqliteOnBoot() {
         if (!this.db) return;
-        // 清理非数字 QQ 号脏档案与全角空白昵称
+        const DIRTY_MEM_REGEX = /(投喂过本鱼.*(?:米饭了就应该|米饭了不是|不完的米饭|两格漫画里)|配好就好了|开黄腔说“|性骚扰说“|上次内设|内射|内设你)/i;
+        // 清理非数字 QQ 号脏档案与历史污染记忆（在进程自身启动时清洗内存与 SQLite，防止内存回写复发）
         try {
             this.db.prepare("DELETE FROM user_profiles WHERE user_id NOT GLOB '[0-9]*'").run();
+            for (const row of this.db.prepare('SELECT id, content FROM user_memories').all()) {
+                if (DIRTY_MEM_REGEX.test(String(row.content || ''))) {
+                    this.db.prepare('DELETE FROM user_memories WHERE id = ?').run(row.id);
+                }
+            }
+            for (const row of this.db.prepare('SELECT group_id, lore_json FROM group_lore').all()) {
+                let loreArr = [];
+                try { loreArr = JSON.parse(row.lore_json || '[]'); } catch {}
+                if (Array.isArray(loreArr)) {
+                    const filtered = loreArr.filter(item => !DIRTY_MEM_REGEX.test(String(item || '')));
+                    if (filtered.length !== loreArr.length) {
+                        this.db.prepare('UPDATE group_lore SET lore_json = ? WHERE group_id = ?').run(JSON.stringify(filtered), row.group_id);
+                    }
+                }
+            }
+            for (const row of this.db.prepare("SELECT id, content FROM raw_interaction_logs WHERE role = 'assistant'").all()) {
+                if (/(上次内设|内射)/i.test(String(row.content || ''))) {
+                    this.db.prepare('UPDATE raw_interaction_logs SET content = ? WHERE id = ?').run(
+                        String(row.content).replace(/(?:上次内设|内射)/g, '上次口出狂言'),
+                        row.id
+                    );
+                }
+            }
         } catch {}
         for (const k of Object.keys(this.state.users || {})) {
-            if (!/^\d{5,12}$/.test(k)) delete this.state.users[k];
+            if (!/^\d{5,12}$/.test(k)) {
+                delete this.state.users[k];
+                continue;
+            }
+            const u = this.state.users[k];
+            if (u && typeof u === 'object') {
+                if (Array.isArray(u.known_facts)) u.known_facts = u.known_facts.filter(m => !DIRTY_MEM_REGEX.test(String(m)));
+                if (Array.isArray(u.important_memories)) u.important_memories = u.important_memories.filter(m => !DIRTY_MEM_REGEX.test(String(m)));
+                if (Array.isArray(u.normal_memories)) u.normal_memories = u.normal_memories.filter(m => !DIRTY_MEM_REGEX.test(String(m)));
+                if (u.pending_followup_hint && DIRTY_MEM_REGEX.test(String(u.pending_followup_hint.topic || ''))) {
+                    delete u.pending_followup_hint;
+                }
+            }
         }
         // 1. 将 JSON 中已有的 users 写入 SQLite (INSERT OR IGNORE)
         const insertUser = this.db.prepare(`
@@ -414,6 +450,10 @@ export class MemoryManager {
                 if (Array.isArray(jsonUser.important_memories) && jsonUser.important_memories.length > 0) importantMems = jsonUser.important_memories;
                 if (Array.isArray(jsonUser.normal_memories) && jsonUser.normal_memories.length > 0) normalMems = jsonUser.normal_memories;
             }
+            const hadDirtyInDb = [...facts, ...importantMems, ...normalMems].some(m => DIRTY_MEM_REGEX.test(String(m)));
+            facts = facts.filter(m => !DIRTY_MEM_REGEX.test(String(m)));
+            importantMems = importantMems.filter(m => !DIRTY_MEM_REGEX.test(String(m)));
+            normalMems = normalMems.filter(m => !DIRTY_MEM_REGEX.test(String(m)));
             if (importantMems.length === 0 && facts.length > 0) {
                 importantMems = facts.slice(0, USER_IMPORTANT_CAP);
             }
@@ -427,7 +467,7 @@ export class MemoryManager {
             const mergedTime = jsonTs > dbTs ? (jsonUser.last_interaction_time || row.last_interaction_time) : row.last_interaction_time;
             const mergedTs = Math.max(jsonTs, dbTs);
 
-            if (jsonTs > dbTs || safeNick !== row.nickname) {
+            if (jsonTs > dbTs || safeNick !== row.nickname || hadDirtyInDb) {
                 try {
                     updateNewerJsonToDb.run(
                         safeNick,
@@ -500,6 +540,7 @@ export class MemoryManager {
             while (list.length > WORKING_MEMORY_CAP) list.shift();
             this.working.set(r.chat_id, list);
         }
+        this.save();
     }
 
     _loadJsonFallback() {
@@ -1216,7 +1257,7 @@ export class MemoryManager {
             const candidates = [
                 ...(profile.normal_memories || []),
                 ...(profile.important_memories || []),
-            ].filter(m => m && !/^(大肥鱼的首席饲主|拥有电脑最高控制权限|投喂过本鱼吃|曾用昵称)/.test(String(m)));
+            ].filter(m => m && !/^(大肥鱼的首席饲主|拥有电脑最高控制权限|投喂过本鱼吃|曾用昵称)|(?:开黄腔|口出低俗狂言|痛骂|下头|生小鱼|生小鲸鱼|欺负|记入小本本|记仇|死鱼|笨鱼|骚鱼)/i.test(String(m)));
             const followupTopic = candidates.find(m => /(问题|找不到|报错|bug|熬夜|生病|感冒|头疼|考试|面试|上班|加班|折腾|设置|账户|密码|渲染|建模|游戏|深渊|抽卡)/i.test(m))
                 || candidates[0]
                 || '';

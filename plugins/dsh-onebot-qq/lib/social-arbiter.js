@@ -599,18 +599,18 @@ export class SocialArbiter {
                     this.lastGroupBullyMap.set(chatId, {
                         userId: resolvedUserId || 'unknown',
                         nickname: nickname || resolvedUserId,
-                        text: cleanGrpText.slice(0, 32),
+                        text: '口出低俗狂言惹本鱼生气',
                         ts: nowMs,
                     });
                     this.memoryManager.addGroupLore?.(
                         chatId,
-                        `群友 ${nickname || resolvedUserId} 曾对本鱼开黄腔/性骚扰说“${cleanGrpText.slice(0, 24)}”，已被本鱼痛骂回击并打入下头黑名单`
+                        `群友 ${nickname || resolvedUserId} 曾对本鱼口出低俗狂言，已被本鱼痛骂回击并记入黑名单`
                     );
                 }
                 if (resolvedUserId && resolvedUserId !== this.masterQQ) {
                     this.memoryManager.applyAffectionDelta?.(resolvedUserId, -5, nickname);
                     this.memoryManager.addUserMemory?.(resolvedUserId, {
-                        content: `曾对本鱼开黄腔说“${cleanGrpText.slice(0, 24)}”，被本鱼痛骂回击`,
+                        content: `曾对本鱼口出低俗狂言，被本鱼痛骂回击`,
                         importance: 8,
                         tier: 'important',
                         chatId,
@@ -1452,6 +1452,7 @@ export class SocialArbiter {
             return { triggered: false, reason: 'already_surfing' };
         }
         this.isSelfSurfing = true;
+        const startEpoch = this.masterActivityEpoch;
         const targetChatId = opts.chatId || this.masterChatId;
         const runner = opts.surfRunner || browseFavoriteSite;
 
@@ -1508,8 +1509,11 @@ export class SocialArbiter {
             this.driveEngine.save();
             this.memoryManager.recordDailyEvent(`大肥鱼自己打开浏览器逛了【${res.siteName}】，看了 ${focusTitle || topicText}`, targetChatId, this.masterQQ);
 
-            // 方案 1：摒弃死板系统报告，改用拟人多气泡吐槽 + 真实网页截图分享（若处于防打扰静默冲浪模式则仅记入脑海与日记）
-            if (!opts.silentShare) {
+            // 方案 1：摒弃死板系统报告，改用拟人多气泡吐槽 + 真实网页截图分享（若处于防打扰静默冲浪模式或期间老大发来了新消息则仅记入脑海与日记）
+            const preemptedByMaster = opts.reason !== 'manual_command'
+                && opts.reason !== 'boss_told_to_play'
+                && this.masterActivityEpoch !== startEpoch;
+            if (!opts.silentShare && !preemptedByMaster) {
                 const surfPrompt = [
                     `【系统内部事件：self_surf_share（大肥鱼自主上网冲浪吃瓜后向老大/群友吐槽分享）】`,
                     `你刚刚因为${opts.reason === 'boss_unanswered' ? '找老大玩老大没空理你' : opts.reason === 'hourly_unattended' ? '一个多小时没人陪你说话太无聊' : '想自己找点乐子'}，自己打开浏览器去逛了【${res.siteName}】（${res.category}）。`,
@@ -1629,6 +1633,7 @@ export class SocialArbiter {
      * 方案 2：自主灵魂画手 / 涂鸦自拍（闲极无聊自己画张画写进日记或发给老大炫耀）
      */
     async triggerSelfDoodle(opts = {}) {
+        const startEpoch = this.masterActivityEpoch;
         const targetChatId = opts.chatId || this.masterChatId;
         const st = this.driveEngine.getState();
         const doodleScenes = [
@@ -1676,7 +1681,8 @@ export class SocialArbiter {
         this.driveEngine.save();
         this.memoryManager.recordDailyEvent(`大肥鱼自己画了一张涂鸦：「${picked.desc}」`, targetChatId, this.masterQQ);
 
-        if (imgBase64 && !opts.silentShare && this.bridge.sendSegments) {
+        const preemptedByMaster = opts.reason !== 'manual_command' && this.masterActivityEpoch !== startEpoch;
+        if (imgBase64 && !opts.silentShare && !preemptedByMaster && this.bridge.sendSegments) {
             await this.dispatcher.sendTextBubble(targetChatId, `哼哼，看你们半天不理本鱼，本鱼自己画了张「${picked.desc}」的大作，快夸本鱼是艺术鲸`, {});
             await this.bridge.sendSegments(targetChatId, [
                 { type: 'image', data: { file: `base64://${imgBase64}` } },
