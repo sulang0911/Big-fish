@@ -137,8 +137,8 @@ class DaFeiYuSinger:
             p.t_max = 16000 * 35
         print(f"[RVC] 模型加载成功，耗时 {time.time()-t0:.2f}s，目标采样率: {self.rvc.vc.tgt_sr}Hz")
 
-    def convert_vocal(self, input_vocal, output_vocal, f0_up_key=0, f0_method="pm", index_rate=0.85):
-        """调用 RVC 转换人声音色 (最高限制 25~30 秒)"""
+    def convert_vocal(self, input_vocal, output_vocal, f0_up_key=0, f0_method="rmvpe", index_rate=0.75):
+        """调用 RVC 转换人声音色 (最高限制 18~24 秒)"""
         v_data, v_sr = sf.read(input_vocal)
         v_duration = len(v_data) / v_sr
         temp_input_trimmed = None
@@ -151,17 +151,21 @@ class DaFeiYuSinger:
         else:
             actual_input = input_vocal
 
+        # 保护咬字与特征检索率：无 index 特征文件时自动设为 0.0，避免空索引造成音色杂乱和吐字含糊
+        has_index = bool(self.index_path and os.path.exists(self.index_path))
+        actual_index_rate = index_rate if has_index else 0.0
+
         print(f"[RVC] 正在转换人声: {actual_input}")
-        print(f"      参数: 变调={f0_up_key}半音, 算法={f0_method}, 检索特征比={index_rate}")
+        print(f"      参数: 变调={f0_up_key}半音, 算法={f0_method}, 检索特征比={actual_index_rate:.2f}, 清音咬字保护=0.50")
         t0 = time.time()
         
         self.rvc.set_params(
             f0method=f0_method,
             f0up_key=f0_up_key,
-            index_rate=index_rate,
+            index_rate=actual_index_rate,
             filter_radius=3,
             rms_mix_rate=1.0,
-            protect=0.33
+            protect=0.50
         )
         
         self.rvc.infer_file(actual_input, output_vocal)
@@ -233,7 +237,7 @@ class DaFeiYuSinger:
         print(f"[MIX] 混音生成成功 -> {output_path} (时长: {duration:.1f}s, 采样率: {target_sr}Hz)")
         return output_path
 
-    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=None, f0_method="pm", index_rate=0.85, with_bgm=False):
+    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=None, f0_method="rmvpe", index_rate=0.75, with_bgm=False):
         """完整歌曲处理流程：智能检测原唱音高 -> 转换人声 -> 纯清唱输出（默认去掉背景音乐）"""
         if output_path is None:
             output_path = os.path.splitext(vocal_path)[0] + "_dafeiyu.wav"
@@ -401,8 +405,8 @@ def main():
     parser.add_argument("--output", type=str, default=None, help="输出最终音频路径")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="RVC 模型权重路径")
     parser.add_argument("--key", type=int, default=None, help="升降调半音数 (默认自动检测原唱男/女声)")
-    parser.add_argument("--method", type=str, default="pm", choices=["pm", "harvest", "crepe", "rmvpe"], help="音高提取算法 (默认 pm 毫秒级极速)")
-    parser.add_argument("--index_rate", type=float, default=0.85, help="检索特征比 (默认 0.85)")
+    parser.add_argument("--method", type=str, default="rmvpe", choices=["rmvpe", "pm", "harvest", "crepe"], help="音高提取算法 (默认 rmvpe，锁死高音、保留清晰辅音咬字)")
+    parser.add_argument("--index_rate", type=float, default=0.75, help="检索特征比 (默认 0.75)")
     parser.add_argument("--with-bgm", action="store_true", default=False, help="是否混入伴奏 (默认 False，全量纯清唱模式)")
     args = parser.parse_args()
 

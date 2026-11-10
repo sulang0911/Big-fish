@@ -189,24 +189,62 @@ def get_active_voice_key():
     return "dafeiyu"
 
 
-def detect_key_offset(y, sr):
-    """根据输入人声的中位数基频，自适应判断升降调（男声+12，女声0）"""
+def detect_key_offset(y, sr, artist_name=""):
+    """
+    自适应智能变调（男歌女唱黄金调性适配）：
+    - 女声原唱 (如王心凌、田馥甄、梁静茹、邓紫棋): 保持原调 (0半音)
+    - 男高音/极高音男声 (如林俊杰、周杰伦、张杰、华晨宇):
+      专业女调翻唱升 5 半音 (+5st，纯四度女调)！
+      原因：林俊杰副歌已在 Eb4~G4 (311~392Hz)，若死板升 12st 会飙到 800Hz+ 超高频引起破音和漏音；
+      升 5st 则正好落入可莉/神子/芙宁娜最甜美清亮、咬字最清晰的黄金女高音区 (C5/D5 520Hz 附近)！
+    - 普通/低沉男声 (如陈奕迅、薛之谦、李荣浩、毛不易):
+      升 12 半音 (+12st，标准整八度女调)
+    """
     import numpy as np
     import librosa
+
+    # 1. 歌手元数据先验
+    HIGH_TENOR_ARTISTS = ["林俊杰", "周杰伦", "张杰", "华晨宇", "周深", "汪苏泷", "陶喆", "王力宏", "信乐团", "苏打绿", "吴青峰"]
+    FEMALE_ARTISTS = ["王心凌", "田馥甄", "梁静茹", "邓紫棋", "孙燕姿", "蔡依林", "张韶涵", "莫文蔚", "刘若英", "郁可唯", "单依纯", "张碧晨", "庄心妍", "容祖儿", "杨千嬅", "a-lin", "黄丽玲", "徐佳莹", "王菲", "那英", "韩红", "张靓颖"]
+    NORMAL_MALE_ARTISTS = ["陈奕迅", "薛之谦", "李荣浩", "毛不易", "许嵩", "刀郎", "伍佰", "beyond", "黄家驹", "朴树", "许巍", "赵雷", "宋冬野", "周传雄", "林宥嘉", "萧敬腾"]
+
+    art_lower = str(artist_name).lower()
+    for a in HIGH_TENOR_ARTISTS:
+        if a in art_lower:
+            print(f"[KeyAuto] 命中男高音歌手【{a}】-> 升5半音 (黄金纯四度女调，保护高音不破不漏)")
+            return 5
+    for a in FEMALE_ARTISTS:
+        if a in art_lower:
+            print(f"[KeyAuto] 命中女歌手【{a}】-> 保持原调 (0半音)")
+            return 0
+    for a in NORMAL_MALE_ARTISTS:
+        if a in art_lower:
+            print(f"[KeyAuto] 命中男中低音歌手【{a}】-> 升12半音 (整八度女调)")
+            return 12
+
+    # 2. 声学基频分析
     try:
         f0 = librosa.yin(y, fmin=65, fmax=500, sr=sr)
         valid_f0 = f0[(f0 > 65) & (f0 < 450)]
         if len(valid_f0) > 0:
             median_f0 = float(np.median(valid_f0))
-            if median_f0 < 220.0:
-                print(f"[KeyAuto] 检测到原唱为男声 (中位基频 {median_f0:.1f}Hz) -> 升12半音")
-                return 12
+            p25_f0 = float(np.percentile(valid_f0, 25))
+            if p25_f0 >= 220.0 or median_f0 >= 280.0:
+                if p25_f0 < 200.0:
+                    print(f"[KeyAuto] 声学分析为男高音 (低音 {p25_f0:.1f}Hz, 中位 {median_f0:.1f}Hz) -> 升5半音")
+                    return 5
+                else:
+                    print(f"[KeyAuto] 声学分析为女声原调 (中位基频 {median_f0:.1f}Hz) -> 保持原调 (0半音)")
+                    return 0
+            elif median_f0 >= 200.0:
+                print(f"[KeyAuto] 声学分析为男高音/高音歌曲 (中位基频 {median_f0:.1f}Hz) -> 升5半音")
+                return 5
             else:
-                print(f"[KeyAuto] 检测到原唱为女声/童声 (中位基频 {median_f0:.1f}Hz) -> 保持原调 (0半音)")
-                return 0
+                print(f"[KeyAuto] 声学分析为普通/低沉男声 (中位基频 {median_f0:.1f}Hz) -> 升12半音")
+                return 12
     except Exception as e:
-        print(f"[KeyAuto] 音高分析异常 ({e}) -> 默认升12半音")
-    return 12
+        print(f"[KeyAuto] 音高分析异常 ({e}) -> 默认升5半音")
+    return 5
 
 
 def normalize_vocal(audio_data, target_peak_db=-1.0):
@@ -256,7 +294,7 @@ class DaFeiYuSoVitsSinger:
             print(f"[SO-VITS] 模型加载完成，耗时 {time.time() - t0:.2f}s, 目标采样率: {self.svc.target_sample}Hz")
         return self.svc
 
-    def convert(self, vocal_path, output_path, inst_path=None, key_offset="auto", cluster_ratio=None, f0_predictor="fcpe"):
+    def convert(self, vocal_path, output_path, inst_path=None, key_offset="auto", cluster_ratio=None, f0_predictor="fcpe", artist_name=""):
         """将干声转换为当前音色清唱或混音音频 (有专属 RVC 模型的音色走 RVC，其余走 SO-VITS-SVC 4.1)"""
         if not os.path.exists(vocal_path):
             raise FileNotFoundError(f"输入音频不存在: {vocal_path}")
@@ -268,9 +306,9 @@ class DaFeiYuSoVitsSinger:
                 try:
                     import librosa
                     y_check, sr_check = librosa.load(vocal_path, sr=22050, duration=6.0, mono=True)
-                    actual_key = detect_key_offset(y_check, sr_check)
+                    actual_key = detect_key_offset(y_check, sr_check, artist_name=artist_name)
                 except Exception:
-                    actual_key = 12
+                    actual_key = 5
             print(f"[RVC Engine] 启动专属 RVC 歌声转换与混音 (音色: {self.voice}, 变调: {actual_key:+d}st, 伴奏混音: {bool(inst_path)})...")
             cmd = [
                 sys.executable,
@@ -279,11 +317,11 @@ class DaFeiYuSoVitsSinger:
                 "--output", output_path,
                 "--model", self.model_path,
                 "--key", str(int(actual_key)),
-                "--method", "pm",
+                "--method", "rmvpe",
             ]
             if inst_path and os.path.exists(inst_path):
                 cmd.extend(["--bgm", inst_path, "--with-bgm"])
-            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
             if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                 print(f"[RVC SUCCESS] 专属 RVC 翻唱已生成: {output_path}")
                 return output_path
@@ -387,19 +425,38 @@ def dynamic_sing_flow(song_query, voice=None):
     query_clean = re.sub(r'^(?:给我|帮我)?(?:唱一?首|来一?[首个]|点一?首|我想听|听一?首)\s*', '', query_clean)
     query_clean = re.sub(r'\s*(?:的歌曲?|代表作|成名曲|名曲|好听的歌)$', '', query_clean).strip()
 
-    # 歌手泛指点歌 -> 映射为该歌手最经典的代表作候选列表
+    # 歌手或曲目泛指点歌 -> 映射为原唱官方版本的精准检索词
     ARTIST_REPRESENTATIVE_SONGS = {
-        "林俊杰": ["修炼爱情 林俊杰", "江南 林俊杰", "美人鱼 林俊杰", "小酒窝 林俊杰", "曹操 林俊杰"],
-        "jj": ["修炼爱情 林俊杰", "江南 林俊杰", "小酒窝 林俊杰"],
-        "周杰伦": ["晴天", "青花瓷"],
-        "jay": ["晴天", "青花瓷"],
-        "邓紫棋": ["泡沫 邓紫棋", "光年之外 邓紫棋", "多远都要在一起 邓紫棋"],
+        "林俊杰": ["曹操 林俊杰", "江南 林俊杰", "修炼爱情 林俊杰", "美人鱼 林俊杰", "小酒窝 林俊杰"],
+        "jj": ["曹操 林俊杰", "江南 林俊杰", "修炼爱情 林俊杰", "小酒窝 林俊杰"],
+        "曹操": ["曹操 林俊杰"],
+        "江南": ["江南 林俊杰"],
+        "修炼爱情": ["修炼爱情 林俊杰"],
+        "美人鱼": ["美人鱼 林俊杰"],
+        "小酒窝": ["小酒窝 林俊杰"],
+        "周杰伦": ["青花瓷 周杰伦", "晴天 周杰伦", "稻香 周杰伦", "告白气球 周杰伦"],
+        "jay": ["青花瓷 周杰伦", "晴天 周杰伦"],
+        "晴天": ["晴天 周杰伦"],
+        "青花瓷": ["青花瓷 周杰伦"],
+        "稻香": ["稻香 周杰伦"],
+        "告白气球": ["告白气球 周杰伦"],
         "陈奕迅": ["十年 陈奕迅", "孤勇者 陈奕迅", "富士山下 陈奕迅"],
+        "十年": ["十年 陈奕迅"],
+        "孤勇者": ["孤勇者 陈奕迅"],
+        "富士山下": ["富士山下 陈奕迅"],
         "薛之谦": ["演员 薛之谦", "丑八怪 薛之谦"],
-        "梁静茹": ["暖暖", "勇气 梁静茹"],
+        "演员": ["演员 薛之谦"],
+        "丑八怪": ["丑八怪 薛之谦"],
+        "邓紫棋": ["泡沫 邓紫棋", "光年之外 邓紫棋", "多远都要在一起 邓紫棋"],
+        "泡沫": ["泡沫 邓紫棋"],
+        "光年之外": ["光年之外 邓紫棋"],
+        "梁静茹": ["暖暖 梁静茹", "勇气 梁静茹"],
+        "暖暖": ["暖暖 梁静茹"],
+        "勇气": ["勇气 梁静茹"],
         "孙燕姿": ["遇见 孙燕姿", "绿光 孙燕姿"],
-        "王心凌": ["爱你"],
-        "田馥甄": ["小幸运"],
+        "遇见": ["遇见 孙燕姿"],
+        "王心凌": ["爱你 王心凌"],
+        "田馥甄": ["小幸运 田馥甄"],
     }
     search_candidates = [query_clean]
     if query_clean.lower() in ARTIST_REPRESENTATIVE_SONGS:
@@ -485,6 +542,7 @@ def dynamic_sing_flow(song_query, voice=None):
     search_url = 'https://music.163.com/api/search/get/web'
     
     downloaded_mp3 = None
+    downloaded_artist = ""
     song_title = query_clean
     # 第一轮只接受原唱歌手的版本（遍历所有候选曲目），全部失败后第二轮才放宽到翻唱版
     for strict_artist in (True, False):
@@ -517,6 +575,7 @@ def dynamic_sing_flow(song_query, voice=None):
                         with open(temp_mp3, 'wb') as f:
                             f.write(resp.content)
                         downloaded_mp3 = temp_mp3
+                        downloaded_artist = str(artist or "")
                         song_title = f"{name} - {artist}"
                         print(f"[SEARCH] 成功搜索并下载音源: 《{song_title}》 ({len(resp.content)} bytes)")
                         break
@@ -601,7 +660,7 @@ def dynamic_sing_flow(song_query, voice=None):
     # 6. 歌声转换 (带伴奏混音，使用当前同步音色)；无论成败都清理临时过程文件
     try:
         singer = DaFeiYuSoVitsSinger(voice=voice)
-        singer.convert(vocal_path=vocal_stem, output_path=cached_soulx_bgm, inst_path=inst_stem, key_offset="auto")
+        singer.convert(vocal_path=vocal_stem, output_path=cached_soulx_bgm, inst_path=inst_stem, key_offset="auto", artist_name=downloaded_artist)
         assert_audible(cached_soulx_bgm)
     finally:
         for f in [downloaded_mp3, temp_clip_wav, vocal_stem, inst_stem]:
