@@ -45,17 +45,17 @@ export function getActiveVoiceConfig() {
     try {
         if (fs.existsSync(VOICE_CONFIG_PATH)) {
             const cfg = JSON.parse(fs.readFileSync(VOICE_CONFIG_PATH, 'utf-8'));
-            const activeKey = cfg.active_voice || 'klee';
-            const voice = cfg.voices?.[activeKey] || cfg.voices?.klee;
+            const activeKey = cfg.active_voice || 'dafeiyu';
+            const voice = cfg.voices?.[activeKey] || cfg.voices?.dafeiyu || cfg.voices?.klee;
             if (voice) return voice;
         }
     } catch {}
     return {
-        id: 'klee',
-        name: '可莉',
-        style: '元气天真萝莉音',
-        ref_audio: 'D:\\ollama\\voices\\klee\\116425_audio.wav',
-        prompt_text: '抓到了就是这里，我们来把宝物挖出来吧。',
+        id: 'dafeiyu',
+        name: '大肥鱼本鱼',
+        style: '经典傲娇憨萌本音',
+        ref_audio: 'D:\\ollama\\voices\\dafeiyu\\dwg_0002.wav',
+        prompt_text: '什么嘛，这么简单的事情，你居然专门跑来问我？',
     };
 }
 
@@ -85,24 +85,33 @@ export function formatTextAndParamsForTts(rawText, toneHint = '', driveState = n
 
     if (!text) return null;
 
-    // 2. 网络书面口癖 -> 声优自然口语发音转换（极重要：解决 TTS 机械生硬问题）
+    // 2. 网络书面口癖 -> 声优自然口语发音转换（极重要：解决 TTS 机械生硬与“句尾念哼字”问题）
     text = text
-        // 句尾/分句尾的“捏”（如“好无聊捏”、“摸摸头捏”），TTS 原本会按一声动词“niē（捏住）”朗读，极其生硬，转为自然软萌语气词“呢/呐”
-        .replace(/([啦呀嘛哦噢呐])捏(?=[，,。！!？?~～\s]|$)/g, '$1')
-        .replace(/捏(?=[，,。！!？?~～\s]|$)/g, '呢')
-        // 开头的“哼”加感叹停顿，让声线发出干脆傲娇的鼻音而非平调吞字
-        .replace(/^哼[\s,，~～]*/g, '哼！')
-        // 连续叠词降重，防止触发 GPT-SoVITS repetition_penalty 截断或卡壳
-        .replace(/略{2,}/g, '略略，')
-        .replace(/呜{3,}/g, '呜呜，')
-        .replace(/哈{4,}/g, '哈哈哈，')
-        .replace(/嘿{3,}/g, '嘿嘿，')
+        // 句尾/分句尾的“捏”（如“好无聊捏”、“摸摸头捏”），TTS 原本会按一声动词“niē（捏住）”朗读，转为自然软萌语气词“呢/呐”
+        .replace(/([啦呀嘛哦噢呐])捏(?=[，,。！!？?~～…\.\s]|$)/g, '$1')
+        .replace(/捏(?=[，,。！!？?~～…\.\s]|$)/g, '呢')
+        // 句首/分句首的“哼”转为轻鼻音短停顿“哼，”，避免“哼！”被切成独立短句重读
+        .replace(/^哼[\s,，~～！!]*/g, '哼，')
+        .replace(/([。！？!?])\s*哼[\s,，~～！!]*/g, '$1哼，')
+        // 句尾粘连的书面口癖“……哼”（真人在语音句尾不会实音念出 hēng 字）：
+        // 若前面已有语气词（如“才不理你呢哼”、“好不好嘛哼”）直接去掉尾“哼”；若紧跟实词后（如“硬邦邦的东西哼”）自然转化为口语尾音“啦”
+        .replace(/([呢啦呀嘛吧哦噢哇呐略])哼+(?=[，,。！!？?~～…\.\s]|$)/g, '$1')
+        .replace(/([^，,。！!？?\s])哼+(?=[，,。！!？?~～…\.\s]|$)/g, '$1啦')
+        // 句中粘连的“略略略/呜呜/嘿嘿”在前面补自然微停顿，不在句尾留悬空逗号
+        .replace(/([^，,。！!？?\s])(略{2,})/g, '$1，略略略')
+        .replace(/略{3,}/g, '略略略')
+        .replace(/呜{3,}/g, '呜呜')
+        .replace(/哈{4,}/g, '哈哈哈')
+        .replace(/嘿{3,}/g, '嘿嘿')
         .replace(/(\d+(?:\.\d+)?)%/g, '百分之$1')
+        // 句末波浪号代表撒娇拖音，收束为感叹调而非碎逗号；句中省略号/波浪号转为自然换气逗号
+        .replace(/[~～]+(?=[。！？!?]|$)/g, '！')
         .replace(/[~～…]+/g, '，')
         .replace(/\.{2,}/g, '，')
         .replace(/[！!]{2,}/g, '！')
         .replace(/[？?]{2,}/g, '？')
         .replace(/[，,]{2,}/g, '，')
+        .replace(/，([。！？!?])/g, '$1')
         .trim();
 
     if (!text) return null;
@@ -110,49 +119,50 @@ export function formatTextAndParamsForTts(rawText, toneHint = '', driveState = n
     // 3. 补全句尾语调标点（QQ 气泡省略了句尾句号，但 TTS 必须依靠句末标点决定升调/感叹/降调收尾）
     if (!/[。！？!?]$/.test(text)) {
         text = text.replace(/[，,、]+$/, '');
-        if (/(吗|呢|呀|啥|谁|哪|怎么|为什么|是不是|对不对|好不好|行不行|成不成|没有|干嘛|真的假的)\s*$/.test(text)) {
+        const hasQuestionWord = /(什么|啥|谁|哪|怎么|为什么|几|多少|是不是|对不对|好不好|行不行|成不成|有没有|干嘛|真的假的|到底)/.test(text);
+        if (/(吗|是不是|对不对|好不好|行不行|成不成|干嘛|真的假的)\s*$/.test(text) || (hasQuestionWord && /(呢|呀|啊|呐|吧|嘛)\s*$/.test(text))) {
             text += '？';
-        } else if (/(哼|啦|喔|噢|嘛|略|滚|笨蛋|讨厌|不理你|快去|真香|绝了|笑死|救命|哇|吧)\s*$/.test(text)) {
+        } else if (/(哼|啦|喔|噢|嘛|呀|略|滚|笨蛋|讨厌|不理你|快去|真香|绝了|笑死|救命|哇|吧)\s*$/.test(text)) {
             text += '！';
         } else {
             text += '。';
         }
     }
 
-    // 4. 根据情绪提示词、生理状态与文本语义动态匹配声学韵律参数
+    // 4. 根据情绪提示词、生理状态与文本语义动态匹配声学韵律参数（低温度 + 双束搜索 + 原声韵律保留）
     const hint = String(toneHint || '').toLowerCase();
     const isAngryOrTsundere = /angry|tsundere|生气|傲娇|尾巴拍|起床气/.test(hint)
         || Boolean(driveState?.wokenUpGrumpy)
-        || /(哼！|滚|下头|不理你|记仇|讨厌|笨蛋|略略|才不|休想)/.test(text);
+        || /(^哼，|滚|下头|不理你|记仇|讨厌|笨蛋|略略|才不|休想)/.test(text);
     const isSleepyOrSulking = /sleepy|sulking|困|委屈/.test(hint)
         || Boolean(driveState?.sulking)
         || (Number(driveState?.energy ?? 80) < 35)
         || /(好困|想睡|委屈|呜呜|好饿|饿扁)/.test(text);
 
     let speed_factor = 1.0;
-    let temperature = 0.88;
-    let top_p = 0.92;
-    let fragment_interval = 0.25;
-    let resolvedTone = 'happy';
+    let temperature = 0.75;
+    let top_p = 0.80;
+    let fragment_interval = 0.20;
+    let resolvedTone = 'coquettish_happy';
 
     if (isAngryOrTsundere) {
-        resolvedTone = 'tsundere';
-        speed_factor = 1.06;
-        temperature = 0.92;
-        top_p = 0.95;
-        fragment_interval = 0.22;
+        resolvedTone = /angry|生气|炸毛/.test(hint) ? 'angry' : 'tsundere';
+        speed_factor = 1.03;
+        temperature = 0.75;
+        top_p = 0.80;
+        fragment_interval = 0.18;
     } else if (isSleepyOrSulking) {
         resolvedTone = 'sleepy_or_sulking';
-        speed_factor = 0.91;
-        temperature = 0.82;
-        top_p = 0.88;
-        fragment_interval = 0.34;
+        speed_factor = 0.92;
+        temperature = 0.72;
+        top_p = 0.78;
+        fragment_interval = 0.28;
     } else {
         resolvedTone = 'coquettish_happy';
-        speed_factor = 1.01;
-        temperature = 0.88;
-        top_p = 0.92;
-        fragment_interval = 0.25;
+        speed_factor = 1.0;
+        temperature = 0.75;
+        top_p = 0.80;
+        fragment_interval = 0.20;
     }
 
     return {
@@ -163,8 +173,11 @@ export function formatTextAndParamsForTts(rawText, toneHint = '', driveState = n
             speed_factor,
             temperature,
             top_p,
+            top_k: 25,
+            num_beams: 2,
+            emo_alpha: 0.30,
             fragment_interval,
-            repetition_penalty: 1.35,
+            repetition_penalty: 10.0,
             tone: resolvedTone,
         },
     };
@@ -232,7 +245,8 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
         '  "qq_action": {',
         '    "type": "none | poke | send_meme | quote_reply | send_voice",',
         '    "meme_tag": "任意具体心情词（如：开心、困了、傲娇、起床气、无语、委屈流泪、暗中观察、尾巴拍你等；若本地无此心情，会自动去抖音抓取新表情包补齐！）",',
-        '    "voice_tone": "tsundere | happy | sleepy | angry | coquettish（可选：当你想用语音条直接跟对方说话、撒娇、傲娇哼唧或怼人时，可将 type 设为 send_voice 并指定语气！）"',
+        '    "voice_tone": "tsundere | happy | sleepy | angry | coquettish（可选：当你想用语音条直接跟对方说话、撒娇、傲娇哼唧或怼人时，可将 type 设为 send_voice 并指定语气！）",',
+        '    "voice_text": "可选：当 type 为 send_voice 时，专门写一句像真人张嘴说话一样自然流畅的纯口语台词（8~28字，带自然呼吸感如“哎呀，…”、“哼，…”，句尾不要生硬粘“哼”字）"',
         '  },',
         '  "memory_to_save": {',
         '    "should_save": false,',
@@ -251,14 +265,14 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
 
 /** 拟人打字手滑同音错别字与秒纠正词表 */
 export const CUTE_TYPO_TABLE = [
-    { word: '五花肉', typo: '五花漏', fix: '*五花肉！嘴瓢打错字了😣' },
-    { word: '白米饭', typo: '白米范', fix: '*白米饭！手滑打错了捏' },
-    { word: '红烧肉', typo: '红烧漏', fix: '*红烧肉！饿得爪子打滑了' },
-    { word: '本鱼', typo: '笨鱼', fix: '*本鱼！！破输入法害我，才不是笨鱼！😤' },
-    { word: '摸鱼', typo: '摸于', fix: '*摸鱼！手滑按错啦' },
-    { word: '睡觉', typo: '水觉', fix: '*睡觉！困得眼花打错字了zzZ' },
-    { word: '好吃', typo: '好尺', fix: '*好吃！输入法又乱蹦字' },
-    { word: '干饭', typo: '干范', fix: '*干饭！手滑打错啦' },
+    { word: '五花肉', typo: '五花漏', fix: '*五花肉！嘴瓢打错字了😣', fixes: ['*五花肉！嘴瓢打错字了😣', '*五花肉！馋得鱼鳍打滑了哼'] },
+    { word: '白米饭', typo: '白米范', fix: '*白米饭！手滑打错了捏', fixes: ['*白米饭！手滑打错了捏', '*白米饭！破输入法又乱蹦字'] },
+    { word: '红烧肉', typo: '红烧漏', fix: '*红烧肉！饿得爪子打滑了', fixes: ['*红烧肉！饿得爪子打滑了', '*红烧肉！手快按错啦'] },
+    { word: '本鱼', typo: '笨鱼', fix: '*本鱼！！破输入法害我，才不是笨鱼！😤', fixes: ['*本鱼！！破输入法害我，才不是笨鱼！😤', '*本鱼！鱼鳍手滑按错了，不许笑哼', '*本鱼啦！谁把笨字放本字旁边的！'] },
+    { word: '摸鱼', typo: '摸于', fix: '*摸鱼！手滑按错啦', fixes: ['*摸鱼！手滑按错啦', '*摸鱼！打字太快瓢了捏'] },
+    { word: '睡觉', typo: '水觉', fix: '*睡觉！困得眼花打错字了zzZ', fixes: ['*睡觉！困得眼花打错字了zzZ', '*睡觉！迷迷糊糊按错键啦'] },
+    { word: '好吃', typo: '好尺', fix: '*好吃！输入法又乱蹦字', fixes: ['*好吃！输入法又乱蹦字', '*好吃！鱼鳍打滑啦'] },
+    { word: '干饭', typo: '干范', fix: '*干饭！手滑打错啦', fixes: ['*干饭！手滑打错啦', '*干饭！输入法不懂本鱼'] },
 ];
 
 /**
@@ -311,10 +325,15 @@ export function buildDynamicTurnContext({
     const resolvedEnv = envContext || driveEngine?.envContext || null;
     const weekdayPerception = formatWeekdayAndTimePerception(nowDate);
     const weatherPart = resolvedEnv?.weather ? ` | 实时天气=${resolvedEnv.weather}` : '';
-    const pcPart = resolvedEnv?.pcActivity ? ` | 老大电脑当前活动=${resolvedEnv.pcActivity}` : '';
+    const isPrivateMasterChat = String(chatId || '').startsWith('private:') && String(userId || '') === String(DEFAULT_MASTER_QQ);
+    const pcPart = (isPrivateMasterChat && resolvedEnv?.pcActivity) ? ` | 老大电脑当前活动=${resolvedEnv.pcActivity}` : '';
     lines.push(`【时空与环境感知】时段=${weekdayPerception}${weatherPart}${pcPart}`);
 
     if (memoryManager) {
+        if (typeof memoryManager.formatPersonaEvolutionForPrompt === 'function') {
+            const personaEvo = memoryManager.formatPersonaEvolutionForPrompt();
+            if (personaEvo) lines.push(personaEvo);
+        }
         lines.push(memoryManager.formatSemanticProfileForPrompt(userId, nickname));
         if (typeof memoryManager.formatMentionedGroupUsersForPrompt === 'function') {
             const mentionedProfiles = memoryManager.formatMentionedGroupUsersForPrompt(chatId, userId, queryText);
@@ -446,6 +465,7 @@ function normalizeActionKeys(obj) {
         const qa = { ...out.qq_action };
         if (!('meme_tag' in qa) && 'memetag' in qa) qa.meme_tag = qa.memetag;
         if (!('voice_tone' in qa) && 'voicetone' in qa) qa.voice_tone = qa.voicetone;
+        if (!('voice_text' in qa) && 'voicetext' in qa) qa.voice_text = qa.voicetext;
         const typeMap = {
             sendmeme: 'send_meme',
             quotereply: 'quote_reply',
@@ -568,13 +588,19 @@ export function parseActionResponse(rawText) {
 
     const rawAction = parsed.qq_action && typeof parsed.qq_action === 'object' ? parsed.qq_action : {};
     const validActionTypes = new Set(['none', 'poke', 'send_meme', 'quote_reply', 'send_voice']);
+    const rawMemeTag = typeof rawAction.meme_tag === 'string' ? rawAction.meme_tag.trim() : '';
+    const rawVoiceTone = typeof rawAction.voice_tone === 'string' ? rawAction.voice_tone.trim() : '';
+    const rawVoiceText = typeof rawAction.voice_text === 'string' ? rawAction.voice_text.trim() : '';
     const qq_action = {
         type: validActionTypes.has(rawAction.type) ? rawAction.type : 'none',
-        meme_tag: typeof rawAction.meme_tag === 'string' && rawAction.meme_tag.trim()
-            ? rawAction.meme_tag.trim()
+        meme_tag: (rawMemeTag && !/^(?:none|null|undefined|nil|无|不发|不需要|默认|空)$/i.test(rawMemeTag))
+            ? rawMemeTag
             : 'happy',
-        voice_tone: typeof rawAction.voice_tone === 'string' && rawAction.voice_tone.trim()
-            ? rawAction.voice_tone.trim()
+        voice_tone: (rawVoiceTone && !/^(?:none|null|undefined|nil|无|默认)$/i.test(rawVoiceTone))
+            ? rawVoiceTone
+            : '',
+        voice_text: (rawVoiceText && !/^(?:none|null|undefined|nil|无|默认|空)$/i.test(rawVoiceText))
+            ? rawVoiceText
             : '',
     };
 
@@ -649,7 +675,10 @@ export async function selectLocalMemeBase64(memeTag = 'happy', memeDir = MEME_DI
             }
         }
 
-        const tagKey = String(memeTag || 'happy').toLowerCase().trim();
+        const rawTag = String(memeTag || 'happy').toLowerCase().trim();
+        const tagKey = (!rawTag || /^(?:none|null|undefined|nil|无|不发|不需要|默认|空)$/i.test(rawTag))
+            ? 'happy'
+            : rawTag;
         let keywords = MEME_TAG_KEYWORDS[tagKey] || [tagKey];
         if (!MEME_TAG_KEYWORDS[tagKey]) {
             for (const synList of Object.values(MEME_TAG_KEYWORDS)) {
@@ -734,7 +763,27 @@ export class MessageDispatcher {
         this.log = deps.log ?? (() => {});
         this.sleep = deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
         this.lastTypoAt = 0;
+        this.lastSelfRecallAt = 0;
         this.chatDispatchEpoch = new Map();
+    }
+
+    /**
+     * 同步私聊「对方正在输入...」(event_type=1) 或「正在讲话...」(event_type=0) 状态
+     * @param {string} chatId
+     * @param {number} [eventType=1]
+     */
+    async setInputStatus(chatId, eventType = 1) {
+        const ref = splitChatId(chatId);
+        if (ref.kind !== 'private' || !this.callOneBot) return false;
+        try {
+            await this.callOneBot('set_input_status', {
+                user_id: String(ref.target),
+                event_type: Number(eventType),
+            }, chatId);
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     /**
@@ -794,6 +843,7 @@ export class MessageDispatcher {
         if (!formatted || !formatted.text) return undefined;
 
         try {
+            void this.setInputStatus(chatId, 0);
             const activeVoice = getActiveVoiceConfig();
             const payload = {
                 text: formatted.text,
@@ -812,7 +862,7 @@ export class MessageDispatcher {
             if (!res.ok) return undefined;
             const rawBuf = Buffer.from(await res.arrayBuffer());
             if (rawBuf.length < 100) return undefined;
-            const wavBuf = padWavSilence(rawBuf, 250);
+            const wavBuf = padWavSilence(rawBuf, 20);
             this.log('info', `[FeiyuVoice][${chatId}] 🎙️ 合成语音条 (${activeVoice.name}, tone=${formatted.tone}, speed=${formatted.ttsParams.speed_factor}): "${formatted.text}"`);
             return await this.sendSegments(chatId, [
                 { type: 'record', data: { file: `base64://${wavBuf.toString('base64')}` } },
@@ -963,10 +1013,11 @@ export class MessageDispatcher {
         const voiceProb = typeof options.voiceProbability === 'number' ? options.voiceProbability : 0;
         const hitProbVoice = !explicitVoice && voiceProb > 0 && Math.random() < voiceProb;
 
-        // 若显式要求全语音且总字数较短（<= 45 字），直接合并为一条连贯自然的语音发出
-        if (explicitVoice && bubbles.length > 1 && bubbles.join('，').length <= 45) {
-            const combined = bubbles.join('，');
-            const voiceId = await this.sendVoiceBubble(chatId, combined, toneHint);
+        // 若显式提供了专属口语台词 voice_text，或要求全语音且总字数较短（<= 45 字），直接合成为一条连贯自然的语音发出
+        const dedicatedVoiceText = action.qq_action?.voice_text || '';
+        if (explicitVoice && (dedicatedVoiceText || (bubbles.length > 1 && bubbles.join('，').length <= 45))) {
+            const spokenLine = dedicatedVoiceText || bubbles.join('，');
+            const voiceId = await this.sendVoiceBubble(chatId, spokenLine, toneHint);
             if (voiceId !== undefined) {
                 sentIds.push(voiceId);
                 if (this.memoryManager) {
@@ -974,7 +1025,7 @@ export class MessageDispatcher {
                         role: 'assistant',
                         userId: 'self',
                         nickname: '大肥鱼',
-                        text: `[语音] ${combined}`,
+                        text: `[语音] ${spokenLine}`,
                     });
                 }
                 return { aborted: false, voiceSent: true, sentIds };
@@ -992,12 +1043,50 @@ export class MessageDispatcher {
             }
         }
 
-        // 拟人手滑打错字 + 秒纠正（精力 < 35 犯困时 15% 概率，日常 4% 概率，冷却 15 分钟；语音气泡不打错字）
+        // 拟人手滑打错字 + 秒纠正（精力 < 35 犯困时 5% 概率，日常 1.2% 概率，冷却 2 小时；语音气泡不打错字）
         const nowMs = Date.now();
         const energyVal = this.driveEngine?.getSnapshot ? (this.driveEngine.getSnapshot().energy ?? 80) : 80;
-        const typoProb = energyVal < 35 ? 0.15 : 0.04;
-        const canTryTypo = options.forceTypo === true || ((nowMs - this.lastTypoAt) > 15 * 60_000 && Math.random() < typoProb);
+        const typoProb = energyVal < 35 ? 0.05 : 0.012;
+        const canTryTypo = options.forceTypo === true || ((nowMs - this.lastTypoAt) > 2 * 3600_000 && Math.random() < typoProb);
         let typoInjected = false;
+
+        // 拟人傲娇「说漏嘴秒撤回」欲盖弥彰机制（仅对老大或高好感熟人小概率触发，冷却 90 分钟）
+        const userAffection = this.memoryManager?.getUserProfile?.(userId)?.affection ?? (isMasterUser ? 100 : 55);
+        const tsundereVal = this.driveEngine?.getSnapshot?.()?.personality_axes?.tsundere_to_sweet ?? -20;
+        const canSelfRecall = options.forceSelfRecall === true || (
+            bubbles.length > 0 &&
+            !explicitVoice &&
+            voiceBubbleIndex === -1 &&
+            (isMasterUser || userAffection >= 75) &&
+            tsundereVal <= 15 &&
+            (nowMs - this.lastSelfRecallAt) > 90 * 60_000 &&
+            Math.random() < (isMasterUser ? 0.04 : 0.02)
+        );
+        if (canSelfRecall && !isAborted()) {
+            this.lastSelfRecallAt = nowMs;
+            const slipPool = isMasterUser
+                ? [
+                    '其实本鱼刚才一直在偷偷等老大找我玩捏…',
+                    '哼，其实本鱼最喜欢跟老大待在一起了…',
+                    '老大今天还特意来陪本鱼说话，本鱼心里超开心的…',
+                ]
+                : [
+                    '其实本鱼还挺喜欢在群里跟你们一起玩的…',
+                    '看在你平时对本鱼那么好的份上，本鱼其实超护着你的…',
+                ];
+            const slipText = slipPool[Math.floor(Math.random() * slipPool.length)];
+            try {
+                const slipIds = await this.sendTextBubble(chatId, slipText, {});
+                const firstSlipId = Array.isArray(slipIds) ? slipIds[0] : slipIds;
+                if (firstSlipId !== undefined && this.callOneBot) {
+                    await this.sleep(1700);
+                    await this.callOneBot('delete_msg', { message_id: Number(firstSlipId) }, chatId).catch(() => {});
+                    await this.sleep(500);
+                    await this.sendTextBubble(chatId, '……咳咳刚才鱼鳍打滑按错了！什么都没说不许问哼😳', {});
+                    this.log('info', `[FeiyuDispatcher] 🙈 触发傲娇说漏嘴秒撤回彩蛋 (${chatId}): "${slipText}"`);
+                }
+            } catch {}
+        }
 
         for (let i = 0; i < bubbles.length; i++) {
             if (isAborted()) {
@@ -1018,7 +1107,8 @@ export class MessageDispatcher {
 
             // 若当前气泡被选中为语音回答，优先合成并发送真实语音条；若合成失败则无感降级为文字气泡
             if (i === voiceBubbleIndex) {
-                const voiceId = await this.sendVoiceBubble(chatId, bubble, toneHint);
+                const spokenBubble = (i === 0 && dedicatedVoiceText) ? dedicatedVoiceText : bubble;
+                const voiceId = await this.sendVoiceBubble(chatId, spokenBubble, toneHint);
                 if (voiceId !== undefined) {
                     sentIds.push(voiceId);
                     if (this.memoryManager) {
@@ -1026,7 +1116,7 @@ export class MessageDispatcher {
                             role: 'assistant',
                             userId: 'self',
                             nickname: '大肥鱼',
-                            text: `[语音] ${bubble}`,
+                            text: `[语音] ${spokenBubble}`,
                         });
                     }
                     continue;
@@ -1034,11 +1124,13 @@ export class MessageDispatcher {
             }
 
             let typoFixBubble = null;
+            const cleanBubbleForMem = bubble;
             if (canTryTypo && !typoInjected) {
                 const hit = CUTE_TYPO_TABLE.find(item => bubble.includes(item.word));
                 if (hit) {
                     bubble = bubble.replace(hit.word, hit.typo);
-                    typoFixBubble = hit.fix;
+                    const fixPool = Array.isArray(hit.fixes) && hit.fixes.length > 0 ? hit.fixes : [hit.fix];
+                    typoFixBubble = options.forceTypo === true ? hit.fix : fixPool[Math.floor(Math.random() * fixPool.length)];
                     typoInjected = true;
                     this.lastTypoAt = nowMs;
                 }
@@ -1057,9 +1149,7 @@ export class MessageDispatcher {
                     role: 'assistant',
                     userId: 'self',
                     nickname: '大肥鱼',
-                    text: typoFixBubble
-                        ? `${bubble} （本鱼手滑打错字，已立即秒纠正：“${typoFixBubble}”）`
-                        : bubble,
+                    text: cleanBubbleForMem,
                 });
             }
 

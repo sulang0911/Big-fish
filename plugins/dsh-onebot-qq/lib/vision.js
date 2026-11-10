@@ -46,7 +46,8 @@ async function describeWithLunaVision(imageBase64, prompt) {
             },
             body: JSON.stringify({
                 model: LUNA_VISION_MODEL,
-                max_tokens: 320,
+                reasoning_effort: 'low',
+                max_tokens: 1024,
                 messages: [
                     {
                         role: 'user',

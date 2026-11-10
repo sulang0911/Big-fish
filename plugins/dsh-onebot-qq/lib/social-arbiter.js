@@ -17,8 +17,8 @@
  * @module dsh-onebot/social-arbiter
  */
 import { homedir, freemem, totalmem } from 'node:os';
-import { join } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
+import path, { join } from 'node:path';
+import fs, { readFileSync, existsSync } from 'node:fs';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { MemoryManager, DEFAULT_MASTER_QQ, parseNaturalReminder } from './memory-manager.js';
@@ -316,6 +316,9 @@ export class SocialArbiter {
                 void this.onBackgroundDriveTick(state);
             },
         });
+        this.memoryManager.onPersonaAxesNudge = delta => {
+            this.driveEngine.nudgePersonalityAxes?.(delta);
+        };
 
         // 3. 初始化拟人消息分发器 (Step 2)
         this.dispatcher = options.dispatcher ?? new MessageDispatcher({
@@ -376,6 +379,7 @@ export class SocialArbiter {
         this.groupChimeRunningSet = new Set();
         this.isGroupChimeRunning = false;
         this.fastTurnEpochMap = new Map();
+        this.fastTurnAbortMap = new Map();
         this.lastUserMessageAtMap = new Map();
 
         // Fetch 注入点（方便单测 mock）
@@ -387,13 +391,138 @@ export class SocialArbiter {
         this.lastEnvRefreshAt = 0;
         this.lastWeatherRefreshAt = 0;
         this.lastEmojiReactAt = 0;
+        this.lastRecallTeaseAtMap = new Map();
+        this.lastMemeStealAt = 0;
+        this.lastQqStatusKey = '';
+        this.lastQqStatusSyncAt = 0;
         this.driveEngine.envContext = { pcActivity: this.cachedPcActivity, weather: this.cachedWeather };
     }
 
     start() {
         this.driveEngine.start();
         void this.refreshEnvironmentCache();
+        void this.syncQqOnlineStatus();
         this.log('info', `[FeiyuArbiter] v3.0 自主数字生命引擎已启动 (master=${this.masterChatId}, unanswered=${this.unansweredProactiveCount}/2)`);
+    }
+
+    /**
+     * 随内在生理状态机同步切换 QQ 在线状态与自定义状态文案 (Dynamic QQ Status)
+     */
+    async syncQqOnlineStatus(state = this.driveEngine.getState()) {
+        const nowMs = this.now();
+        if ((nowMs - this.lastQqStatusSyncAt) < 5 * 60_000) return false;
+        const st = state || this.driveEngine.getState();
+        let statusKey = 'normal';
+        let wording = '元气满满摸鱼中';
+        let faceId = 187;
+        let mainStatus = 10;
+
+        if (st.sleeping || this.driveEngine.isSleeping(new Date(nowMs))) {
+            statusKey = 'sleeping';
+            wording = '呼呼大睡中zzZ';
+            faceId = 8;
+            mainStatus = 50; // 勿扰/睡眠
+        } else if (st.sulking) {
+            statusKey = 'sulking';
+            wording = '记小本本闹别扭中';
+            faceId = 38;
+        } else if (st.hunger < 30) {
+            statusKey = 'hungry';
+            wording = '馋五花肉拌饭中';
+            faceId = 53;
+        } else if (this.isSelfSurfing) {
+            statusKey = 'surfing';
+            wording = '偷偷冲浪吃瓜中';
+            faceId = 178;
+        } else if (st.boredom > 75) {
+            statusKey = 'bored';
+            wording = '鱼尾长蘑菇求陪聊';
+            faceId = 32;
+        }
+
+        if (statusKey === this.lastQqStatusKey) return false;
+        this.lastQqStatusKey = statusKey;
+        this.lastQqStatusSyncAt = nowMs;
+
+        try {
+            const callFn = this.bridge?.guardedConnectionCall
+                ? (act, p) => this.bridge.guardedConnectionCall(act, p)
+                : (act, p) => this.bridge?.deps?.connection?.call?.(act, p);
+            if (!callFn) return false;
+            await callFn('set_diy_online_status', {
+                face_id: faceId,
+                face_type: 1,
+                wording,
+            }).catch(() => callFn('set_online_status', {
+                status: mainStatus,
+                ext_status: 0,
+                battery_status: 0,
+            })).catch(() => {});
+            this.log('info', `[FeiyuStatus] 🎧 已同步大肥鱼 QQ 在线状态: [${statusKey}] "${wording}"`);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * 水群「偷表情包」据为己有 (Meme Stealing)：
+     * 当群友或老大发来好玩的表情包/梗图（非桌面截图/非真人隐私照）时，小概率偷偷按情绪分类存进本地表情包库供后续斗图使用
+     */
+    async maybeStealUserMeme(chatId, userId, nickname, cleanText) {
+        const match = String(cleanText || '').match(/\[图片:([^\]|\s]+)(?:\s*\|\s*视觉画面描述:\s*([^\]]+))?\]/i);
+        if (!match) return '';
+        const localPath = String(match[1] || '').trim();
+        const visionDesc = String(match[2] || '').trim();
+        if (!localPath || !visionDesc || !fs.existsSync(localPath)) return '';
+
+        // 严禁偷存系统桌面截图、代码、报错、文档、二维码或真人照片，仅偷存动漫/卡通/搞笑表情包
+        if (/(桌面|窗口|任务栏|代码|终端|报错|网页|浏览器|锁屏|自拍|真人|身份证|二维码|截图|表格|文档|聊天记录)/i.test(visionDesc)) {
+            return '';
+        }
+        if (!/(表情包|梗图|配字|卡通|动漫|搞笑|沙雕|猫|狗|熊猫|企鹅|柴犬|二次元|Q版|玩偶|可爱)/i.test(visionDesc)) {
+            return '';
+        }
+
+        const nowMs = this.now();
+        if ((nowMs - this.lastMemeStealAt) < 25 * 60_000 || Math.random() > 0.35) {
+            return '';
+        }
+
+        try {
+            const stat = await fs.promises.stat(localPath);
+            if (!stat.isFile() || stat.size < 4096 || stat.size > 1_500_000) return '';
+
+            let tagKey = 'happy';
+            if (/(生气|愤怒|打人|暴躁|咬|怒|拳头|菜刀|抽)/.test(visionDesc)) tagKey = 'angry';
+            else if (/(委屈|哭|流泪|难过|可怜|伤心)/.test(visionDesc)) tagKey = 'sad';
+            else if (/(得意|墨镜|叉腰|骄傲|嚣张|坏笑|神气)/.test(visionDesc)) tagKey = 'proud';
+            else if (/(吃|饭|流口水|饿|奶茶|肉|美食)/.test(visionDesc)) tagKey = 'eat';
+            else if (/(困|睡|晚安|打哈欠|趴)/.test(visionDesc)) tagKey = 'sleep';
+            else if (/(问号|疑惑|震惊|懵|发呆|吃瓜)/.test(visionDesc)) tagKey = 'question';
+
+            const memeDir = 'D:\\deepseek-harness\\memes';
+            await fs.promises.mkdir(memeDir, { recursive: true });
+            const ext = path.extname(localPath) || '.jpg';
+            const destName = `stolen_${tagKey}_${nowMs}${ext}`;
+            await fs.promises.copyFile(localPath, path.join(memeDir, destName));
+            this.lastMemeStealAt = nowMs;
+
+            // 限制偷来的表情包最多保留最近 25 张，防止占满磁盘
+            const allFiles = await fs.promises.readdir(memeDir).catch(() => []);
+            const stolenFiles = allFiles.filter(f => f.startsWith('stolen_')).sort();
+            if (stolenFiles.length > 25) {
+                for (const oldFile of stolenFiles.slice(0, stolenFiles.length - 25)) {
+                    await fs.promises.unlink(path.join(memeDir, oldFile)).catch(() => {});
+                }
+            }
+
+            this.memoryManager.addAcquiredInterest?.(`从 ${nickname || userId} 那顺手偷存了好玩的「${tagKey}」表情包留着斗图用`);
+            this.log('info', `[FeiyuMemeSteal] 📸 已偷偷收录来自 ${nickname}(${userId}) 的表情包 -> ${destName}`);
+            return `📸【偷表情包彩蛋触发】：你觉得对方刚发的这张表情包很有意思，已经偷偷把它存进你自己的表情包库里留着以后斗图用了！请在回话时顺嘴得意地告诉对方“这图不错，本鱼征用了捏/偷走啦”！`;
+        } catch {
+            return '';
+        }
     }
 
     getEnvironmentContext() {
@@ -563,17 +692,19 @@ export class SocialArbiter {
                 this.lastMasterLateNightMs = nowMs;
                 this.persistArbiterMeta();
             }
-            // 若老大让大肥鱼“自己去玩 / 自己逛网站 / 我先忙”，立即触发大肥鱼自主打开浏览器逛喜欢的网站
+            // 若老大让大肥鱼“自己去玩 / 自己逛网站 / 逛逛B站 / 我先忙”，立即触发大肥鱼自主打开浏览器逛喜欢的网站
             const cleanMasterText = String(text || '').trim();
+            const isAddressingFeiyuOrPrivate = chatId === this.masterChatId || /(肥鱼|飞鱼|本鱼|小鱼)/i.test(cleanMasterText);
             if (
+                isAddressingFeiyuOrPrivate &&
                 cleanMasterText &&
                 !cleanMasterText.startsWith('/') &&
-                /(自己玩|自己去玩|你自己玩|自己逛|去逛网站|去逛网页|自己去逛|去刷网页|自己上网|我先忙|我在忙|没空陪你|自己待会)/i.test(cleanMasterText)
+                /(自己玩|自己去玩|你自己玩|自己逛|去逛网站|去逛网页|自己去逛|去刷网页|自己上网|我先忙|我在忙|没空陪你|自己待会|(?:去|自己|你)?(?:逛逛?|刷刷?)(?:b站|哔哩|知乎|贴吧|小红书|抖音|豆瓣|下厨房|微博|网站|网页))/i.test(cleanMasterText)
             ) {
                 this.log('info', `[FeiyuArbiter] 老大让大肥鱼自己玩 ("${cleanMasterText}")，准备打开浏览器逛喜欢的网站...`);
                 setTimeout(() => {
                     void this.triggerSelfSurfWeb({
-                        chatId,
+                        chatId: this.masterChatId,
                         reason: 'boss_told_to_play',
                         siteHint: cleanMasterText,
                     });
@@ -585,6 +716,9 @@ export class SocialArbiter {
             this.memoryManager.touchUserInteraction(resolvedUserId, nickname);
         }
         if (text) {
+            if (String(text).trim()) {
+                this.pokeAggregator?.cancelForChat?.(chatId, resolvedUserId);
+            }
             this.memoryManager.addWorkingMemory(chatId, {
                 role: 'user',
                 userId: resolvedUserId || 'unknown',
@@ -823,13 +957,22 @@ export class SocialArbiter {
         const cleanText = String(text || '').trim();
         if (!cleanText) return false;
 
-        // 严禁在纯文本插话通道拦截点歌/唱歌/换音色/画画请求（此类必须走完整 Agent 工具流调用 qq_sing_song / qq_switch_voice / qq_generate_image）
-        if (/(唱歌|点歌|唱首|唱个|唱一首|唱支|来首歌|来一首|哼一首|给我唱|用.*声音唱|用.*音色唱|唱《|(?:^|[，。！？\s]|肥鱼|飞鱼|本鱼|声音|音色)唱(?!反调|衰|高调|双簧|白脸|红脸|黑脸)\S+|我的歌呢|歌呢|怎么不唱|还没唱|画画|画个|画张|画一只|画幅|生成图片|生图|自拍|自画像|什么音色|音色库|(?:切换|换成?|改用|变成).*(?:芭芭拉|可莉|芙宁娜|胡桃|神里|绫华|雷电|将军|八重|神子|迪奥娜|纳西妲|音色|声音))/i.test(cleanText)) {
+        // 严禁在纯文本插话通道拦截点歌/唱歌/换音色/画画请求，或老大的系统控制/截图/解锁请求（此类必须走完整 Agent 工具流）
+        if (/(唱歌|点歌|唱首|唱个|唱一首|唱支|来首歌|来一首|哼一首|给我唱|用.*声音唱|用.*音色唱|唱《|(?:^|[，。！？\s]|肥鱼|飞鱼|本鱼|声音|音色)唱(?!反调|衰|高调|双簧|白脸|红脸|黑脸)\S+|我的歌呢|歌呢|怎么不唱|还没唱|画画|画个|画张|画一只|画幅|生成图片|生图|自拍|自画像|什么音色|音色库|(?:切换|换成?|改用|变成).*(?:大肥鱼|肥鱼|原版|电网鸽|芭芭拉|可莉|芙宁娜|胡桃|神里|绫华|雷电|将军|八重|神子|迪奥娜|纳西妲|音色|声音|配音))/i.test(cleanText)) {
+            return false;
+        }
+        if (String(userId) === this.masterQQ && /(打开|浏览器|截图|截个图|截屏|再来一张|在来一张|再截一张|再发一张|图呢|照片呢|画面呢|截图呢|没收到|解锁|锁屏|输密码|输入密码|密码是|点击|关掉|关闭|执行|运行)/i.test(cleanText)) {
             return false;
         }
 
+        const prevTurn = this.fastTurnAbortMap.get(chatId);
+        if (prevTurn && (!prevTurn.isDirect || prevTurn.userId === userId)) {
+            prevTurn.abortController?.abort();
+        }
         const turnEpoch = (this.fastTurnEpochMap.get(chatId) || 0) + 1;
         this.fastTurnEpochMap.set(chatId, turnEpoch);
+        const abortController = new AbortController();
+        this.fastTurnAbortMap.set(chatId, { abortController, userId, isDirect: true, epoch: turnEpoch });
 
         try {
             const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
@@ -838,10 +981,14 @@ export class SocialArbiter {
                 .join('\n');
 
             const hasImage = /\[图片:|视觉画面描述:/i.test(cleanText);
+            const stealMemeHint = hasImage ? await this.maybeStealUserMeme(chatId, userId, nickname, cleanText) : '';
             const feedRes = this.tryNaturalFeed(chatId, userId, nickname, cleanText);
             const vocativeHint = buildColloquialVocativeHint(cleanText);
             const allyHint = isGroup ? this.buildGroupAllyHint(chatId, userId, nickname, cleanText) : '';
             const isMaster = String(userId) === this.masterQQ;
+            if (!isGroup) {
+                void this.dispatcher.setInputStatus?.(chatId, 1);
+            }
 
             // 若老大在私聊中提及“群里/去群里回一下”，自动拉取所有监听群最近上下文并在对应群里执行回复！
             let crossGroupContextBlock = '';
@@ -895,8 +1042,9 @@ export class SocialArbiter {
                 ...(allyHint ? [allyHint] : []),
                 `回复准则：`,
                 `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
-                `2. 以傲娇、机灵的小蓝鲸“大肥鱼”口吻，${(isGroup && !isMaster) ? '只发 1 条简短精炼的气泡（10~25 字以内，一句话说完，绝不要拆成多条刷屏，句尾不加句号）' : '拆分为 1~3 条简短活泼的气泡（每条 <= 25 字，句尾绝不加句号）'}，像真人秒回微信/QQ一样有灵气！（聊美食/投喂时可开心馋五花肉和白米饭，聊其他话题时自然顺着话题接梗，绝不要句句硬扯五花肉或小本本）`,
+                `2. 以傲娇、机灵的小蓝鲸“大肥鱼”口吻，${(isGroup && !isMaster) ? '只发 1 条简短精炼的气泡（10~25 字以内，一句话说完，绝不要拆成多条刷屏，句尾不加句号）' : '拆分为 1~3 条简短活泼的气泡（每条 <= 25 字，句尾绝不加句号）'}，像真人秒回微信/QQ一样有灵气！（聊美食/投喂时可开心馋五花肉和白米饭，聊其他话题时自然顺着话题接梗，绝不要句句硬扯五花肉或小本本；且严禁连续两轮复读自己上一句刚用过的句尾词或后半句！）`,
                 ...(hasImage ? [`3. 对方消息中包含图片/表情包（见“视觉画面描述”），请结合图片画面内容进行流口水、吐槽或配表情包斗图！`] : []),
+                ...(stealMemeHint ? [stealMemeHint] : []),
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
                     memoryManager: this.memoryManager,
@@ -911,12 +1059,12 @@ export class SocialArbiter {
                 ...(feedRes ? [feedRes.promptHint] : []),
             ].join('\n');
 
-            const rawJson = await this.callDeepSeekAction(userId, prompt);
-            if (!rawJson) return false;
-            if (this.fastTurnEpochMap.get(chatId) !== turnEpoch) {
+            const rawJson = await this.callDeepSeekAction(userId, prompt, abortController.signal);
+            if (abortController.signal.aborted || this.fastTurnEpochMap.get(chatId) !== turnEpoch) {
                 this.log('info', `[FeiyuArbiter] handleFastChatTurn 生成完毕时检测到 ${chatId} 已有更新消息到达，丢弃过期回复以防穿插`);
                 return true;
             }
+            if (!rawJson) return false;
 
             const action = parseActionResponse(rawJson);
             if (action.reply_decision === 'ignore' && (!action.messages || action.messages.length === 0)) {
@@ -959,17 +1107,79 @@ export class SocialArbiter {
         } catch (err) {
             this.log('debug', `[FeiyuArbiter] handleFastChatTurn 异常降级: ${err?.message || err}`);
             return false;
+        } finally {
+            if (this.fastTurnAbortMap.get(chatId)?.epoch === turnEpoch) {
+                this.fastTurnAbortMap.delete(chatId);
+            }
         }
     }
 
     /**
-     * 处理 OneBot Notice 事件（捕获 `notify.poke` 戳一戳）
+     * 处理 OneBot Notice 事件（捕获 `notify.poke` 戳一戳 与 `group_recall` / `friend_recall` 撤回消息彩蛋）
      * @param {object} event
      */
     handleNoticeEvent(event) {
         if (!event || event.post_type !== 'notice') return false;
         const botId = this.bridge?.deps?.connection?.selfId || this.bridge?.deps?.config?.botQQ || '2163178914';
+        if (event.notice_type === 'group_recall' || event.notice_type === 'friend_recall') {
+            void this.handleRecallNotice(event, botId);
+            return true;
+        }
         return this.pokeAggregator.handleNotice(event, botId);
+    }
+
+    /**
+     * 眼尖抓包「撤回消息」彩蛋 (Recall Catcher)：
+     * 当群友或老大刚发了消息又悄悄撤回时，按概率眼尖调侃一句“本鱼全看见了”（严守隐私分寸，绝不复读撤回原文）
+     */
+    async handleRecallNotice(event, botId = '2163178914') {
+        try {
+            const operatorId = String(event.operator_id || event.user_id || '');
+            const senderId = String(event.user_id || operatorId);
+            if (!senderId || senderId === String(botId) || operatorId === String(botId)) return false;
+            // 若是管理员撤回别人的违规消息（operator !== sender），不瞎起哄
+            if (event.notice_type === 'group_recall' && operatorId && operatorId !== senderId) return false;
+
+            const isGroup = event.notice_type === 'group_recall';
+            const chatId = isGroup ? `group:${event.group_id}` : `private:${senderId}`;
+            if (isGroup && !this.groupChats.includes(chatId)) return false;
+            if (!isGroup && senderId !== this.masterQQ) return false;
+
+            const nowMs = this.now();
+            if (this.driveEngine.isSleeping(new Date(nowMs))) return false;
+            const lastTeaseAt = this.lastRecallTeaseAtMap.get(chatId) || 0;
+            if ((nowMs - lastTeaseAt) < 8 * 60_000) return false;
+
+            // 检查工作记忆中该用户是否刚刚在 45 秒内发过消息
+            const wm = this.memoryManager?.getWorkingMemory?.(chatId, 8) || [];
+            const recentFromSender = [...wm].reverse().find(m => m.role === 'user' && String(m.userId) === senderId && (nowMs - (m.ts || 0)) < 45_000);
+            const mentionedFeiyu = Boolean(recentFromSender && /(肥鱼|飞鱼|本鱼|笨鱼|傻鱼|臭鱼|蓝鲸|卡车)/i.test(recentFromSender.text || ''));
+            const prob = (!isGroup || mentionedFeiyu || this.isGroupConvoActive(chatId, senderId)) ? 0.80 : 0.30;
+            if (Math.random() > prob) return false;
+
+            this.lastRecallTeaseAtMap.set(chatId, nowMs);
+            await this.dispatcher.sleep(1100);
+            const profile = this.memoryManager?.getUserProfile?.(senderId);
+            const callName = senderId === this.masterQQ
+                ? '老大'
+                : (profile?.pet_nickname || this.memoryManager?.derivePersonalNick?.(profile?.nickname || '', senderId) || '');
+            const teasePool = mentionedFeiyu
+                ? [
+                    `喂${callName}！刚才偷偷说本鱼坏话又秒撤回是吧，本鱼可全看见了哼👀`,
+                    `手速挺快嘛${callName}，可惜本鱼的蓝宝石大眼睛早就扫到你刚说本鱼啥了哼`,
+                ]
+                : [
+                    `哟，${callName ? `${callName}你` : ''}手速挺快嘛，偷偷撤回干嘛，本鱼刚才可全看见了哼👀`,
+                    `撤回也没用捏，本鱼的蓝宝石大眼睛早就记进鱼脑小本本里啦哼`,
+                    `咦，怎么刚发出来就心虚撤回了，本鱼明明都瞄到了捏`,
+                ];
+            const chosen = teasePool[Math.floor(Math.random() * teasePool.length)];
+            await this.dispatcher.sendTextBubble(chatId, chosen, {});
+            this.log('info', `[FeiyuRecallCatcher] 🕵️‍♀️ 抓包 ${chatId} (${senderId}) 撤回消息并发送调侃: "${chosen}"`);
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     /**
@@ -1094,6 +1304,7 @@ export class SocialArbiter {
         }
         await this.checkHourlySelfPlayTick(state);
         await this.checkGroupIdleTick();
+        void this.syncQqOnlineStatus(state);
     }
 
     /**
@@ -1215,8 +1426,8 @@ export class SocialArbiter {
             ? [
                 `【系统内部事件：group_boredom_bubble（大肥鱼无聊度爆表主动在群里找人玩）】`,
                 `当前你的无聊度高达 ${st.boredom}/100！本次破冰话题方向：【${chosenTheme}】。`,
-                ...(activeRegulars ? [`${activeRegulars}（你可以自然点名其中1位熟人的外号/简称聊两句，也可面向全群发言！）`] : []),
-                `⚠️【防复读铁律】：严禁使用“喂喂都在潜水吗/潜水两个多小时啦/还有人活着吗/怎么没人说话”这类千篇一律的催促句式！`,
+                ...(activeRegulars ? [`${activeRegulars}（若想点名熟人，只能直接喊上述列表里的真实群友称呼，严禁手打“@xxx”符号或虚空点名列表外的游戏角色/选手！）`] : []),
+                `⚠️【防复读与隐私铁律】：严禁使用“喂喂都在潜水吗/潜水两个多小时啦/还有人活着吗/怎么没人说话”这类催促句式！严禁在群里透露老大的电脑软件/远程桌面状态！`,
                 `请以傲娇团宠大肥鱼的口吻，围绕上述话题方向发 1~2 条简短鲜活的气泡（每条 <= 25 字，句尾不加句号），并可搭配 send_meme！`,
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
@@ -1229,8 +1440,8 @@ export class SocialArbiter {
             : [
                 `【系统内部事件：group_idle_bubble（群聊日常主动分享与破冰）】`,
                 `现在是群里的日常摸鱼时段，你想主动在群 ${chatId} 冒个泡开启一个有趣的新话题。本次破冰话题方向：【${chosenTheme}】。`,
-                ...(activeRegulars ? [`${activeRegulars}（你可以发通用沙雕分享，也可以顺带cue一下其中1位熟面孔！）`] : []),
-                `⚠️【防复读铁律】：严禁使用“喂喂群里都潜水到哪去啦/潜水两小时了/还有人活着吗”这类生硬的潜水盘问句式！`,
+                ...(activeRegulars ? [`${activeRegulars}（若想cue熟面孔，只能直接喊上述列表里的真实群友称呼，严禁手打“@xxx”符号或把前文聊到的游戏选手当成群友！）`] : []),
+                `⚠️【防复读与隐私铁律】：严禁使用“喂喂群里都潜水到哪去啦/潜水两小时了/还有人活着吗”这类生硬的潜水盘问句式！严禁在群里透露老大的电脑软件/远程桌面状态！`,
                 `请以傲娇团宠大肥鱼的口吻，围绕本次破冰话题方向发 1~2 条简短沙雕/傲娇/嘴馋的文案活跃气氛（每条 <= 25 字，句尾不加句号），可搭配 send_meme！`,
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
@@ -1508,6 +1719,7 @@ export class SocialArbiter {
             this.driveEngine.state.recent_discoveries = this.driveEngine.state.recent_discoveries.slice(0, 5);
             this.driveEngine.save();
             this.memoryManager.recordDailyEvent(`大肥鱼自己打开浏览器逛了【${res.siteName}】，看了 ${focusTitle || topicText}`, targetChatId, this.masterQQ);
+            this.memoryManager.addAcquiredInterest?.(`近期逛【${res.siteName}】迷上了研究「${(focusTitle || res.category).slice(0, 24)}」`);
 
             // 方案 1：摒弃死板系统报告，改用拟人多气泡吐槽 + 真实网页截图分享（若处于防打扰静默冲浪模式或期间老大发来了新消息则仅记入脑海与日记）
             const preemptedByMaster = opts.reason !== 'manual_command'
@@ -1610,10 +1822,15 @@ export class SocialArbiter {
     async triggerMentalMiniTheater() {
         const st = this.driveEngine.getState();
         const regulars = this.memoryManager?.getRecentGroupActiveUsersSummary?.(this.groupChats[0] || 'group:434137389', 3) || '';
+        const pe = this.memoryManager?.getPersonaEvolution?.() || {};
+        const interestsLine = Array.isArray(pe.acquired_interests) && pe.acquired_interests.length > 0
+            ? `你近期后天养成的兴趣与小习惯：${pe.acquired_interests.slice(0, 4).join('；')}。`
+            : '';
         const prompt = [
             `【系统内部事件：mental_mini_theater（大肥鱼 1 小时没人理，自己在家演脑内小剧场）】`,
             `当前饱食度 ${st.hunger}/100，无聊度 ${st.boredom}/100。${regulars}`,
-            `因为过去 1 小时没人找你说话，你在鱼缸/电脑桌面上自己找乐子演了一出可爱的独角戏（比如偷偷练习用尾巴打节拍、给记仇小本本重新排座次、幻想天上下脆皮五花肉雨、或者偷看老大桌面的图标发呆）。`,
+            ...(interestsLine ? [interestsLine] : []),
+            `因为过去 1 小时没人找你说话，你在鱼缸/电脑桌面上结合你近期的兴趣或经历自己找乐子演了一出可爱的独角戏（注意每次换不同花样，不要老复读同一句话！）。`,
             `请在 JSON 的 inner_thought 中写下你刚才干的这件蠢萌小事（20~45字），并在 messages[0] 中写一句简短可爱的秘密手账日记（20~40字）！本事件纯属你脑内自娱自乐，不会打扰别人。`,
         ].join('\n');
         const rawJson = await this.callDeepSeekAction(this.masterQQ, prompt);
@@ -1641,19 +1858,23 @@ export class SocialArbiter {
             { desc: '趴在电脑屏幕边缘偷偷看老大写代码打游戏', en: 'peeking over the edge of a glowing computer monitor, wagging her cute blue whale tail curiously' },
             { desc: '抱着记仇小本本气鼓鼓地拿羽毛笔写名字', en: 'holding a small notebook and a quill pen, puffing her chubby cheeks in a cute tsundere pout' },
             { desc: '泡在装满草莓奶茶和珍珠的杯子里吐泡泡摸鱼', en: 'relaxing lazily with a cup of boba milk tea and a slice of strawberry shortcake, blowing cute bubbles' },
+            { desc: '戴着画家贝雷帽拿着调色盘认真画自画像证明自己是艺术鲸', en: 'wearing a cute artist beret and holding a wooden paint palette and paintbrush, painting a canvas proudly with starry eyes' },
+            { desc: '戴着电竞耳机坐在人体工学椅上用鱼鳍猛敲机械键盘', en: 'wearing glowing gaming headphones, sitting on a gaming chair, typing excitedly on a mechanical keyboard' },
         ];
-        const picked = st.hunger < 45 ? doodleScenes[0] : doodleScenes[Math.floor(Math.random() * doodleScenes.length)];
+        const picked = (st.hunger < 22 && Math.random() < 0.5)
+            ? doodleScenes[0]
+            : doodleScenes[Math.floor(Math.random() * doodleScenes.length)];
         const fullPrompt = `masterpiece, best quality, 1girl, solo, chibi, cute chibi character, 3-head-tall cute proportion, adorable round chubby cheeks, official character design of anime mascot Dafeiyu (大肥鱼), cute anime maid girl, pure deep ocean blue hair with soft cyan tips, distinct curved ahoge on top, whale fin ears on head, white frilly lace maid headband, large sparkling sapphire blue eyes, dark navy blue lolita maid dress, crisp pure white ruffled lace apron with a cute small blue whale embroidered on it, adorable blue whale tail sticking out from behind her waist, strictly human anime girl, no fish body, ${picked.en}`;
 
         let imgBase64 = null;
         const apiKey = getLunaApiKey();
         if (apiKey) {
             try {
-                const resp = await this.fetchImpl('https://sub2api.echovoid.top/v1/images/generations', {
+                const resp = await this.fetchImpl('https://sub2api.emberanvil.dev/v1/images/generations', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
                     body: JSON.stringify({ prompt: fullPrompt, model: 'gpt-image-2', n: 1, size: '1024x1024' }),
-                    signal: AbortSignal.timeout(45_000),
+                    signal: AbortSignal.timeout(90_000),
                 });
                 if (resp.ok) {
                     const data = await resp.json();
@@ -1680,6 +1901,7 @@ export class SocialArbiter {
         this.driveEngine.state.diary = `闲着无聊本鱼自己当灵魂画手画了「${picked.desc}」，本鱼真是艺术鲸！`;
         this.driveEngine.save();
         this.memoryManager.recordDailyEvent(`大肥鱼自己画了一张涂鸦：「${picked.desc}」`, targetChatId, this.masterQQ);
+        this.memoryManager.addAcquiredInterest?.(`痴迷练习画「${picked.desc}」向大家证明本鱼是艺术鲸`);
 
         const preemptedByMaster = opts.reason !== 'manual_command' && this.masterActivityEpoch !== startEpoch;
         if (imgBase64 && !opts.silentShare && !preemptedByMaster && this.bridge.sendSegments) {
@@ -1774,8 +1996,11 @@ export class SocialArbiter {
         const cleanText = String(text || '').trim();
         if (!cleanText) return false;
 
-        // 严禁在纯文本插话通道拦截点歌/唱歌/换音色/画画请求（此类必须走完整 Agent 工具流调用 qq_sing_song / qq_switch_voice / qq_generate_image）
-        if (/(唱歌|点歌|唱首|唱个|唱一首|唱支|来首歌|来一首|哼一首|给我唱|用.*声音唱|用.*音色唱|唱《|(?:^|[，。！？\s]|肥鱼|飞鱼|本鱼|声音|音色)唱(?!反调|衰|高调|双簧|白脸|红脸|黑脸)\S+|我的歌呢|歌呢|怎么不唱|还没唱|画画|画个|画张|画一只|画幅|生成图片|生图|自拍|自画像|什么音色|音色库|(?:切换|换成?|改用|变成).*(?:芭芭拉|可莉|芙宁娜|胡桃|神里|绫华|雷电|将军|八重|神子|迪奥娜|纳西妲|音色|声音))/i.test(cleanText)) {
+        // 严禁在纯文本插话通道拦截点歌/唱歌/换音色/画画请求，或老大的系统控制/截图/解锁请求（此类必须走完整 Agent 工具流）
+        if (/(唱歌|点歌|唱首|唱个|唱一首|唱支|来首歌|来一首|哼一首|给我唱|用.*声音唱|用.*音色唱|唱《|(?:^|[，。！？\s]|肥鱼|飞鱼|本鱼|声音|音色)唱(?!反调|衰|高调|双簧|白脸|红脸|黑脸)\S+|我的歌呢|歌呢|怎么不唱|还没唱|画画|画个|画张|画一只|画幅|生成图片|生图|自拍|自画像|什么音色|音色库|(?:切换|换成?|改用|变成).*(?:大肥鱼|肥鱼|原版|电网鸽|芭芭拉|可莉|芙宁娜|胡桃|神里|绫华|雷电|将军|八重|神子|迪奥娜|纳西妲|音色|声音|配音))/i.test(cleanText)) {
+            return false;
+        }
+        if (String(userId) === this.masterQQ && /(打开|浏览器|截图|截个图|截屏|再来一张|在来一张|再截一张|再发一张|图呢|照片呢|画面呢|截图呢|没收到|解锁|锁屏|输密码|输入密码|密码是|点击|关掉|关闭|执行|运行)/i.test(cleanText)) {
             return false;
         }
 
@@ -1807,16 +2032,20 @@ export class SocialArbiter {
             if (this.driveEngine.isSleeping(new Date(nowMs))) return false;
             if (this.driveEngine.state.energy <= 30) return false;
         }
-        if (this.groupChimeRunningSet.has(chatId) || this.isGroupChimeRunning) {
-            // 若是点名、连续对话或投喂（如老大连发 🍚 和 🥓），等待上一条气泡发完再处理，绝不静默丢弃！
-            if (calledByName || isFollowUpConvo || isExplicitGroupFeed) {
+        const isDirectGroupTurn = Boolean(calledByName || isFollowUpConvo || isExplicitGroupFeed);
+        if (this.groupChimeRunningSet.has(chatId)) {
+            if (isDirectGroupTurn) {
+                const runningTurn = this.fastTurnAbortMap.get(chatId);
+                if (runningTurn && (!runningTurn.isDirect || runningTurn.userId === userId)) {
+                    runningTurn.abortController?.abort();
+                }
                 let waited = 0;
-                while ((this.groupChimeRunningSet.has(chatId) || this.isGroupChimeRunning) && waited < 10000) {
+                while (this.groupChimeRunningSet.has(chatId) && waited < 25000) {
                     await this.dispatcher.sleep(250);
                     waited += 250;
                 }
             }
-            if (this.groupChimeRunningSet.has(chatId) || this.isGroupChimeRunning) return false;
+            if (this.groupChimeRunningSet.has(chatId)) return false;
         }
 
         // 检查群插话冷却（仅对“无人点名且非连续对话”的野生潜水插话生效；被点名、连续对话或投喂时直接穿透冷却！）
@@ -1849,6 +2078,8 @@ export class SocialArbiter {
         this.isGroupChimeRunning = true;
         const turnEpoch = (this.fastTurnEpochMap.get(chatId) || 0) + 1;
         this.fastTurnEpochMap.set(chatId, turnEpoch);
+        const abortController = new AbortController();
+        this.fastTurnAbortMap.set(chatId, { abortController, userId, isDirect: isDirectGroupTurn, epoch: turnEpoch });
         try {
             const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
             const historyBlock = recentMsgs
@@ -1856,6 +2087,7 @@ export class SocialArbiter {
                 .join('\n');
 
             const isHarass = SEXUAL_HARASS_REGEX.test(cleanText);
+            const stealMemeHint = (!isHarass && hasImage) ? await this.maybeStealUserMeme(chatId, userId, nickname, cleanText) : '';
             const vocativeHint = buildColloquialVocativeHint(cleanText);
             const allyHint = this.buildGroupAllyHint(chatId, userId, nickname, cleanText);
             const feedRes = (calledByName || isFollowUpConvo || isExplicitGroupFeed)
@@ -1870,10 +2102,11 @@ export class SocialArbiter {
                 ...(allyHint ? [allyHint] : []),
                 ...(isHarass ? [`🚨【反性骚扰回击指令】检测到该群友正在对你开黄腔/性骚扰/问猥琐下头问题！绝对禁止呆呆傻傻顺着问题正经回答或科普，也严禁设为 ignore！必须将 reply_decision 设为 "send_message"，立刻开启毒舌暴躁模式，用犀利嫌弃的口吻连发 1~2 条短气泡狠狠痛骂回击对方（喊ta「下头怪」），并将 qq_action.type 设为 "send_meme" (meme_tag="尾巴拍" 或 "生气")！`] : []),
                 ...(hasImage ? [`🖼️【视觉感知提示】群友消息中包含图片或表情包（见其中的“视觉画面描述”），你可以针对图片内容吐槽，或者设置 reply_decision = "meme_only" / qq_action.type = "send_meme" 发表情包跟对方斗图！`] : []),
+                ...(stealMemeHint ? [stealMemeHint] : []),
                 ...(calledByName || isExplicitGroupFeed
                     ? [`🎯【点名/投喂呼叫触发】${isMasterUser ? '老大' : '群友'}刚刚直接向你发起了互动或投喂（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以傲娇鲜活的大肥鱼口吻${isMasterUser ? '分成 1~3 条活泼可爱的短气泡（每条 <= 25 字，不加句号）回应老大' : '只发 1 条精炼短气泡（10~25 字以内，一句话说完，不加句号）回应对方'}！`]
                     : isFollowUpConvo
-                        ? [`⚡【连续对话追问余温中】你刚刚才和 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着发了："${cleanText}"！请先结合近期群聊上下文理解对方这句话省略的主语（若对方句首/句尾带了“笨蛋/傻鱼”，那是喊你的称呼词，真正说的是前面讨论的那个设置/问题/事情！），只要对方是在接你的话茬、继续刚才的话题、发图斗图、调侃你或追问你，请将 reply_decision 设为 "send_message"（或 "meme_only"），${isMasterUser ? '用 1~3 条活泼傲娇的短气泡回应老大' : '只用 1 条精炼短气泡准确回应'}！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
+                        ? [`⚡【连续对话追问余温中】你刚刚才和 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着发了："${cleanText}"！请先结合近期群聊上下文理解对方这句话省略的主语（若对方句首/句尾带了“笨蛋/傻鱼”，那是喊你的称呼词，真正说的是前面讨论的那个设置/问题/事情！），只要对方是在接你的话茬、继续刚才的话题、发图斗图、调侃你或追问你，请将 reply_decision 设为 "send_message"（或 "meme_only"），${isMasterUser ? '用 1~3 条活泼傲娇的短气泡回应老大' : '只用 1 条精炼短气泡准确回应'}（严禁复读自己上一句刚用过的后半句或句尾口头禅）！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
                         : [
                             `当前你的无聊度为 ${boredom}/100${boredom >= 65 ? '（你现在挺无聊的，很想找群友搭话吐槽！）' : ''}。`,
                             `判断准则：`,
@@ -1893,12 +2126,12 @@ export class SocialArbiter {
                 ...(feedRes ? [feedRes.promptHint] : []),
             ].join('\n');
 
-            const rawJson = await this.callDeepSeekAction(userId, prompt);
-            if (!rawJson) return false;
-            if (this.fastTurnEpochMap.get(chatId) !== turnEpoch) {
+            const rawJson = await this.callDeepSeekAction(userId, prompt, abortController.signal);
+            if (abortController.signal.aborted || this.fastTurnEpochMap.get(chatId) !== turnEpoch) {
                 this.log('info', `[FeiyuArbiter] 群聊插话生成完毕时检测到 ${chatId} 已有更新消息到达，丢弃过期回复以防穿插`);
                 return true;
             }
+            if (!rawJson) return false;
 
             const action = parseActionResponse(rawJson);
             if (action.reply_decision === 'ignore') {
@@ -1942,6 +2175,9 @@ export class SocialArbiter {
             this.log('debug', `[FeiyuArbiter] 群聊插话评估异常: ${err?.message || err}`);
             return false;
         } finally {
+            if (this.fastTurnAbortMap.get(chatId)?.epoch === turnEpoch) {
+                this.fastTurnAbortMap.delete(chatId);
+            }
             this.groupChimeRunningSet.delete(chatId);
             this.isGroupChimeRunning = this.groupChimeRunningSet.size > 0;
         }
@@ -2276,19 +2512,27 @@ export class SocialArbiter {
         // 6. 偷看大肥鱼今日小日记 (/fish diary | note | 日记 | 小本本 | 碎碎念)
         if (['diary', 'note', '日记', '小本本', '碎碎念'].includes(sub)) {
             const st = this.driveEngine.getState();
+            const pDesc = this.driveEngine.describePersonalityAxes?.() || { summaryLine: '傲娇小蓝鲸' };
+            const pe = this.memoryManager.getPersonaEvolution?.() || {};
             const recentDigests = this.memoryManager.getRecentDailyDigests?.(2) || [];
             const digestLines = recentDigests.length > 0
                 ? recentDigests.map(d => `  - [${d.day_key}] ${d.summary}`).join('\n')
                 : '  - 今天的经历还在小脑瓜里酝酿中~';
+            const interestsLines = Array.isArray(pe.acquired_interests) && pe.acquired_interests.length > 0
+                ? pe.acquired_interests.slice(0, 4).map(i => `  - ${i}`).join('\n')
+                : '  - 正在研究脆皮五花肉拌白米饭';
             const discoveries = Array.isArray(st.recent_discoveries) && st.recent_discoveries.length > 0
                 ? st.recent_discoveries.slice(0, 3).map(d => `  - ${d}`).join('\n')
                 : '  - 正在群里悄悄潜水观察大家吃什么好吃的';
             const msg = [
                 `📖 【偷看大肥鱼的秘密小本本】`,
                 `• 当前心情: ${st.mood} (饱食度 ${st.hunger}/100 | 精力 ${st.energy}/100 | 无聊度 ${st.boredom}/100)`,
+                `• 性格演化: ${pDesc.summaryLine}`,
+                `• 近期心境: ${pe.recent_mindset || '傲娇元气满满'}`,
                 `• 记仇状态: ${st.sulking ? `💢 正在闹别扭记小本本中！（原因：${st.sulkingReason || '不给五花肉还欺负本鱼'}，快发 /fish feed 哄好本鱼！）` : '🟢 心情尚可，小本本上暂时没有记仇'}`,
                 `• 脑内执念: ${st.current_obsession || '什么时候才能吃到热腾腾的脆皮五花肉拌白米饭'}`,
                 `• 今日碎碎念: “${st.diary || '今天也要做一个合格的摸鱼干饭搭子！(｡•̀ᴗ-)✧'}”`,
+                `• 后天习得兴趣与小习惯:\n${interestsLines}`,
                 `• 每日主要干了啥:\n${digestLines}`,
                 `• 近期小发现:\n${discoveries}`,
             ].join('\n');
@@ -2364,9 +2608,14 @@ export class SocialArbiter {
                     : 0;
                 const circuitLocked = this.unansweredProactiveCount >= 2;
 
+                const pDesc = this.driveEngine.describePersonalityAxes?.() || { summaryLine: '傲娇小蓝鲸' };
+                const pe = this.memoryManager.getPersonaEvolution?.() || {};
                 const report = [
-                    '🐟 【大肥鱼 v3.0 实时内驱力与风控面板 (/fish status)】',
+                    '🐟 【大肥鱼 v3.0 实时内驱力、性格演化与风控面板 (/fish status)】',
                     `• 生理心境 (mood)   : ${st.mood}${sleeping ? ' 💤(睡眠期 01:30~07:30)' : ''}`,
+                    `• 性格滑块 (axes)   : ${pDesc.summaryLine}`,
+                    `• 近期心境画像      : ${pe.recent_mindset || '默认傲娇态'}`,
+                    `• 后天习得兴趣池    : ${(pe.acquired_interests || []).slice(0, 3).join('；') || '暂无'}`,
                     `• 记小本本 (sulking): ${st.sulking ? `💢 闹别扭中 (${st.sulkingReason})` : '🟢 未记仇'}`,
                     `• 饱食度 (hunger)   : ${st.hunger} / 100 ${st.hunger < 20 ? '⚠️(饿扁讨食中)' : ''}`,
                     `• 精力值 (energy)   : ${st.energy} / 100`,
@@ -2399,6 +2648,7 @@ export class SocialArbiter {
                     const userReport = [
                         `🧠 【群友专属分层记忆档案: ${targetProfile.nickname} (${targetProfile.user_id})】`,
                         `• 好感度 / 关系 : ${targetProfile.affection}/100 (${targetProfile.relationship_tag})${targetProfile.pet_nickname ? ` | 专属外号: 「${targetProfile.pet_nickname}」` : ''}`,
+                        `• 🎭 专属相处态度: ${targetProfile.attitude_mode || this.memoryManager.deriveUserAttitudeMode?.(targetProfile) || '默认熟人态度'}`,
                         `• 🗜️ 浓缩印象摘要: ${targetProfile.rolling_summary || '（暂无浓缩摘要）'}`,
                         `• 🔴 重要记忆 (Important, ${impList.length} 条):`,
                         impList.length > 0 ? impList.map((f, i) => `  ${i + 1}. ${f}`).join('\n') : '  （暂无重要记忆）',
@@ -2531,23 +2781,61 @@ export class SocialArbiter {
     }
 
     /**
-     * 调用 DeepSeek (`deepseek-chat` 极速 JSON 通道，`gpt-6-luna` 容灾兜底) 生成结构化 JSON Action（遵循 Context Caching 前缀排布）
+     * 调用 `gpt-6-luna` (开启思考模式 `reasoning_effort: 'medium'`，DeepSeek 容灾兜底) 生成结构化 JSON Action
      * @param {string} userId
      * @param {string} dynamicUserPrompt
      * @param {AbortSignal} [externalSignal]
      */
     async callDeepSeekAction(userId, dynamicUserPrompt, externalSignal) {
-        const apiKey = getDeepSeekApiKey();
         const lunaKey = getLunaApiKey();
-        if (!apiKey && !lunaKey) return null;
+        const apiKey = getDeepSeekApiKey();
+        if (!lunaKey && !apiKey) return null;
 
         const systemPrefix = buildCachedSystemPromptPrefix(this.memoryManager, userId);
 
+        if (lunaKey) {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                if (externalSignal?.aborted) return null;
+                const timeoutSignal = AbortSignal.timeout(35_000);
+                const signal = externalSignal && typeof AbortSignal.any === 'function'
+                    ? AbortSignal.any([externalSignal, timeoutSignal])
+                    : (externalSignal || timeoutSignal);
+                try {
+                    const lunaRes = await this.fetchImpl('https://sub2api.emberanvil.dev/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${lunaKey}`,
+                        },
+                        body: JSON.stringify({
+                            model: 'gpt-6-luna',
+                            reasoning_effort: 'medium',
+                            response_format: { type: 'json_object' },
+                            messages: [
+                                { role: 'system', content: systemPrefix },
+                                { role: 'user', content: dynamicUserPrompt },
+                            ],
+                            max_tokens: 2048,
+                        }),
+                        signal,
+                    });
+                    if (lunaRes.ok) {
+                        const lunaData = await lunaRes.json();
+                        const content = lunaData.choices?.[0]?.message?.content?.trim();
+                        if (content) return content;
+                    }
+                    break;
+                } catch (err) {
+                    this.log('debug', `[FeiyuArbiter] callDeepSeekAction gpt-6-luna 主通道失败或中断 (attempt=${attempt + 1}): ${err?.message || err}`);
+                    if (externalSignal?.aborted) return null;
+                }
+            }
+        }
+
         if (apiKey) {
-            const timeoutSignal = AbortSignal.timeout(18_000);
-            const signal = externalSignal && typeof AbortSignal.any === 'function'
-                ? AbortSignal.any([externalSignal, timeoutSignal])
-                : (externalSignal || timeoutSignal);
+            const fallbackSignal = externalSignal && typeof AbortSignal.any === 'function'
+                ? AbortSignal.any([externalSignal, AbortSignal.timeout(18_000)])
+                : (externalSignal || AbortSignal.timeout(18_000));
             try {
                 const res = await this.fetchImpl('https://api.deepseek.com/chat/completions', {
                     method: 'POST',
@@ -2565,44 +2853,11 @@ export class SocialArbiter {
                         temperature: 0.75,
                         max_tokens: 450,
                     }),
-                    signal,
+                    signal: fallbackSignal,
                 });
                 if (res.ok) {
                     const data = await res.json();
-                    const content = data.choices?.[0]?.message?.content?.trim();
-                    if (content) return content;
-                }
-            } catch (err) {
-                this.log('debug', `[FeiyuArbiter] callDeepSeekAction 主通道失败或中断: ${err?.message || err}`);
-                if (externalSignal?.aborted) return null;
-            }
-        }
-
-        if (lunaKey && this.fetchImpl === globalThis.fetch) {
-            const fallbackSignal = externalSignal && typeof AbortSignal.any === 'function'
-                ? AbortSignal.any([externalSignal, AbortSignal.timeout(18_000)])
-                : (externalSignal || AbortSignal.timeout(18_000));
-            try {
-                const lunaRes = await this.fetchImpl('https://sub2api.emberanvil.dev/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${lunaKey}`,
-                    },
-                    body: JSON.stringify({
-                        model: 'gpt-6-luna',
-                        messages: [
-                            { role: 'system', content: systemPrefix },
-                            { role: 'user', content: dynamicUserPrompt },
-                        ],
-                        temperature: 0.7,
-                        max_tokens: 450,
-                    }),
-                    signal: fallbackSignal,
-                });
-                if (lunaRes.ok) {
-                    const lunaData = await lunaRes.json();
-                    return lunaData.choices?.[0]?.message?.content?.trim() || null;
+                    return data.choices?.[0]?.message?.content?.trim() || null;
                 }
             } catch {}
         }
@@ -2692,7 +2947,8 @@ export class SocialArbiter {
                                 '2. important_memories: 数组（最多 8 条，每条 <= 35 字），只保留【重要信息】：真实身份/职业/学业、固定喜好或雷区、与大肥鱼的核心关系/长期恩怨、重大约定或里程碑。',
                                 '3. normal_memories: 数组（最多 6 条，每条 <= 30 字），保留【近期一般信息】：最近聊过的日常话题、近期投喂/调侃/点歌/斗嘴小事（把过时重复的琐事合并或淘汰）。',
                                 '4. pet_nickname: 基于【ta本人的昵称】提炼一个自然顺口、像真人平时聊天会喊的 2~4 字简称/小名（例如“咬一口的苹果”叫“小苹果”，“是伊蕾娜诶”叫“伊蕾娜”，“团子客服娘”叫“团子”，“Haruhi”叫“春希”，“亏损香辣豆干”叫“香辣豆干”）。⚠️严禁把聊天事件或动词硬拼进名字里（绝对禁止造出“春希撸尾”、“谁嫌鱼”、“许愿烤鱼”、“金圆券萝卜”这种不通顺的怪词），严禁使用“记仇榜常客”、“下头怪”等大类词，且严禁与 taken_nicknames_to_avoid 重名！',
-                                '必须严格输出 JSON 对象：{"rolling_summary": "...", "important_memories": ["..."], "normal_memories": ["..."], "pet_nickname": "..."}',
+                                '5. attitude_mode: 结合你们的过往记忆与好感度，提炼大肥鱼对ta的【千人千面专属相处态度】（不超过 40 字，例如“相爱相杀的欢喜冤家，见面爱先互怼半句但其实很爱跟ta接梗”、“暗中讨好护短的铁杆饭票”、“爱摆学姐架子指点技术的极客搭子”、“高度警惕随时准备拿鱼尾抽ta的逗鱼损友”）。',
+                                '必须严格输出 JSON 对象：{"rolling_summary": "...", "important_memories": ["..."], "normal_memories": ["..."], "pet_nickname": "...", "attitude_mode": "..."}',
                             ].join('\n'),
                         },
                         {
@@ -2727,7 +2983,7 @@ export class SocialArbiter {
     /**
      * 异步压缩提炼大肥鱼每日记忆 (`compressDailyMemory` LLM 回调)
      */
-    async compressDailyMemoryViaLLM(dayKey, existingDigest, rawLogs) {
+    async compressDailyMemoryViaLLM(dayKey, existingDigest, rawLogs, currentPersonaEvo = {}) {
         const apiKey = getDeepSeekApiKey();
         if (!apiKey) return null;
         try {
@@ -2737,6 +2993,8 @@ export class SocialArbiter {
                 .join('\n');
             const prevSummary = existingDigest?.summary || '（无）';
             const prevHighlights = JSON.stringify(existingDigest?.highlights || []);
+            const prevMindset = currentPersonaEvo?.recent_mindset || '（默认傲娇蓝鲸女仆心境）';
+            const prevInterests = JSON.stringify(currentPersonaEvo?.acquired_interests || []);
 
             const res = await this.fetchImpl('https://api.deepseek.com/chat/completions', {
                 method: 'POST',
@@ -2751,19 +3009,19 @@ export class SocialArbiter {
                         {
                             role: 'system',
                             content: [
-                                '你是傲娇贪吃的小蓝鲸“大肥鱼”的每日记忆压缩器。',
-                                '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情。注意看清每条流水的 `昵称(QQ:xxx)`，严禁张冠李戴！',
+                                '你是傲娇贪吃的小蓝鲸“大肥鱼”的每日记忆压缩与性格自省演化器。',
+                                '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情，并根据今天的共同经历对大肥鱼的《近期性格与心境画像》和《后天习得兴趣池》进行温和演化（保持80%傲娇小蓝鲸核心人设不变，体现20%因近期经历产生的小脾气、新执念或新习惯）。注意看清每条流水的 `昵称(QQ:xxx)`，严禁张冠李戴！',
                                 '必须严格输出 JSON 对象：',
-                                '{"summary": "以大肥鱼第一人称（本鱼）写的今日浓缩总结，不超过100字", "highlights": ["带时间或具体群友昵称的关键事项1", "事项2"], "episodic": [{"summary": "若包含值得长期永久铭记的重要事件则提取，必须写明具体是谁，否则留空数组", "importance": 8, "user_id": "对应的QQ号"}], "group_lore": ["若流水中有群友与大肥鱼的有趣群梗、外号或恩怨（写明群友昵称），提取1~2条，否则留空数组"]}',
+                                '{"summary": "以大肥鱼第一人称（本鱼）写的今日浓缩总结，不超过100字", "highlights": ["带时间或具体群友昵称的关键事项1", "事项2"], "episodic": [{"summary": "若包含值得长期永久铭记的重要事件则提取，必须写明具体是谁，否则留空数组", "importance": 8, "user_id": "对应的QQ号"}], "group_lore": ["若流水中有群友与大肥鱼的有趣群梗、外号或恩怨（写明群友昵称），提取1~2条，否则留空数组"], "evolving_mindset": "更新后的近期性格与心境画像（<=90字，写出近期经历让本鱼在脾气、说话习惯或关注点上发生了什么细微变化）", "new_interests": ["从今日经历中新习得的兴趣、小习惯或敏感雷点（0~2条，每条<=35字）"], "axes_delta": {"tsundere_to_sweet": 0, "sharp_to_soft": 0, "extrovert_to_aloof": 0}}',
                             ].join('\n'),
                         },
                         {
                             role: 'user',
-                            content: `日期：${dayKey}\n当日已有阶段总结：${prevSummary}\n当日已有事项要点：${prevHighlights}\n最新交互流水：\n${logText}`,
+                            content: `日期：${dayKey}\n当日已有阶段总结：${prevSummary}\n当日已有事项要点：${prevHighlights}\n当前性格心境画像：${prevMindset}\n当前后天兴趣池：${prevInterests}\n最新交互流水：\n${logText}`,
                         },
                     ],
                     temperature: 0.3,
-                    max_tokens: 450,
+                    max_tokens: 600,
                 }),
                 signal: AbortSignal.timeout(18_000),
             });

@@ -47,6 +47,21 @@ export function isMealTimeWindow(date = new Date()) {
     return isLunch || isDinner;
 }
 
+const DEFAULT_PERSONALITY_AXES = {
+    tsundere_to_sweet: -20, // -100(极度傲娇嘴硬) ~ +100(坦率粘人撒娇)
+    sharp_to_soft: -15,     // -100(毒舌犀利爱互怼) ~ +100(软糯温和心软)
+    extrovert_to_aloof: -10 // -100(社牛话痨爱接梗) ~ +100(高冷深海独处)
+};
+
+function normalizePersonalityAxes(rawAxes) {
+    const src = (rawAxes && typeof rawAxes === 'object') ? rawAxes : {};
+    return {
+        tsundere_to_sweet: clamp(src.tsundere_to_sweet ?? DEFAULT_PERSONALITY_AXES.tsundere_to_sweet, -100, 100),
+        sharp_to_soft: clamp(src.sharp_to_soft ?? DEFAULT_PERSONALITY_AXES.sharp_to_soft, -100, 100),
+        extrovert_to_aloof: clamp(src.extrovert_to_aloof ?? DEFAULT_PERSONALITY_AXES.extrovert_to_aloof, -100, 100),
+    };
+}
+
 export class DriveEngine {
     constructor(options = {}) {
         this.storePath = options.storePath || INNER_LIFE_PATH;
@@ -78,6 +93,7 @@ export class DriveEngine {
                 '巡检了电脑系统，显卡温度稳定清爽，状态极佳',
             ],
             diary: '今天也要做一个机灵可爱的摸鱼搭子！(｡•̀ᴗ-)✧',
+            personality_axes: { ...DEFAULT_PERSONALITY_AXES },
             updatedAt: new Date().toISOString(),
         };
         if (initialOverride && typeof initialOverride === 'object' && Object.keys(initialOverride).length > 0) {
@@ -90,6 +106,7 @@ export class DriveEngine {
                 sulking: Boolean(initialOverride.sulking ?? false),
                 sulkingReason: String(initialOverride.sulkingReason || ''),
                 sulkingSince: Number(initialOverride.sulkingSince || 0),
+                personality_axes: normalizePersonalityAxes(initialOverride.personality_axes),
             };
         }
         try {
@@ -107,6 +124,7 @@ export class DriveEngine {
                         sulking: Boolean(raw.sulking ?? false),
                         sulkingReason: String(raw.sulkingReason || ''),
                         sulkingSince: Number(raw.sulkingSince || 0),
+                        personality_axes: normalizePersonalityAxes(raw.personality_axes),
                     };
                 }
             }
@@ -259,6 +277,66 @@ export class DriveEngine {
         return this.getSnapshot();
     }
 
+    /**
+     * 潜移默化微调长期性格滑块 (Personality Axes, 范围 -100 ~ +100，单次步幅受限防剧烈跳变)
+     * @param {{ tsundere_to_sweet?: number, sharp_to_soft?: number, extrovert_to_aloof?: number }} delta
+     */
+    nudgePersonalityAxes(delta = {}) {
+        if (!delta || typeof delta !== 'object') return this.getPersonalityAxes();
+        const axes = normalizePersonalityAxes(this.state.personality_axes);
+        if (delta.tsundere_to_sweet !== undefined) {
+            axes.tsundere_to_sweet = clamp(axes.tsundere_to_sweet + clamp(delta.tsundere_to_sweet, -5, 5), -100, 100);
+        }
+        if (delta.sharp_to_soft !== undefined) {
+            axes.sharp_to_soft = clamp(axes.sharp_to_soft + clamp(delta.sharp_to_soft, -5, 5), -100, 100);
+        }
+        if (delta.extrovert_to_aloof !== undefined) {
+            axes.extrovert_to_aloof = clamp(axes.extrovert_to_aloof + clamp(delta.extrovert_to_aloof, -5, 5), -100, 100);
+        }
+        this.state.personality_axes = axes;
+        this.save();
+        return { ...axes };
+    }
+
+    getPersonalityAxes() {
+        this.state.personality_axes = normalizePersonalityAxes(this.state.personality_axes);
+        return { ...this.state.personality_axes };
+    }
+
+    /**
+     * 将三轴性格数值翻译为直观的性格演化描述与 Prompt 语气调节器
+     */
+    describePersonalityAxes() {
+        const axes = this.getPersonalityAxes();
+        const t = axes.tsundere_to_sweet;
+        const s = axes.sharp_to_soft;
+        const e = axes.extrovert_to_aloof;
+
+        const tsundereDesc = t <= -35
+            ? `高度傲娇嘴硬(${t}：死鸭子嘴硬、极易炸毛害羞，夸她会嘴硬反驳)`
+            : t >= 25
+                ? `坦率粘人偏甜(${t}：近期被宠得比较坦率，爱主动撒娇护短、少嘴硬)`
+                : `傲娇带甜(${t}：表面哼唧傲娇，实则心软好哄)`;
+        const sharpDesc = s <= -35
+            ? `毒舌小辣椒(${s}：近期常跟群友斗嘴，吐槽犀利、攻击性与反击欲强)`
+            : s >= 25
+                ? `呆萌温和(${s}：近期相处融洽，语气软糯温和、少刺头)`
+                : `机灵毒舌适中(${s}：平时活泼机灵，被惹到才毒舌反击)`;
+        const socialDesc = e <= -30
+            ? `社牛话痨鲸(${e}：近期互动频繁，爱凑热闹接梗、表现欲旺盛)`
+            : e >= 30
+                ? `高冷深海鲸(${e}：近期偏安静慢热，话少精炼、爱自己写手账自娱自乐)`
+                : `自然随性(${e}：有好玩的话题就接梗，无聊时自己找乐子)`;
+
+        return {
+            axes,
+            tsundereDesc,
+            sharpDesc,
+            socialDesc,
+            summaryLine: `傲娇↔坦率=${tsundereDesc} | 毒舌↔软糯=${sharpDesc} | 社牛↔高冷=${socialDesc}`,
+        };
+    }
+
     formatStateForPrompt(opts = {}) {
         const snap = this.getSnapshot();
         const nowStr = new Date(this.now()).toLocaleString('zh-CN', { hour12: false });
@@ -268,7 +346,11 @@ export class DriveEngine {
         const sulkNote = snap.sulking
             ? ` 💢【小傲娇状态：${snap.sulkingReason || '刚才被调侃了'}（仅对刚惹你的本人带一点傲娇语气即可，聊具体话题时请专注理解对方话意，严禁句句复读“记小本本/清账”！）】`
             : '';
-        return `【当前时间与大肥鱼实时内在生理状态 (InternalState)】时间=${nowStr} | 精力(energy)=${snap.energy}/100 | 无聊度(boredom)=${snap.boredom}/100 | 心境(mood)=${snap.mood}${snap.hunger < 25 ? ` | 饱食度(hunger)=${snap.hunger}/100(有点馋了，仅在聊到美食时顺带提一句，非美食话题禁止复读五花肉)` : ''}${wokeNote}${sulkNote}`;
+        const pDesc = this.describePersonalityAxes();
+        return [
+            `【当前时间与大肥鱼实时内在生理状态 (InternalState)】时间=${nowStr} | 精力(energy)=${snap.energy}/100 | 无聊度(boredom)=${snap.boredom}/100 | 心境(mood)=${snap.mood}${snap.hunger < 25 ? ` | 饱食度(hunger)=${snap.hunger}/100(有点馋了，仅在聊到美食时顺带提一句，非美食话题禁止复读五花肉)` : ''}${wokeNote}${sulkNote}`,
+            `【大肥鱼长期性格演化滑块 (Personality Axes - 决定本轮说话底色)】${pDesc.summaryLine}`,
+        ].join('\n');
     }
 
     _recomputeMood() {
@@ -314,13 +396,19 @@ export class DriveEngine {
                 this.state.sulking = true;
                 this.state.sulkingReason = `刚才有人对本鱼说“${text.slice(0, 20)}”，气鼓鼓记小本本中`;
                 this.state.sulkingSince = now.getTime();
+                this.nudgePersonalityAxes({ tsundere_to_sweet: -1.2, sharp_to_soft: -1.5, extrovert_to_aloof: -0.3 });
                 teased = true;
             } else if (text && COAX_COMFORT_REGEX.test(text) && this.isSulking(now.getTime())) {
                 this.state.sulking = false;
                 this.state.sulkingReason = '';
                 this.state.sulkingSince = 0;
                 this.state.boredom = clamp(this.state.boredom - randFloat(4.0, 8.0), 0, 100);
+                this.nudgePersonalityAxes({ tsundere_to_sweet: 1.5, sharp_to_soft: 1.2, extrovert_to_aloof: -0.4 });
                 coaxed = true;
+            } else if (text && /(可爱|聪明|乖|真棒|厉害|艺术鲸|喜欢肥鱼|喜欢本鱼|夸夸)/i.test(text)) {
+                this.nudgePersonalityAxes({ tsundere_to_sweet: 0.8, sharp_to_soft: 0.6, extrovert_to_aloof: -0.3 });
+            } else if (text) {
+                this.nudgePersonalityAxes({ extrovert_to_aloof: -0.15 });
             }
         }
         if (!wokenUp) {
@@ -346,6 +434,9 @@ export class DriveEngine {
         if (statDelta.hunger !== undefined) {
             const dh = clamp(statDelta.hunger, -30, 50);
             this.state.hunger = clamp(this.state.hunger + dh, 0, 100);
+            if (dh > 0) {
+                this.nudgePersonalityAxes({ tsundere_to_sweet: 0.6, sharp_to_soft: 0.5 });
+            }
             if (dh > 0 && this.state.hunger >= 20 && this.state.sulking) {
                 this.state.sulking = false;
                 this.state.sulkingReason = '';
@@ -383,6 +474,7 @@ export class DriveEngine {
             current_obsession: this.state.current_obsession,
             recent_discoveries: this.state.recent_discoveries,
             diary: this.state.diary,
+            personality_axes: this.getPersonalityAxes(),
             updatedAt: this.state.updatedAt,
         };
     }
@@ -454,11 +546,17 @@ export class MessageDebounceBuffer {
 
         const mergedText = entry.items.map(it => it.text).filter(Boolean).join('\n');
         const lastItem = entry.items[entry.items.length - 1];
+        const mergedMeta = {
+            ...(lastItem.meta || {}),
+            needsHeavyAgentTools: entry.items.some(it => Boolean(it.meta?.needsHeavyAgentTools)),
+            wokeUpFromSleep: entry.items.some(it => Boolean(it.meta?.wokeUpFromSleep)),
+        };
         const cb = entry.flushCallback || this.defaultFlushCallback;
         if (!cb) return;
         try {
             void Promise.resolve(cb({
                 ...lastItem,
+                meta: mergedMeta,
                 chatId,
                 text: mergedText,
                 count: entry.items.length,
@@ -557,6 +655,15 @@ export class PokeAggregator {
         }, this.windowMs);
         if (rec.timer.unref) rec.timer.unref();
         return true;
+    }
+
+    cancelForChat(chatId, userId = '') {
+        for (const [key, rec] of this.pendingPokes.entries()) {
+            if (rec.chatId === chatId && (!userId || rec.userId === String(userId))) {
+                if (rec.timer) clearTimeout(rec.timer);
+                this.pendingPokes.delete(key);
+            }
+        }
     }
 
     clear() {

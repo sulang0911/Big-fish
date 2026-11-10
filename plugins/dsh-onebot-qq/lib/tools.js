@@ -273,7 +273,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             // 1. 首选尝试 Sub2API (ChatGPT 官方生图引擎)
             if (apiKey) {
                 try {
-                    const apiUrl = 'https://sub2api.echovoid.top/v1/images/generations';
+                    const apiUrl = 'https://sub2api.emberanvil.dev/v1/images/generations';
                     const payload = {
                         prompt: finalPrompt,
                         model: 'gpt-image-2',
@@ -287,7 +287,7 @@ export function registerTools(ctx, bridge, connection, limits) {
                             'Authorization': `Bearer ${apiKey}`
                         },
                         body: JSON.stringify(payload),
-                        signal: AbortSignal.timeout(60000)
+                        signal: AbortSignal.timeout(90000)
                     });
 
                     if (response.ok) {
@@ -374,19 +374,19 @@ export function registerTools(ctx, bridge, connection, limits) {
         try {
             if (fs.existsSync(VOICE_CONFIG_PATH)) {
                 const cfg = JSON.parse(fs.readFileSync(VOICE_CONFIG_PATH, 'utf-8'));
-                const activeKey = cfg.active_voice || 'klee';
-                const voice = cfg.voices?.[activeKey] || cfg.voices?.klee;
+                const activeKey = cfg.active_voice || 'dafeiyu';
+                const voice = cfg.voices?.[activeKey] || cfg.voices?.dafeiyu || cfg.voices?.klee;
                 if (voice) return voice;
             }
         } catch (e) {
             console.error('[VoiceConfig] 读取失败:', e);
         }
         return {
-            id: 'klee',
-            name: '可莉',
-            style: '元气天真萝莉音',
-            ref_audio: 'D:\\ollama\\voices\\klee\\116425_audio.wav',
-            prompt_text: '抓到了就是这里，我们来把宝物挖出来吧。'
+            id: 'dafeiyu',
+            name: '大肥鱼本鱼',
+            style: '经典傲娇憨萌本音',
+            ref_audio: 'D:\\ollama\\voices\\dafeiyu\\dwg_0002.wav',
+            prompt_text: '什么嘛，这么简单的事情，你居然专门跑来问我？'
         };
     }
 
@@ -396,7 +396,14 @@ export function registerTools(ctx, bridge, connection, limits) {
         const key = String(voiceKey).toLowerCase().trim();
         let targetKey = null;
         for (const [k, v] of Object.entries(cfg.voices || {})) {
-            if (k.toLowerCase() === key || v.name === key || (v.style && v.style.includes(key))) {
+            const aliases = Array.isArray(v.aliases) ? v.aliases.map(a => String(a).toLowerCase()) : [];
+            if (
+                k.toLowerCase() === key ||
+                v.name === key ||
+                v.name?.toLowerCase().includes(key) ||
+                aliases.some(a => a === key || key.includes(a)) ||
+                (v.style && v.style.includes(key))
+            ) {
                 targetKey = k;
                 break;
             }
@@ -409,9 +416,9 @@ export function registerTools(ctx, bridge, connection, limits) {
 
     register(defineTool({
         name: 'qq_send_tts',
-        description: '使用本地部署的 GPT-SoVITS 语音大模型将指定文字合成大肥鱼的声音，并向 QQ 会话发送语音消息。采用当前激活的音色（支持可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜）。仅用于日常聊天说话、向老大撒娇或要求发语音时调用。严禁用于唱歌或点歌（任何人点歌/唱歌必须调用 qq_sing_song）！',
+        description: '使用本地部署的 GPT-SoVITS 语音大模型将指定文字合成大肥鱼的声音，并向 QQ 会话发送语音消息。采用当前激活的音色（支持大肥鱼本鱼原版配音/可莉/芙宁娜/胡桃/神里绫华/雷电将军/八重神子/芭芭拉/迪奥娜）。仅用于日常聊天说话、向老大撒娇或要求发语音时调用。严禁用于唱歌或点歌（任何人点歌/唱歌必须调用 qq_sing_song）！',
         parameters: {
-            text: { type: 'string', required: true, description: '要转换并发出的语音文字内容（建议 5~30 字，简洁生动）' },
+            text: { type: 'string', required: true, description: '要转换并发出的语音文字内容（必须写成像真人亲口说话一样的自然口语短句，建议 6~28 字，句首可用“哼，/哎呀，”，句尾用自然语气词“啦/呢/呀/嘛”，切勿在句末生硬粘“哼”字）' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
         },
         output: sendOutput(),
@@ -444,7 +451,7 @@ export function registerTools(ctx, bridge, connection, limits) {
                 throw new Error('IndexTTS-2.5 语音合成失败: ' + errText);
             }
             const rawBuffer = Buffer.from(await response.arrayBuffer());
-            const buffer = padWavSilence(rawBuffer, 250);
+            const buffer = padWavSilence(rawBuffer, 20);
             const filename = `tts_${Date.now()}.wav`;
             const allowedRoots = await mediaRoots(bridge, exec);
             const mediaDir = allowedRoots[0] || bridge.deps?.config?.mediaDir || 'C:\\Users\\25362\\.dsh\\media\\onebot';
@@ -465,9 +472,9 @@ export function registerTools(ctx, bridge, connection, limits) {
     }));
     register(defineTool({
         name: 'qq_switch_voice',
-        description: '【音色切换工具】允许用户随时切换大肥鱼的说话音色。支持可选音色：klee（可莉/元气萝莉）、furina（芙宁娜/优雅女王）、hutao（胡桃/俏皮少女）、ayaka（神里绫华/端庄温婉少女）、raiden（雷电将军/威严女王御姐）、yae（八重神子/妩媚慵懒御姐）、barbara（芭芭拉/治愈甜妹）、diona（迪奥娜/傲娇猫娘）。当老大或用户说「换成胡桃声音」、「切换音色为雷电将军」、「换成神里绫华音色」、「换成八重神子」等指令时调用此工具。切换后会自动使用新音色发一条语音确认。',
+        description: '【音色切换工具】允许用户随时切换大肥鱼的说话音色。支持可选音色：dafeiyu（大肥鱼本鱼/原版傲娇配音）、klee（可莉/元气萝莉）、furina（芙宁娜/优雅女王）、hutao（胡桃/俏皮少女）、ayaka（神里绫华/端庄温婉少女）、raiden（雷电将军/威严女王御姐）、yae（八重神子/妩媚慵懒御姐）、barbara（芭芭拉/治愈甜妹）、diona（迪奥娜/傲娇猫娘）。当老大或用户说「换成大肥鱼声音」、「换成原版肥鱼配音」、「换成胡桃声音」、「切换音色为雷电将军」等指令时调用此工具。切换后会自动使用新音色发一条语音确认。',
         parameters: {
-            voice: { type: 'string', required: true, description: '目标音色标识或名称，如 "klee" / "可莉"、"furina" / "芙宁娜"、"hutao" / "胡桃"、"ayaka" / "神里绫华"、"raiden" / "雷电将军"、"yae" / "八重神子"' },
+            voice: { type: 'string', required: true, description: '目标音色标识或名称，如 "dafeiyu" / "大肥鱼本鱼"、"klee" / "可莉"、"furina" / "芙宁娜"、"hutao" / "胡桃"、"ayaka" / "神里绫华"、"raiden" / "雷电将军"、"yae" / "八重神子"' },
             chat_id: { type: 'string', description: '目标会话；省略时默认当前会话' },
         },
         output: sendOutput(),
@@ -477,7 +484,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             const chatId = resolveChat(bridge, exec, a.chat_id);
             const voice = setActiveVoice(a.voice);
             if (!voice) {
-                throw new Error(`未知音色: "${a.voice}"。支持的音色包括：可莉 (klee)、芙宁娜 (furina)、胡桃 (hutao)、神里绫华 (ayaka)、雷电将军 (raiden)、八重神子 (yae)、芭芭拉 (barbara)、迪奥娜 (diona)`);
+                throw new Error(`未知音色: "${a.voice}"。支持的音色包括：大肥鱼本鱼 (dafeiyu)、可莉 (klee)、芙宁娜 (furina)、胡桃 (hutao)、神里绫华 (ayaka)、雷电将军 (raiden)、八重神子 (yae)、芭芭拉 (barbara)、迪奥娜 (diona)`);
             }
             const confirmText = `音色已切换为【${voice.name}·${voice.style}】啦！以后本鱼就用这个声音说话咯~`;
             const ttsUrl = 'http://127.0.0.1:9880/tts';
@@ -500,7 +507,7 @@ export function registerTools(ctx, bridge, connection, limits) {
                 throw new Error('TTS 合成确认语音失败: ' + (await response.text()));
             }
             const rawBuffer = Buffer.from(await response.arrayBuffer());
-            const buffer = padWavSilence(rawBuffer, 250);
+            const buffer = padWavSilence(rawBuffer, 20);
             const filename = `voice_switch_${Date.now()}.wav`;
             const allowedRoots = await mediaRoots(bridge, exec);
             const mediaDir = allowedRoots[0] || bridge.deps?.config?.mediaDir || 'C:\\Users\\25362\\.dsh\\media\\onebot';
@@ -531,8 +538,9 @@ export function registerTools(ctx, bridge, connection, limits) {
             const a = args;
             const chatId = resolveChat(bridge, exec, a.chat_id);
             const cfg = JSON.parse(fs.readFileSync(VOICE_CONFIG_PATH, 'utf-8'));
-            const active = cfg.voices[cfg.active_voice] || cfg.voices.klee;
-            let list = `【大肥鱼音色库（共 8 款精品音色）】\n当前生效：${active.name}（${active.style}）\n\n可选音色：\n`;
+            const active = cfg.voices[cfg.active_voice] || cfg.voices.dafeiyu || cfg.voices.klee;
+            const totalCount = Object.keys(cfg.voices || {}).length;
+            let list = `【大肥鱼音色库（共 ${totalCount} 款精品音色）】\n当前生效：${active.name}（${active.style}）\n\n可选音色：\n`;
             for (const v of Object.values(cfg.voices)) {
                 const mark = v.id === cfg.active_voice ? ' [当前生效]' : '';
                 list += `• ${v.name} (${v.id})${mark}：${v.style}\n  ${v.description}\n`;
@@ -580,7 +588,11 @@ export function registerTools(ctx, bridge, connection, limits) {
 
             const pyPath = 'D:\\ollama\\GPT-SoVITS-v2pro\\GPT-SoVITS-v2pro-20250604\\runtime\\python.exe';
             const scriptPath = 'D:\\deepseek-harness\\sovits\\sovits_sing.py';
-            const safeSongQuery = songQuery.replace(/["'`$\\]/g, ' ').trim() || '爱你';
+            const safeSongQuery = songQuery
+                .replace(/["'`$\\]/g, ' ')
+                .replace(/^(?:给我|帮我)?(?:唱一?首|来一?[首个]|点一?首|我想听|听一?首)\s*/i, '')
+                .replace(/\s*(?:的歌曲?|代表作|成名曲|名曲|好听的歌)$/i, '')
+                .trim() || '爱你';
 
             // 若超过 2.0 秒仍未返回，说明未命中本地缓存（正在实时下载伴奏与合成新歌），立即发一条“清嗓子”过渡气泡消除等待焦虑
             const prepTimer = setTimeout(() => {
@@ -595,7 +607,7 @@ export function registerTools(ctx, bridge, connection, limits) {
             try {
                 stdout = await new Promise((resolve, reject) => {
                     cpExecFile(pyPath, ['-u', scriptPath, '--song', safeSongQuery], {
-                        timeout: 120000,
+                        timeout: 150000,
                         windowsHide: true,
                         env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
                     }, (err, stdout, stderr) => {

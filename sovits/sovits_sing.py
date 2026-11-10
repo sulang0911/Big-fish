@@ -38,6 +38,15 @@ MAX_SONG_DURATION = 18.0  # 截取 18s 供 UVR5 分离，混音时自动按乐�
 
 # 多音色模型配置字典
 VOICE_MODELS = {
+    "dafeiyu": {
+        "name": "大肥鱼本鱼",
+        "engine": "rvc",
+        "model": r"D:\deepseek-harness\rvc\weights\dafeiyu.pth",
+        "config": "",
+        "cluster": "",
+        "spk": "dafeiyu",
+        "cluster_ratio": 0.0,
+    },
     "klee": {
         "name": "可莉",
         "model": os.path.join(SOVITS_DIR, "models", "klee_G_40000.pth"),
@@ -137,7 +146,7 @@ PRESETS = {
         "inst": os.path.join(SONGS_DIR, "xiaoxingyun_instrument_24s.wav"),
         "output": os.path.join(SONGS_DIR, "xiaoxingyun_klee_soulx_bgm.wav"),
         "f0_up_key": 0,
-        "alias": ["小幸运", "xiaoxingyun", "田馥甄", "幸运", "我的少女时代", "忧伤", "伤感", "抒情", "难过", "催泪", "慢歌", "安静", "怀念", "青春", "悲伤", "失恋", "体面", "后来", "泡沫", "可惜没如果"],
+        "alias": ["小幸运", "xiaoxingyun", "田馥甄", "幸运", "我的少女时代", "忧伤", "伤感", "抒情", "难过", "催泪", "慢歌", "安静", "怀念", "青春", "悲伤", "失恋"],
     },
     "nuannuan": {
         "title": "暖暖 - 梁静茹",
@@ -157,22 +166,22 @@ PRESETS = {
         "inst": os.path.join(SONGS_DIR, "qinghuaci_instrument_24s.wav"),
         "output": os.path.join(SONGS_DIR, "qinghuaci_klee_soulx_bgm.wav"),
         "f0_up_key": 12,
-        "alias": ["青花瓷", "qinghuaci", "古风", "国风", "中国风", "烟雨", "江南"],
+        "alias": ["青花瓷", "qinghuaci", "古风", "国风", "中国风", "烟雨江南"],
     },
 }
 
 
 def get_active_voice_key():
-    """读取当前活跃音色配置，未配置时默认 klee"""
+    """读取当前活跃音色配置，未配置时默认 dafeiyu"""
     cfg_path = r"D:\deepseek-harness\voice_config.json"
     if os.path.exists(cfg_path):
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-                return cfg.get("active_voice", "klee")
+                return cfg.get("active_voice", "dafeiyu")
         except Exception:
             pass
-    return "klee"
+    return "dafeiyu"
 
 
 def detect_key_offset(y, sr):
@@ -243,11 +252,31 @@ class DaFeiYuSoVitsSinger:
         return self.svc
 
     def convert(self, vocal_path, output_path, inst_path=None, key_offset="auto", cluster_ratio=None, f0_predictor="fcpe"):
-        """将干声转换为当前音色清唱或混音音频 (优先 SoulX-Singer 零样本大模型)"""
+        """将干声转换为当前音色清唱或混音音频 (RVC 专属模型优先极速转换，零样本 SoulX-Singer 次之)"""
         if not os.path.exists(vocal_path):
             raise FileNotFoundError(f"输入音频不存在: {vocal_path}")
 
-        # 1. 优先使用 SoulX-Singer 零样本高保真歌声大模型
+        # 1. 若当前音色拥有专属训练的 RVC 模型 (如 dafeiyu.pth 等)，优先直接调用 RVC 引擎（仅需 ~8s、显存占用极低且带立体声伴奏混音）
+        if getattr(self, "engine", "sovits") == "rvc" and os.path.exists(self.model_path):
+            print(f"[RVC Engine] 启动专属 RVC 歌声转换与混音 (音色: {self.voice}, 伴奏混音: {bool(inst_path)})...")
+            cmd = [
+                sys.executable,
+                r"D:\deepseek-harness\rvc\rvc_sing.py",
+                "--vocal", vocal_path,
+                "--output", output_path,
+                "--model", self.model_path,
+            ]
+            if key_offset is not None and str(key_offset).lower() != "auto":
+                cmd.extend(["--key", str(int(key_offset))])
+            if inst_path and os.path.exists(inst_path):
+                cmd.extend(["--bgm", inst_path, "--with-bgm"])
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                print(f"[RVC SUCCESS] 专属 RVC 翻唱已生成: {output_path}")
+                return output_path
+            print(f"[WARN] RVC 转换异常: {res.stderr or res.stdout}")
+
+        # 2. 使用 SoulX-Singer 零样本高保真歌声大模型
         soulx_py = r"D:\SoulX-Singer\venv\Scripts\python.exe"
         soulx_script = r"D:\SoulX-Singer\soulx_sing.py"
         if os.path.exists(soulx_py) and os.path.exists(soulx_script):
@@ -263,30 +292,13 @@ class DaFeiYuSoVitsSinger:
             if inst_path and os.path.exists(inst_path):
                 cmd.extend(["--inst", inst_path])
             try:
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                     print(f"[SoulX-Singer SUCCESS] 歌声大模型翻唱已生成: {output_path}")
                     return output_path
                 print(f"[WARN] SoulX-Singer 执行未生成有效文件，回退到经典引擎: {res.stderr or res.stdout}")
             except Exception as e:
                 print(f"[WARN] SoulX-Singer 运行异常: {e}，回退到经典引擎")
-
-        # 2. 回退模式: RVC 子进程
-        if getattr(self, "engine", "sovits") == "rvc":
-            key = 12 if (key_offset is None or str(key_offset).lower() == "auto") else int(key_offset)
-            print(f"[RVC Subprocess] 执行独立子进程 RVC 歌声转换 (音色: {self.voice}, 变调: {key:+d})...")
-            cmd = [
-                sys.executable,
-                r"D:\deepseek-harness\rvc\rvc_sing.py",
-                "--vocal", vocal_path,
-                "--output", output_path,
-                "--model", self.model_path,
-                "--key", str(key)
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-            if not os.path.exists(output_path):
-                raise RuntimeError(f"RVC 转换失败: {res.stderr or res.stdout}")
-            return output_path
 
         # 3. 回退模式: SO-VITS-SVC 4.1
         import numpy as np
@@ -370,10 +382,32 @@ def dynamic_sing_flow(song_query, voice=None):
         voice = "klee"
 
     query_clean = song_query.strip().strip("《》\"'").strip()
-    
+    query_clean = re.sub(r'^(?:给我|帮我)?(?:唱一?首|来一?[首个]|点一?首|我想听|听一?首)\s*', '', query_clean)
+    query_clean = re.sub(r'\s*(?:的歌曲?|代表作|成名曲|名曲|好听的歌)$', '', query_clean).strip()
+
+    # 歌手泛指点歌 -> 映射为该歌手最经典的代表作候选列表
+    ARTIST_REPRESENTATIVE_SONGS = {
+        "林俊杰": ["修炼爱情 林俊杰", "江南 林俊杰", "美人鱼 林俊杰", "小酒窝 林俊杰", "曹操 林俊杰"],
+        "jj": ["修炼爱情 林俊杰", "江南 林俊杰", "小酒窝 林俊杰"],
+        "周杰伦": ["晴天", "青花瓷"],
+        "jay": ["晴天", "青花瓷"],
+        "邓紫棋": ["泡沫 邓紫棋", "光年之外 邓紫棋", "多远都要在一起 邓紫棋"],
+        "陈奕迅": ["十年 陈奕迅", "孤勇者 陈奕迅", "富士山下 陈奕迅"],
+        "薛之谦": ["演员 薛之谦", "丑八怪 薛之谦"],
+        "梁静茹": ["暖暖", "勇气 梁静茹"],
+        "孙燕姿": ["遇见 孙燕姿", "绿光 孙燕姿"],
+        "王心凌": ["爱你"],
+        "田馥甄": ["小幸运"],
+    }
+    search_candidates = [query_clean]
+    if query_clean.lower() in ARTIST_REPRESENTATIVE_SONGS:
+        search_candidates = ARTIST_REPRESENTATIVE_SONGS[query_clean.lower()]
+        query_clean = search_candidates[0].split()[0]
+
     # 0. 泛指点歌处理
     if not query_clean or query_clean in ["随便", "歌", "一首", "来一首", "唱首歌", "唱歌", "听听", "唱歌听听"]:
         query_clean = "爱你"
+        search_candidates = ["爱你"]
 
     # 1. 优先检查预置歌曲
     for p_key, p_info in PRESETS.items():
@@ -447,34 +481,37 @@ def dynamic_sing_flow(song_query, voice=None):
     import requests
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     search_url = 'https://music.163.com/api/search/get/web'
-    params = {'s': query_clean, 'type': 1, 'offset': 0, 'limit': 5}
     
     downloaded_mp3 = None
     song_title = query_clean
-    try:
-        r = requests.get(search_url, params=params, headers=headers, timeout=6)
-        songs = r.json().get('result', {}).get('songs', [])
-        for s in songs:
-            name = s.get('name', '')
-            if any(w in name.lower() for w in ['伴奏', 'instrumental', 'inst', 'beat', '伴奏版', '纯音乐']):
-                continue
-            sid = s.get('id')
-            artist = s.get('artists', [{}])[0].get('name')
-            stream = f'http://music.163.com/song/media/outer/url?id={sid}.mp3'
-            try:
-                resp = requests.get(stream, headers=headers, timeout=8)
-                if resp.status_code == 200 and 'audio' in str(resp.headers.get('content-type', '')):
-                    temp_mp3 = os.path.join(CACHE_DIR, f"temp_{os.getpid()}_raw.mp3")
-                    with open(temp_mp3, 'wb') as f:
-                        f.write(resp.content)
-                    downloaded_mp3 = temp_mp3
-                    song_title = f"{name} - {artist}"
-                    print(f"[SEARCH] 成功搜索并下载音源: 《{song_title}》")
-                    break
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"[WARN] 音乐搜索接口异常: {e}")
+    for cand in search_candidates:
+        if downloaded_mp3:
+            break
+        params = {'s': cand, 'type': 1, 'offset': 0, 'limit': 12}
+        try:
+            r = requests.get(search_url, params=params, headers=headers, timeout=6)
+            songs = r.json().get('result', {}).get('songs', [])
+            for s in songs:
+                name = s.get('name', '')
+                if any(w in name.lower() for w in ['伴奏', 'instrumental', 'inst', 'beat', '伴奏版', '纯音乐', '的歌']):
+                    continue
+                sid = s.get('id')
+                artist = s.get('artists', [{}])[0].get('name')
+                stream = f'http://music.163.com/song/media/outer/url?id={sid}.mp3'
+                try:
+                    resp = requests.get(stream, headers=headers, timeout=8)
+                    if resp.status_code == 200 and 'audio' in str(resp.headers.get('content-type', '')) and len(resp.content) > 150000:
+                        temp_mp3 = os.path.join(CACHE_DIR, f"temp_{os.getpid()}_raw.mp3")
+                        with open(temp_mp3, 'wb') as f:
+                            f.write(resp.content)
+                        downloaded_mp3 = temp_mp3
+                        song_title = f"{name} - {artist}"
+                        print(f"[SEARCH] 成功搜索并下载音源: 《{song_title}》 ({len(resp.content)} bytes)")
+                        break
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[WARN] 音乐搜索接口异常: {e}")
 
     if not downloaded_mp3:
         is_sad = any(w in query_clean for w in ["忧伤", "伤感", "难过", "悲伤", "抒情", "催泪", "慢", "静", "哭", "泪", "遗憾", "痛", "失恋"])
@@ -536,15 +573,18 @@ def dynamic_sing_flow(song_query, voice=None):
     rvc_dir = r"D:\deepseek-harness\rvc"
     sep_script = os.path.join(rvc_dir, "separate_stems.py")
     sep_cmd = [sys.executable, sep_script, "--input", temp_clip_wav, "--output_dir", CACHE_DIR]
-    sub_res = subprocess.run(sep_cmd, capture_output=True, text=True, timeout=60)
-    
-    clip_base = os.path.basename(temp_clip_wav)
-    vocal_stem = os.path.join(CACHE_DIR, f"vocal_{clip_base}_10.wav")
-    inst_stem = os.path.join(CACHE_DIR, f"instrument_{clip_base}_10.wav")
-
-    if not (os.path.exists(vocal_stem) and os.path.exists(inst_stem)):
-        print(f"[UVR5 ERROR] {sub_res.stderr}")
-        raise RuntimeError("UVR5 音轨分离失败")
+    vocal_stem = os.path.join(CACHE_DIR, f"vocal_{os.path.basename(temp_clip_wav)}_10.wav")
+    inst_stem = os.path.join(CACHE_DIR, f"instrument_{os.path.basename(temp_clip_wav)}_10.wav")
+    try:
+        sub_res = subprocess.run(sep_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+        if not (os.path.exists(vocal_stem) and os.path.exists(inst_stem)):
+            print(f"[UVR5 WARN] 分离未生成双轨文件 ({sub_res.stderr})，降级使用原切片音频直接转换...")
+            vocal_stem = temp_clip_wav
+            inst_stem = None
+    except Exception as e:
+        print(f"[UVR5 WARN] 分离子进程超时或异常 ({e})，降级使用原切片音频直接转换...")
+        vocal_stem = temp_clip_wav
+        inst_stem = None
 
     # 6. 优先 SoulX-Singer 零样本高保真转换 (带立体声伴奏混音，使用当前同步音色)
     singer = DaFeiYuSoVitsSinger(voice=voice)

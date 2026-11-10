@@ -1,6 +1,24 @@
 {
   "active_voice": "klee",
   "voices": {
+    "dafeiyu": {
+      "id": "dafeiyu",
+      "name": "大肥鱼本鱼",
+      "aliases": [
+        "大肥鱼",
+        "肥鱼",
+        "肥鱼本鱼",
+        "原版肥鱼",
+        "电网鸽",
+        "闲的电网鸽",
+        "肥鱼配音"
+      ],
+      "style": "经典傲娇小女仆原版配音",
+      "description": "全网最出名的B站/抖音大肥鱼经典原版傲娇女仆配音（闲的电网鸽声线），清脆傲娇、嘴硬心软",
+      "ref_audio": "D:\\ollama\\voices\\dafeiyu\\dwg_0002.wav",
+      "prompt_text": "什么嘛，这么简单的事情，你居然专门跑来问我？",
+      "singing_model": "SoulX-Singer (Zero-Shot CFM + Vocos)"
+    },
     "klee": {
       "id": "klee",
       "name": "可莉",

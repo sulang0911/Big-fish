@@ -92,8 +92,11 @@ export class OutboundPipeline {
                 && !/^[⚠️✅❌⏳⏹🐟🧠⚡]/.test(cleanCandidate.trim())
                 && splitPlainTextIntoBubbles(cleanCandidate).length > 1;
             if (isActionJson || isConversationalMultiBubble) {
+                const wmList = feiyu.memoryManager?.getWorkingMemory?.(chatId, 6) || [];
+                const lastUserMsg = [...wmList].reverse().find(m => m.role === 'user' && m.userId && m.userId !== 'self');
                 return feiyu.dispatcher.dispatch(chatId, cleanCandidate, {
-                    replyToMessageId: options.replyTo,
+                    userId: options.userId ?? lastUserMsg?.userId,
+                    replyToMessageId: options.replyTo ?? lastUserMsg?.messageId,
                 }).then(res => res.sentIds ?? []);
             }
         }

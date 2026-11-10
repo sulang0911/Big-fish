@@ -31,6 +31,18 @@ const USER_COMPRESS_LOG_THRESHOLD = 10;
 const USER_COMPRESS_CHAR_THRESHOLD = 450;
 const USER_IMPORTANT_CAP = 15;
 const USER_NORMAL_CAP = 8;
+const ACQUIRED_INTERESTS_CAP = 6;
+
+const DEFAULT_PERSONA_EVOLUTION = {
+    recent_mindset: '最近被老大吐槽涂鸦后暗暗较劲想证明自己是艺术鲸；群友常拿大卡车体重逗本鱼，对身材话题格外敏感易炸毛，但跟大家混熟后愈发活泼护短',
+    acquired_interests: [
+        '立志苦练灵魂画技向老大证明自己是「艺术鲸」',
+        '对「大卡车/胖/体重」话题高度敏感，一提就炸毛强调自己是Q弹苗条款',
+        '爱逛B站和美食食谱，研究脆皮五花肉拌白米饭的神仙吃法',
+        '偷偷练习用鱼尾巴打节拍与帮老大巡检电脑桌面',
+    ],
+    updated_at: 0,
+};
 
 export function toDayKey(tsOrDate = Date.now()) {
     const d = tsOrDate instanceof Date ? tsOrDate : new Date(tsOrDate);
@@ -217,6 +229,13 @@ export class MemoryManager {
         this.state = this._loadJsonFallback();
         if (!this.state.meta) this.state.meta = {};
         if (!this.state.driveState) this.state.driveState = null;
+        if (!this.state.personaEvolution) {
+            this.state.personaEvolution = {
+                ...DEFAULT_PERSONA_EVOLUTION,
+                acquired_interests: [...DEFAULT_PERSONA_EVOLUTION.acquired_interests],
+            };
+        }
+        this.onPersonaAxesNudge = options.onPersonaAxesNudge || null;
         this.data = this.state;
 
         this._initSqliteDb();
@@ -313,6 +332,7 @@ export class MemoryManager {
                 CREATE INDEX IF NOT EXISTS idx_user_memories_uid_tier ON user_memories(user_id, tier, importance DESC, updated_at_ms DESC);
             `);
             try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN pet_nickname TEXT NOT NULL DEFAULT ''"); } catch {}
+            try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN attitude_mode TEXT NOT NULL DEFAULT ''"); } catch {}
             try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN rolling_summary TEXT NOT NULL DEFAULT ''"); } catch {}
             try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN important_memories_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
             try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN normal_memories_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
@@ -336,7 +356,7 @@ export class MemoryManager {
 
     _syncStateWithSqliteOnBoot() {
         if (!this.db) return;
-        const DIRTY_MEM_REGEX = /(投喂过本鱼.*(?:米饭了就应该|米饭了不是|不完的米饭|两格漫画里)|配好就好了|开黄腔说“|性骚扰说“|上次内设|内射|内设你)/i;
+        const DIRTY_MEM_REGEX = /(投喂过本鱼.*(?:米饭了就应该|米饭了不是|不完的米饭|两格漫画里)|配好就好了|怪破输入法|给本鱼播种|开黄腔说“|性骚扰说“|上次内设|内射|内设你)/i;
         // 清理非数字 QQ 号脏档案与历史污染记忆（在进程自身启动时清洗内存与 SQLite，防止内存回写复发）
         try {
             this.db.prepare("DELETE FROM user_profiles WHERE user_id NOT GLOB '[0-9]*'").run();
@@ -356,11 +376,12 @@ export class MemoryManager {
                 }
             }
             for (const row of this.db.prepare("SELECT id, content FROM raw_interaction_logs WHERE role = 'assistant'").all()) {
-                if (/(上次内设|内射)/i.test(String(row.content || ''))) {
-                    this.db.prepare('UPDATE raw_interaction_logs SET content = ? WHERE id = ?').run(
-                        String(row.content).replace(/(?:上次内设|内射)/g, '上次口出狂言'),
-                        row.id
-                    );
+                const rawStr = String(row.content || '');
+                if (/(上次内设|内射|（本鱼手滑打错字)/i.test(rawStr)) {
+                    const cleaned = rawStr
+                        .replace(/(?:上次内设|内射)/g, '上次口出狂言')
+                        .replace(/\s*（本鱼手滑打错字[^）]*）/g, '');
+                    this.db.prepare('UPDATE raw_interaction_logs SET content = ? WHERE id = ?').run(cleaned, row.id);
                 }
             }
         } catch {}
@@ -487,11 +508,15 @@ export class MemoryManager {
             const safePet = (rawPet && !this.isGenericCategoryNickname(rawPet))
                 ? rawPet
                 : (String(row.user_id) === this.masterQQ ? '老大' : this.derivePersonalNick(safeNick, row.user_id));
+            const mergedAttitude = (jsonTs > dbTs && jsonUser?.attitude_mode)
+                ? jsonUser.attitude_mode
+                : (row.attitude_mode || jsonUser?.attitude_mode || '');
             this.state.users[row.user_id] = {
                 ...(jsonUser || {}),
                 user_id: row.user_id,
                 nickname: safeNick,
                 pet_nickname: safePet,
+                attitude_mode: mergedAttitude,
                 affection: mergedAffection,
                 relationship_tag: mergedRelTag,
                 known_facts: facts,
@@ -540,6 +565,26 @@ export class MemoryManager {
             while (list.length > WORKING_MEMORY_CAP) list.shift();
             this.working.set(r.chat_id, list);
         }
+
+        // 5. 加载 SQLite kv_meta 中的性格演化与后天兴趣池 (persona_evolution)
+        try {
+            const peRow = this.db.prepare("SELECT value_json FROM kv_meta WHERE key = 'persona_evolution'").get();
+            if (peRow?.value_json) {
+                const parsedPe = JSON.parse(peRow.value_json);
+                if (parsedPe && typeof parsedPe === 'object') {
+                    const jsonPe = this.state.personaEvolution || {};
+                    if ((parsedPe.updated_at || 0) >= (jsonPe.updated_at || 0)) {
+                        this.state.personaEvolution = {
+                            recent_mindset: String(parsedPe.recent_mindset || DEFAULT_PERSONA_EVOLUTION.recent_mindset).slice(0, 140),
+                            acquired_interests: Array.isArray(parsedPe.acquired_interests) && parsedPe.acquired_interests.length > 0
+                                ? parsedPe.acquired_interests.slice(0, ACQUIRED_INTERESTS_CAP)
+                                : [...DEFAULT_PERSONA_EVOLUTION.acquired_interests],
+                            updated_at: Number(parsedPe.updated_at || 0),
+                        };
+                    }
+                }
+            }
+        } catch {}
         this.save();
     }
 
@@ -555,6 +600,15 @@ export class MemoryManager {
                         lastReflectionAt: raw.lastReflectionAt || 0,
                         meta: raw.meta && typeof raw.meta === 'object' ? raw.meta : {},
                         driveState: raw.driveState || null,
+                        personaEvolution: raw.personaEvolution && typeof raw.personaEvolution === 'object'
+                            ? {
+                                recent_mindset: String(raw.personaEvolution.recent_mindset || DEFAULT_PERSONA_EVOLUTION.recent_mindset).slice(0, 140),
+                                acquired_interests: Array.isArray(raw.personaEvolution.acquired_interests) && raw.personaEvolution.acquired_interests.length > 0
+                                    ? raw.personaEvolution.acquired_interests.slice(0, ACQUIRED_INTERESTS_CAP)
+                                    : [...DEFAULT_PERSONA_EVOLUTION.acquired_interests],
+                                updated_at: Number(raw.personaEvolution.updated_at || 0),
+                            }
+                            : { ...DEFAULT_PERSONA_EVOLUTION, acquired_interests: [...DEFAULT_PERSONA_EVOLUTION.acquired_interests] },
                     };
                 }
             }
@@ -580,11 +634,12 @@ export class MemoryManager {
         if (!this.db) return;
         try {
             const upsertUser = this.db.prepare(`
-                INSERT INTO user_profiles (user_id, nickname, pet_nickname, affection, relationship_tag, known_facts_json, rolling_summary, important_memories_json, normal_memories_json, last_interaction_time, last_interaction_ts, last_late_night_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO user_profiles (user_id, nickname, pet_nickname, attitude_mode, affection, relationship_tag, known_facts_json, rolling_summary, important_memories_json, normal_memories_json, last_interaction_time, last_interaction_ts, last_late_night_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     nickname = excluded.nickname,
                     pet_nickname = excluded.pet_nickname,
+                    attitude_mode = excluded.attitude_mode,
                     affection = excluded.affection,
                     relationship_tag = excluded.relationship_tag,
                     known_facts_json = excluded.known_facts_json,
@@ -605,6 +660,7 @@ export class MemoryManager {
                     String(uid),
                     String(u.nickname || uid),
                     String(u.pet_nickname || ''),
+                    String(u.attitude_mode || ''),
                     Number(u.affection ?? 55),
                     String(u.relationship_tag || '群友/饭票候选'),
                     JSON.stringify(impList),
@@ -615,6 +671,13 @@ export class MemoryManager {
                     Number(u.last_interaction_ts || Date.now()),
                     Number(u.last_late_night_ts || 0),
                 );
+            }
+            if (this.state.personaEvolution) {
+                this.db.prepare(`
+                    INSERT INTO kv_meta (key, value_json)
+                    VALUES ('persona_evolution', ?)
+                    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
+                `).run(JSON.stringify(this.state.personaEvolution));
             }
         } catch (err) {
             console.warn('[MemoryManager] SQLite 同步用户画像失败:', err.message);
@@ -773,11 +836,12 @@ export class MemoryManager {
             let highlights = [];
             let extractedEpisodic = [];
             let extractedGroupLore = [];
+            let llmPersonaEvolution = null;
 
             // 1. 优先尝试调用 LLM 进行智能压缩提炼
             if (typeof this.llmDailyCompressor === 'function') {
                 try {
-                    const llmRes = await this.llmDailyCompressor(dayKey, existingDigest, rawLogs);
+                    const llmRes = await this.llmDailyCompressor(dayKey, existingDigest, rawLogs, this.getPersonaEvolution());
                     if (llmRes && typeof llmRes.summary === 'string' && llmRes.summary.trim()) {
                         summary = llmRes.summary.trim().slice(0, 180);
                         if (Array.isArray(llmRes.highlights)) {
@@ -789,6 +853,7 @@ export class MemoryManager {
                         if (Array.isArray(llmRes.group_lore)) {
                             extractedGroupLore = llmRes.group_lore.map(g => String(g).trim()).filter(Boolean);
                         }
+                        llmPersonaEvolution = llmRes;
                     }
                 } catch (err) {
                     console.warn('[MemoryManager] LLM 每日记忆压缩降级至本地规则:', err.message);
@@ -859,6 +924,9 @@ export class MemoryManager {
                 }
             }
 
+            // 同步执行“每日性格自省与后天兴趣池”演化 (Persona Evolution)
+            this.evolvePersonaFromDigest(dayKey, summary, highlights, rawLogs, llmPersonaEvolution);
+
             // 自动清理 7 天前已压缩的原始流水，保持 SQLite 轻量高效
             const sevenDaysAgoMs = nowMs - 7 * 24 * 3600_000;
             this.db.prepare('DELETE FROM raw_interaction_logs WHERE compressed = 1 AND ts < ?').run(sevenDaysAgoMs);
@@ -873,6 +941,98 @@ export class MemoryManager {
         } finally {
             this.isCompressing = false;
         }
+    }
+
+    /**
+     * 获取当前性格演化画像与后天习得兴趣池
+     */
+    getPersonaEvolution() {
+        if (!this.state.personaEvolution || typeof this.state.personaEvolution !== 'object') {
+            this.state.personaEvolution = {
+                ...DEFAULT_PERSONA_EVOLUTION,
+                acquired_interests: [...DEFAULT_PERSONA_EVOLUTION.acquired_interests],
+            };
+        }
+        return this.state.personaEvolution;
+    }
+
+    /**
+     * 向后天习得兴趣与小习惯池追加新条目（自动去重并维持最多 6 条的滑动窗口）
+     */
+    addAcquiredInterest(interestText) {
+        const clean = String(interestText || '').replace(/\r?\n/g, ' ').trim().slice(0, 60);
+        if (!clean || clean.length < 4) return false;
+        const pe = this.getPersonaEvolution();
+        const existing = Array.isArray(pe.acquired_interests) ? pe.acquired_interests : [];
+        const filtered = existing.filter(item => item !== clean && computeKeywordMatch(item, clean) < 0.72);
+        filtered.unshift(clean);
+        pe.acquired_interests = filtered.slice(0, ACQUIRED_INTERESTS_CAP);
+        pe.updated_at = this.now();
+        this.save();
+        return true;
+    }
+
+    /**
+     * 基于每日记忆压缩结果演化《近期性格与心境画像》(`recent_mindset`) 与《后天习得兴趣池》(`acquired_interests`)
+     */
+    evolvePersonaFromDigest(dayKey, summary = '', highlights = [], rawLogs = [], llmPersonaData = null) {
+        const pe = this.getPersonaEvolution();
+        if (llmPersonaData && typeof llmPersonaData.evolving_mindset === 'string' && llmPersonaData.evolving_mindset.trim()) {
+            pe.recent_mindset = llmPersonaData.evolving_mindset.trim().slice(0, 130);
+        } else if (summary) {
+            const snippet = String(summary).replace(/^今日事件：|^近期聊了：/g, '').trim().slice(0, 58);
+            if (snippet) {
+                pe.recent_mindset = `近期经历「${snippet}」，在保持傲娇小蓝鲸底色的同时，对熟人愈发护短有梗、对调侃本鱼身材或画技的话题格外较真`.slice(0, 130);
+            }
+        }
+
+        const newInterests = Array.isArray(llmPersonaData?.new_interests)
+            ? llmPersonaData.new_interests.map(s => String(s || '').trim()).filter(Boolean)
+            : [];
+        if (newInterests.length === 0) {
+            for (const r of rawLogs) {
+                const txt = String(r.content || '').trim();
+                if (r.role === 'event' && /(逛了|画了|小剧场)/.test(txt)) {
+                    newInterests.push(txt.replace(/^大肥鱼自己/, '近期迷上').slice(0, 48));
+                }
+            }
+        }
+        if (newInterests.length > 0) {
+            const cur = Array.isArray(pe.acquired_interests) ? pe.acquired_interests : [];
+            const merged = [...newInterests.slice(0, 2), ...cur];
+            const dedup = [];
+            for (const item of merged) {
+                const clean = item.slice(0, 60);
+                if (clean && !dedup.some(x => x === clean || computeKeywordMatch(x, clean) >= 0.70)) {
+                    dedup.push(clean);
+                }
+            }
+            pe.acquired_interests = dedup.slice(0, ACQUIRED_INTERESTS_CAP);
+        }
+
+        if (llmPersonaData?.axes_delta && typeof this.onPersonaAxesNudge === 'function') {
+            try { this.onPersonaAxesNudge(llmPersonaData.axes_delta); } catch {}
+        }
+
+        pe.updated_at = this.now();
+        this.save();
+        return pe;
+    }
+
+    /**
+     * 格式化《近期性格与心境演化画像》+《后天习得兴趣与小习惯池》供每轮 Prompt 注入
+     */
+    formatPersonaEvolutionForPrompt() {
+        const pe = this.getPersonaEvolution();
+        const mindset = pe.recent_mindset || DEFAULT_PERSONA_EVOLUTION.recent_mindset;
+        const interests = Array.isArray(pe.acquired_interests) && pe.acquired_interests.length > 0
+            ? pe.acquired_interests.slice(0, 5)
+            : DEFAULT_PERSONA_EVOLUTION.acquired_interests;
+        return [
+            `【🌱 大肥鱼记忆驱动性格演化层 (80%核心傲娇蓝鲸底色 + 20%近期经历演化)】`,
+            `  - 近期心境与性格微调: ${mindset}`,
+            `  - 后天习得的兴趣与小习惯 (聊天或找话头时可自然流露): ${interests.join('；')}`,
+        ].join('\n');
     }
 
     _buildRuleBasedDailyDigest(dayKey, existingDigest, rawLogs) {
@@ -1439,6 +1599,11 @@ export class MemoryManager {
             } else if (!profile.pet_nickname && uid !== this.masterQQ) {
                 this.setPetNickname(uid, this.derivePersonalNick(profile.nickname, uid), profile.nickname);
             }
+            if (typeof compressedRes.attitude_mode === 'string' && compressedRes.attitude_mode.trim()) {
+                profile.attitude_mode = compressedRes.attitude_mode.trim().slice(0, 60);
+            } else {
+                profile.attitude_mode = this.deriveUserAttitudeMode(profile);
+            }
 
             if (this.db) {
                 try {
@@ -1499,7 +1664,47 @@ export class MemoryManager {
             rolling_summary,
             important: important.slice(0, USER_IMPORTANT_CAP),
             normal: normal.slice(0, 6),
+            attitude_mode: this.deriveUserAttitudeMode({
+                ...profile,
+                rolling_summary,
+                important_memories: important,
+                normal_memories: normal,
+            }),
         };
+    }
+
+    /**
+     * 方案三：根据与某用户的历史记忆、常聊话题与好感度，自动推导“千人千面”专属相处态度 (`attitude_mode`)
+     */
+    deriveUserAttitudeMode(profile) {
+        if (!profile) return '机灵随性的群内熟人（顺着话茬自然接梗吐槽）';
+        if (String(profile.user_id) === String(this.masterQQ)) {
+            return '无条件偏爱护短的首席饲主（嘴上傲娇逞强，实则满眼粘人信任、爱撒娇讨夸奖）';
+        }
+        const corpus = [
+            profile.rolling_summary || '',
+            ...(profile.important_memories || profile.known_facts || []),
+            ...(profile.normal_memories || []),
+        ].join(' ');
+        const aff = Number(profile.affection ?? 55);
+
+        if (/(开黄腔|下头|骚鱼|生小鱼|生小鲸|色色|猥琐)/.test(corpus)) {
+            return '高度警惕嫌弃的嘴欠损友（随时防备ta开腔下套，一露苗头就毒舌反击拿鱼尾抽ta）';
+        }
+        if (/(卡车|笨鱼|傻鱼|胖|烤鱼|炖鱼|欺负|记入小本本|斗嘴)/.test(corpus)) {
+            return aff >= 58
+                ? '相爱相杀的欢喜冤家（常跟本鱼斗嘴互损，见面爱先傲娇呛半句，但其实很乐意跟ta接梗玩）'
+                : '重点记仇的逗鱼损友（总爱调侃欺负本鱼，语气嘴硬嫌弃、针锋相对绝不认输）';
+        }
+        if (/(投喂|五花肉|白米饭|奶茶|请你吃|好吃的|饭票)/.test(corpus) || aff >= 75) {
+            return '暗中偏心的铁杆饭票挚友（表面假装矜持勉为其难，实则对ta极度护短、态度亲昵偏心）';
+        }
+        if (/(代码|方案|技术|问题|设置|开源|协议|电脑|配置|渲染)/.test(corpus)) {
+            return '爱摆学姐架子的技术搭子（喜欢得意洋洋开启傲娇极客腔，顺手帮ta参谋吐槽）';
+        }
+        return aff >= 55
+            ? '熟稔自然的群内鱼友（像老朋友一样随性接梗吐槽，有话直说不客套）'
+            : '略带傲娇防备的普通群友（保持深海小蓝鲸的傲娇矜持，看心情接话）';
     }
 
     /**
@@ -1982,13 +2187,7 @@ export class MemoryManager {
         const validPetNick = (profile.pet_nickname && !this.isGenericCategoryNickname(profile.pet_nickname))
             ? profile.pet_nickname
             : shortNick;
-        const attitudeGuide = isMaster
-            ? '最偏爱、最信任的首席饲主（老大），嘴硬心软、爱撒娇讨夸奖'
-            : (profile.affection >= 75
-                ? '铁杆熟人，态度亲近熟稔、可以傲娇护短或开玩笑'
-                : (profile.affection >= 50
-                    ? '日常熟面孔群友，态度随性自然、机灵接梗互怼'
-                    : '老爱逗鱼/惹本鱼炸毛的损友，态度傲娇嫌弃、随时准备拿尾巴抽ta'));
+        const evolvedAttitude = profile.attitude_mode || this.deriveUserAttitudeMode(profile);
         const summaryLine = profile.rolling_summary
             ? `- 近期浓缩印象 (rolling_summary): ${profile.rolling_summary}`
             : '';
@@ -2004,7 +2203,7 @@ export class MemoryManager {
             `- 用户 QQ: ${profile.user_id}`,
             `- 原始昵称: ${profile.nickname}`,
             `- 🗣️【专属称呼指南 (千人千面，拒绝强行打卡)】：${isMaster ? '称呼ta为「老大」（但不用每句话都喊）' : `平时水群接话请直接顺着话茬自然回话（不必句句带称呼，更严禁在句子中间生硬插入四字外号造成病句！）；只有需要专门喊ta时，才自然喊一声「${validPetNick}」（或原名简称「${shortNick}」）。`}`,
-            `- 🎭【说话态度定位 (仅决定语气，严禁当称呼喊出口)】：${profile.relationship_tag}（好感度 ${profile.affection}/100 —— ${attitudeGuide}）`,
+            `- 🎭【千人千面专属相处态度 (随你们的共同记忆演化，决定对ta说话的独特语气)】：${profile.relationship_tag}（好感度 ${profile.affection}/100 —— ${evolvedAttitude}）`,
             ...(summaryLine ? [summaryLine] : []),
             `- 🔴 重要记忆 (Important, 永久核心事实):\n${impLines}`,
             ...(normLines ? [`- 🔵 一般记忆 (Normal, 近期日常互动):\n${normLines}`] : []),

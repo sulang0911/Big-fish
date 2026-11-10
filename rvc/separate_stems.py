@@ -13,17 +13,33 @@ sys.path.append(uvr5_dir)
 from vr import AudioPre
 
 def separate_song(inp_path, out_dir):
+    import gc
+    import torch
     os.makedirs(out_dir, exist_ok=True)
     model_path = os.path.join(uvr5_dir, "uvr5_weights", "HP5_only_main_vocal.pth")
     
-    pre_fun = AudioPre(
-        agg=10,
-        model_path=model_path,
-        device="cuda:0",
-        is_half=False
-    )
-    
-    pre_fun._path_audio_(inp_path, ins_root=out_dir, vocal_root=out_dir, format="wav", is_hp3=False)
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        pre_fun = AudioPre(
+            agg=10,
+            model_path=model_path,
+            device="cuda:0" if torch.cuda.is_available() else "cpu",
+            is_half=torch.cuda.is_available()
+        )
+        pre_fun._path_audio_(inp_path, ins_root=out_dir, vocal_root=out_dir, format="wav", is_hp3=False)
+    except Exception as e:
+        print(f"[UVR5 WARN] CUDA 分离异常 ({e})，自动降级至 CPU FP32 重试...")
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        pre_fun = AudioPre(
+            agg=10,
+            model_path=model_path,
+            device="cpu",
+            is_half=False
+        )
+        pre_fun._path_audio_(inp_path, ins_root=out_dir, vocal_root=out_dir, format="wav", is_hp3=False)
     base_name = os.path.basename(inp_path)
     vocal_path = os.path.join(out_dir, f"vocal_{base_name}_10.wav")
     inst_path = os.path.join(out_dir, f"instrument_{base_name}_10.wav")
