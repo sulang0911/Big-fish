@@ -36,12 +36,14 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 
 MAX_SONG_DURATION = 18.0  # 截取 18s 供 UVR5 分离，混音时自动按乐句换气点对齐精简至 15~17s
 
-# 多音色模型配置字典
+# 多音色模型配置字典 (全角色 RVC v2 歌声高保真 + 立体声伴奏混音引擎)
+RVC_WEIGHTS_DIR = r"D:\deepseek-harness\rvc\weights"
+
 VOICE_MODELS = {
     "dafeiyu": {
         "name": "大肥鱼本鱼",
         "engine": "rvc",
-        "model": r"D:\deepseek-harness\rvc\weights\dafeiyu.pth",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "dafeiyu.pth"),
         "config": "",
         "cluster": "",
         "spk": "dafeiyu",
@@ -49,41 +51,44 @@ VOICE_MODELS = {
     },
     "klee": {
         "name": "可莉",
-        "model": os.path.join(SOVITS_DIR, "models", "klee_G_40000.pth"),
-        "config": os.path.join(SOVITS_DIR, "models", "klee.json"),
-        "cluster": os.path.join(SOVITS_DIR, "models", "klee_kmeans_10000.pt"),
+        "engine": "rvc",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "klee.pth"),
+        "config": "",
+        "cluster": "",
         "spk": "klee",
-        "cluster_ratio": 0.5,
+        "cluster_ratio": 0.0,
     },
     "furina": {
         "name": "芙宁娜",
-        "model": os.path.join(SOVITS_DIR, "models", "furina_G_107200.pth"),
-        "config": os.path.join(SOVITS_DIR, "models", "furina.json"),
+        "engine": "rvc",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "furina.pth"),
+        "config": "",
         "cluster": "",
-        "spk": "fnn",
+        "spk": "furina",
         "cluster_ratio": 0.0,
     },
     "nahida": {
         "name": "纳西妲",
-        "model": os.path.join(SOVITS_DIR, "models", "nahida_G_40000.pth"),
-        "config": os.path.join(SOVITS_DIR, "models", "nahida.json"),
-        "cluster": os.path.join(SOVITS_DIR, "models", "nahida_kmeans_10000.pt"),
+        "engine": "rvc",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "nahida.pth"),
+        "config": "",
+        "cluster": "",
         "spk": "nahida",
-        "cluster_ratio": 0.5,
+        "cluster_ratio": 0.0,
     },
     "hutao": {
         "name": "胡桃",
-        "engine": "sovits",
-        "model": os.path.join(SOVITS_DIR, "models", "hutao_G_40000.pth"),
-        "config": os.path.join(SOVITS_DIR, "models", "hutao.json"),
-        "cluster": os.path.join(SOVITS_DIR, "models", "hutao_kmeans_10000.pt"),
+        "engine": "rvc",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "hutao.pth"),
+        "config": "",
+        "cluster": "",
         "spk": "hutao",
-        "cluster_ratio": 0.5,
+        "cluster_ratio": 0.0,
     },
     "ayaka": {
         "name": "神里绫华",
         "engine": "rvc",
-        "model": r"D:\deepseek-harness\rvc\weights\ayaka.pth",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "ayaka.pth"),
         "config": "",
         "cluster": "",
         "spk": "ayaka",
@@ -92,7 +97,7 @@ VOICE_MODELS = {
     "raiden": {
         "name": "雷电将军",
         "engine": "rvc",
-        "model": r"D:\deepseek-harness\rvc\weights\raiden.pth",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "raiden.pth"),
         "config": "",
         "cluster": "",
         "spk": "raiden",
@@ -101,7 +106,7 @@ VOICE_MODELS = {
     "yae": {
         "name": "八重神子",
         "engine": "rvc",
-        "model": r"D:\deepseek-harness\rvc\weights\yae.pth",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "yae.pth"),
         "config": "",
         "cluster": "",
         "spk": "yae",
@@ -110,7 +115,7 @@ VOICE_MODELS = {
     "barbara": {
         "name": "芭芭拉",
         "engine": "rvc",
-        "model": r"D:\deepseek-harness\rvc\weights\barbara.pth",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "barbara.pth"),
         "config": "",
         "cluster": "",
         "spk": "barbara",
@@ -119,7 +124,7 @@ VOICE_MODELS = {
     "diona": {
         "name": "迪奥娜",
         "engine": "rvc",
-        "model": r"D:\deepseek-harness\rvc\weights\diona.pth",
+        "model": os.path.join(RVC_WEIGHTS_DIR, "diona.pth"),
         "config": "",
         "cluster": "",
         "spk": "diona",
@@ -252,55 +257,39 @@ class DaFeiYuSoVitsSinger:
         return self.svc
 
     def convert(self, vocal_path, output_path, inst_path=None, key_offset="auto", cluster_ratio=None, f0_predictor="fcpe"):
-        """将干声转换为当前音色清唱或混音音频 (RVC 专属模型优先极速转换，零样本 SoulX-Singer 次之)"""
+        """将干声转换为当前音色清唱或混音音频 (有专属 RVC 模型的音色走 RVC，其余走 SO-VITS-SVC 4.1)"""
         if not os.path.exists(vocal_path):
             raise FileNotFoundError(f"输入音频不存在: {vocal_path}")
 
-        # 1. 若当前音色拥有专属训练的 RVC 模型 (如 dafeiyu.pth 等)，优先直接调用 RVC 引擎（仅需 ~8s、显存占用极低且带立体声伴奏混音）
+        # 1. 若当前音色拥有专属训练的 RVC 模型，优先直接调用 RVC 引擎（显存占用低、音准更稳且带立体声伴奏混音）
         if getattr(self, "engine", "sovits") == "rvc" and os.path.exists(self.model_path):
-            print(f"[RVC Engine] 启动专属 RVC 歌声转换与混音 (音色: {self.voice}, 伴奏混音: {bool(inst_path)})...")
+            actual_key = key_offset
+            if actual_key is None or str(actual_key).lower() == "auto":
+                try:
+                    import librosa
+                    y_check, sr_check = librosa.load(vocal_path, sr=22050, duration=6.0, mono=True)
+                    actual_key = detect_key_offset(y_check, sr_check)
+                except Exception:
+                    actual_key = 12
+            print(f"[RVC Engine] 启动专属 RVC 歌声转换与混音 (音色: {self.voice}, 变调: {actual_key:+d}st, 伴奏混音: {bool(inst_path)})...")
             cmd = [
                 sys.executable,
                 r"D:\deepseek-harness\rvc\rvc_sing.py",
                 "--vocal", vocal_path,
                 "--output", output_path,
                 "--model", self.model_path,
+                "--key", str(int(actual_key)),
+                "--method", "pm",
             ]
-            if key_offset is not None and str(key_offset).lower() != "auto":
-                cmd.extend(["--key", str(int(key_offset))])
             if inst_path and os.path.exists(inst_path):
                 cmd.extend(["--bgm", inst_path, "--with-bgm"])
-            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
             if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                 print(f"[RVC SUCCESS] 专属 RVC 翻唱已生成: {output_path}")
                 return output_path
             print(f"[WARN] RVC 转换异常: {res.stderr or res.stdout}")
 
-        # 2. 使用 SoulX-Singer 零样本高保真歌声大模型
-        soulx_py = r"D:\SoulX-Singer\venv\Scripts\python.exe"
-        soulx_script = r"D:\SoulX-Singer\soulx_sing.py"
-        if os.path.exists(soulx_py) and os.path.exists(soulx_script):
-            print(f"[SoulX-Singer] 启动独立子进程执行零样本歌声大模型转换 (音色: {self.voice}, 伴奏混音: {bool(inst_path)})...")
-            cmd = [
-                soulx_py,
-                soulx_script,
-                "--vocal", vocal_path,
-                "--output", output_path,
-                "--voice", self.voice,
-                "--pitch_shift", str(key_offset),
-            ]
-            if inst_path and os.path.exists(inst_path):
-                cmd.extend(["--inst", inst_path])
-            try:
-                res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                    print(f"[SoulX-Singer SUCCESS] 歌声大模型翻唱已生成: {output_path}")
-                    return output_path
-                print(f"[WARN] SoulX-Singer 执行未生成有效文件，回退到经典引擎: {res.stderr or res.stdout}")
-            except Exception as e:
-                print(f"[WARN] SoulX-Singer 运行异常: {e}，回退到经典引擎")
-
-        # 3. 回退模式: SO-VITS-SVC 4.1
+        # 2. 回退模式: SO-VITS-SVC 4.1
         import numpy as np
         import soundfile as sf
         import librosa
@@ -367,6 +356,19 @@ class DaFeiYuSoVitsSinger:
                 torch.cuda.empty_cache()
 
 
+def assert_audible(path, min_rms=0.01):
+    """静音/空音频拦截：RMS 过低(约 -40 dBFS 以下)视为合成失败，删除文件防止被发送或写入缓存"""
+    import numpy as np
+    import soundfile as sf
+    data, _ = sf.read(path, dtype="float32")
+    rms = float(np.sqrt(np.mean(np.square(data)))) if data.size else 0.0
+    if rms < min_rms:
+        try: os.remove(path)
+        except Exception: pass
+        raise RuntimeError(f"翻唱结果几乎是静音 (RMS={rms:.4f})，已丢弃: {path}")
+    return path
+
+
 def dynamic_sing_flow(song_query, voice=None):
     """
     全自动点歌流水线 (音色同步版):
@@ -402,7 +404,6 @@ def dynamic_sing_flow(song_query, voice=None):
     search_candidates = [query_clean]
     if query_clean.lower() in ARTIST_REPRESENTATIVE_SONGS:
         search_candidates = ARTIST_REPRESENTATIVE_SONGS[query_clean.lower()]
-        query_clean = search_candidates[0].split()[0]
 
     # 0. 泛指点歌处理
     if not query_clean or query_clean in ["随便", "歌", "一首", "来一首", "唱首歌", "唱歌", "听听", "唱歌听听"]:
@@ -449,6 +450,7 @@ def dynamic_sing_flow(song_query, voice=None):
                 print(f"[PRESET] 命中预置曲目《{p_info['title']}》，正在为音色【{voice}】生成带伴奏翻唱...")
                 singer = DaFeiYuSoVitsSinger(voice=voice)
                 singer.convert(vocal_path=p_info["vocal"], output_path=soulx_bgm, inst_path=p_info.get("inst"), key_offset="auto")
+                assert_audible(soulx_bgm)
                 print(f"[SONG_TITLE] {p_info['title']}")
                 print(f"[OUTPUT_COVER] {soulx_bgm}")
                 return soulx_bgm
@@ -484,13 +486,23 @@ def dynamic_sing_flow(song_query, voice=None):
     
     downloaded_mp3 = None
     song_title = query_clean
-    for cand in search_candidates:
+    # 第一轮只接受原唱歌手的版本（遍历所有候选曲目），全部失败后第二轮才放宽到翻唱版
+    for strict_artist in (True, False):
+      for cand in search_candidates:
         if downloaded_mp3:
             break
         params = {'s': cand, 'type': 1, 'offset': 0, 'limit': 12}
+        # 候选词形如 "修炼爱情 林俊杰" 时，第二段即期望的原唱歌手
+        cand_parts = cand.split()
+        expected_artist = cand_parts[1].lower() if len(cand_parts) > 1 else ''
+        if strict_artist and not expected_artist:
+            continue
         try:
             r = requests.get(search_url, params=params, headers=headers, timeout=6)
             songs = r.json().get('result', {}).get('songs', [])
+            if expected_artist:
+                is_orig = lambda s: any(expected_artist in str(a.get('name', '')).lower() for a in s.get('artists', []))
+                songs = [s for s in songs if is_orig(s)] if strict_artist else sorted(songs, key=lambda s: 0 if is_orig(s) else 1)
             for s in songs:
                 name = s.get('name', '')
                 if any(w in name.lower() for w in ['伴奏', 'instrumental', 'inst', 'beat', '伴奏版', '纯音乐', '的歌']):
@@ -586,15 +598,16 @@ def dynamic_sing_flow(song_query, voice=None):
         vocal_stem = temp_clip_wav
         inst_stem = None
 
-    # 6. 优先 SoulX-Singer 零样本高保真转换 (带立体声伴奏混音，使用当前同步音色)
-    singer = DaFeiYuSoVitsSinger(voice=voice)
-    singer.convert(vocal_path=vocal_stem, output_path=cached_soulx_bgm, inst_path=inst_stem, key_offset="auto")
-
-    # 7. 清理临时过程文件，仅保留最终 cover
-    for f in [downloaded_mp3, temp_clip_wav, vocal_stem, inst_stem]:
-        if f and os.path.exists(f):
-            try: os.remove(f)
-            except Exception: pass
+    # 6. 歌声转换 (带伴奏混音，使用当前同步音色)；无论成败都清理临时过程文件
+    try:
+        singer = DaFeiYuSoVitsSinger(voice=voice)
+        singer.convert(vocal_path=vocal_stem, output_path=cached_soulx_bgm, inst_path=inst_stem, key_offset="auto")
+        assert_audible(cached_soulx_bgm)
+    finally:
+        for f in [downloaded_mp3, temp_clip_wav, vocal_stem, inst_stem]:
+            if f and os.path.exists(f):
+                try: os.remove(f)
+                except Exception: pass
 
     print(f"[SONG_TITLE] {song_title}")
     print(f"[OUTPUT_COVER] {cached_soulx_bgm}")

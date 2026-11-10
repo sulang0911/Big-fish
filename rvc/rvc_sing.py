@@ -130,18 +130,14 @@ class DaFeiYuSinger:
             index_path=self.index_path,
             version=version
         )
-        # 针对 Pascal 显卡 (GTX 1080 Ti 等 fp32 模式) 配置 8~10s 安全切片分段，彻底杜绝长音频显存溢出
+        # 提高单段免切片阈值至 35s，18~25s 黄金副歌一次性整段推理，消除切片接缝与索引死循环
         if hasattr(self.rvc.vc, "pipeline") and self.rvc.vc.pipeline:
             p = self.rvc.vc.pipeline
-            p.x_query = 3
-            p.x_center = 8
-            p.x_max = 10
-            p.t_query = 16000 * 3
-            p.t_center = 16000 * 8
-            p.t_max = 16000 * 10
+            p.x_max = 35
+            p.t_max = 16000 * 35
         print(f"[RVC] 模型加载成功，耗时 {time.time()-t0:.2f}s，目标采样率: {self.rvc.vc.tgt_sr}Hz")
 
-    def convert_vocal(self, input_vocal, output_vocal, f0_up_key=0, f0_method="rmvpe", index_rate=0.85):
+    def convert_vocal(self, input_vocal, output_vocal, f0_up_key=0, f0_method="pm", index_rate=0.85):
         """调用 RVC 转换人声音色 (最高限制 25~30 秒)"""
         v_data, v_sr = sf.read(input_vocal)
         v_duration = len(v_data) / v_sr
@@ -237,7 +233,7 @@ class DaFeiYuSinger:
         print(f"[MIX] 混音生成成功 -> {output_path} (时长: {duration:.1f}s, 采样率: {target_sr}Hz)")
         return output_path
 
-    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=None, index_rate=0.85, with_bgm=False):
+    def sing_song(self, vocal_path, bgm_path=None, output_path=None, f0_up_key=None, f0_method="pm", index_rate=0.85, with_bgm=False):
         """完整歌曲处理流程：智能检测原唱音高 -> 转换人声 -> 纯清唱输出（默认去掉背景音乐）"""
         if output_path is None:
             output_path = os.path.splitext(vocal_path)[0] + "_dafeiyu.wav"
@@ -246,7 +242,7 @@ class DaFeiYuSinger:
             f0_up_key = detect_auto_key(vocal_path, self)
 
         temp_vocal = os.path.splitext(output_path)[0] + "_vocal_only.wav"
-        self.convert_vocal(vocal_path, temp_vocal, f0_up_key=f0_up_key, index_rate=index_rate)
+        self.convert_vocal(vocal_path, temp_vocal, f0_up_key=f0_up_key, f0_method=f0_method, index_rate=index_rate)
         
         if with_bgm and bgm_path and os.path.exists(bgm_path):
             self.mix_audio(temp_vocal, bgm_path, output_path)
@@ -405,6 +401,7 @@ def main():
     parser.add_argument("--output", type=str, default=None, help="输出最终音频路径")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="RVC 模型权重路径")
     parser.add_argument("--key", type=int, default=None, help="升降调半音数 (默认自动检测原唱男/女声)")
+    parser.add_argument("--method", type=str, default="pm", choices=["pm", "harvest", "crepe", "rmvpe"], help="音高提取算法 (默认 pm 毫秒级极速)")
     parser.add_argument("--index_rate", type=float, default=0.85, help="检索特征比 (默认 0.85)")
     parser.add_argument("--with-bgm", action="store_true", default=False, help="是否混入伴奏 (默认 False，全量纯清唱模式)")
     args = parser.parse_args()
@@ -426,6 +423,7 @@ def main():
                 bgm_path=preset_info.get("bgm", None),
                 output_path=preset_info["output"],
                 f0_up_key=preset_info.get("f0_up_key", 0),
+                f0_method=args.method,
                 index_rate=preset_info.get("index_rate", 0.75),
                 with_bgm=args.with_bgm
             )
@@ -439,6 +437,7 @@ def main():
             bgm_path=args.bgm,
             output_path=args.output,
             f0_up_key=args.key,
+            f0_method=args.method,
             index_rate=args.index_rate,
             with_bgm=args.with_bgm
         )
