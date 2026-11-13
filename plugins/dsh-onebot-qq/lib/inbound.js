@@ -519,7 +519,7 @@ export class InboundPipeline {
                 this.ctx.log('info', `[空@合流] 检测到 ${nickname} 发送空@后紧接着发了后续消息/图片，已自动让位合并！`);
                 return;
             }
-            fastTurnText = '[群友单纯@呼叫了你一下，还没说具体啥事，请用1条简短傲娇气泡问ta喊本鱼干嘛，严禁脑补对方发了生鱼片或图片！]';
+            fastTurnText = '[群友单纯@呼叫了你一下，还没说具体啥事，请用1条简短自然的气泡问ta喊你干嘛，严禁脑补对方发了生鱼片或图片！]';
         }
 
         if (

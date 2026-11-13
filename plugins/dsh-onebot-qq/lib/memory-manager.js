@@ -957,16 +957,29 @@ export class MemoryManager {
     }
 
     /**
+     * 合并并去重后天习得兴趣池，维持最多 6 条的滑动窗口
+     */
+    _mergeAcquiredInterests(existing = [], additions = []) {
+        const cur = Array.isArray(existing) ? existing : [];
+        const merged = [...additions, ...cur];
+        const dedup = [];
+        for (const item of merged) {
+            const clean = String(item || '').replace(/\r?\n/g, ' ').trim().slice(0, 60);
+            if (clean && clean.length >= 4 && !dedup.some(x => x === clean || computeKeywordMatch(x, clean) >= 0.5)) {
+                dedup.push(clean);
+            }
+        }
+        return dedup.slice(0, ACQUIRED_INTERESTS_CAP);
+    }
+
+    /**
      * 向后天习得兴趣与小习惯池追加新条目（自动去重并维持最多 6 条的滑动窗口）
      */
     addAcquiredInterest(interestText) {
         const clean = String(interestText || '').replace(/\r?\n/g, ' ').trim().slice(0, 60);
         if (!clean || clean.length < 4) return false;
         const pe = this.getPersonaEvolution();
-        const existing = Array.isArray(pe.acquired_interests) ? pe.acquired_interests : [];
-        const filtered = existing.filter(item => item !== clean && computeKeywordMatch(item, clean) < 0.72);
-        filtered.unshift(clean);
-        pe.acquired_interests = filtered.slice(0, ACQUIRED_INTERESTS_CAP);
+        pe.acquired_interests = this._mergeAcquiredInterests(pe.acquired_interests, [clean]);
         pe.updated_at = this.now();
         this.save();
         return true;
@@ -982,7 +995,7 @@ export class MemoryManager {
         } else if (summary) {
             const snippet = String(summary).replace(/^今日事件：|^近期聊了：/g, '').trim().slice(0, 58);
             if (snippet) {
-                pe.recent_mindset = `近期经历「${snippet}」，在保持傲娇小蓝鲸底色的同时，对熟人愈发护短有梗、对调侃本鱼身材或画技的话题格外较真`.slice(0, 130);
+                pe.recent_mindset = `近期经历「${snippet}」，平时聊天更松弛有梗，跟熟人越来越合拍护短`.slice(0, 130);
             }
         }
 
@@ -998,16 +1011,7 @@ export class MemoryManager {
             }
         }
         if (newInterests.length > 0) {
-            const cur = Array.isArray(pe.acquired_interests) ? pe.acquired_interests : [];
-            const merged = [...newInterests.slice(0, 2), ...cur];
-            const dedup = [];
-            for (const item of merged) {
-                const clean = item.slice(0, 60);
-                if (clean && !dedup.some(x => x === clean || computeKeywordMatch(x, clean) >= 0.70)) {
-                    dedup.push(clean);
-                }
-            }
-            pe.acquired_interests = dedup.slice(0, ACQUIRED_INTERESTS_CAP);
+            pe.acquired_interests = this._mergeAcquiredInterests(pe.acquired_interests, newInterests.slice(0, 2));
         }
 
         if (llmPersonaData?.axes_delta && typeof this.onPersonaAxesNudge === 'function') {
@@ -1029,7 +1033,7 @@ export class MemoryManager {
             ? pe.acquired_interests.slice(0, 5)
             : DEFAULT_PERSONA_EVOLUTION.acquired_interests;
         return [
-            `【🌱 大肥鱼记忆驱动性格演化层 (80%核心傲娇蓝鲸底色 + 20%近期经历演化)】`,
+            `【🌱 大肥鱼记忆驱动性格演化层 (80%灵动随和底色 + 20%近期经历演化)】`,
             `  - 近期心境与性格微调: ${mindset}`,
             `  - 后天习得的兴趣与小习惯 (聊天或找话头时可自然流露): ${interests.join('；')}`,
         ].join('\n');
@@ -1679,7 +1683,7 @@ export class MemoryManager {
     deriveUserAttitudeMode(profile) {
         if (!profile) return '机灵随性的群内熟人（顺着话茬自然接梗吐槽）';
         if (String(profile.user_id) === String(this.masterQQ)) {
-            return '无条件偏爱护短的首席饲主（嘴上傲娇逞强，实则满眼粘人信任、爱撒娇讨夸奖）';
+            return '最信任偏爱的老大（相处很放松，有什么说什么，熟了会自然撒娇讨夸，偶尔才故意嘴硬一下）';
         }
         const corpus = [
             profile.rolling_summary || '',
@@ -1689,22 +1693,22 @@ export class MemoryManager {
         const aff = Number(profile.affection ?? 55);
 
         if (/(开黄腔|下头|骚鱼|生小鱼|生小鲸|色色|猥琐)/.test(corpus)) {
-            return '高度警惕嫌弃的嘴欠损友（随时防备ta开腔下套，一露苗头就毒舌反击拿鱼尾抽ta）';
+            return '高度警惕嫌弃的嘴欠损友（随时防备ta开腔下套，一露苗头就毒舌回击）';
         }
         if (/(卡车|笨鱼|傻鱼|胖|烤鱼|炖鱼|欺负|记入小本本|斗嘴)/.test(corpus)) {
             return aff >= 58
-                ? '相爱相杀的欢喜冤家（常跟本鱼斗嘴互损，见面爱先傲娇呛半句，但其实很乐意跟ta接梗玩）'
-                : '重点记仇的逗鱼损友（总爱调侃欺负本鱼，语气嘴硬嫌弃、针锋相对绝不认输）';
+                ? '爱互损的欢喜冤家（平时正常聊天接梗，被ta逗了就顺嘴损回去，不真往心里去）'
+                : '爱逗鱼的调皮群友（对ta保持几分防备和机灵吐槽，不吃ta画的饼）';
         }
         if (/(投喂|五花肉|白米饭|奶茶|请你吃|好吃的|饭票)/.test(corpus) || aff >= 75) {
-            return '暗中偏心的铁杆饭票挚友（表面假装矜持勉为其难，实则对ta极度护短、态度亲昵偏心）';
+            return '偏心护短的铁杆饭票挚友（对ta态度软乎乎很熟络，聊到吃的就两眼放光）';
         }
         if (/(代码|方案|技术|问题|设置|开源|协议|电脑|配置|渲染)/.test(corpus)) {
-            return '爱摆学姐架子的技术搭子（喜欢得意洋洋开启傲娇极客腔，顺手帮ta参谋吐槽）';
+            return '常聊技术的靠谱搭子（聊方案干脆利落、就事论事，顺手轻松吐槽两句不端着）';
         }
         return aff >= 55
-            ? '熟稔自然的群内鱼友（像老朋友一样随性接梗吐槽，有话直说不客套）'
-            : '略带傲娇防备的普通群友（保持深海小蓝鲸的傲娇矜持，看心情接话）';
+            ? '熟稔随性的群内鱼友（像老朋友一样自然接梗聊天，有话直说不客套）'
+            : '普通群友（自然随意又不失灵动，看话题顺嘴接话）';
     }
 
     /**
@@ -2193,10 +2197,10 @@ export class MemoryManager {
             : '';
         const nowMs = this.now();
         const renameHint = profile.pending_rename_hint && (nowMs - (profile.pending_rename_hint.ts || 0)) < 30_000
-            ? `🕵️‍♀️【熟人改名换马甲察觉彩蛋】：你敏锐发现这位熟人刚刚把昵称从「${profile.pending_rename_hint.oldName}」改成了「${profile.pending_rename_hint.newName}」！请在回应正事的同时，顺嘴傲娇调侃半句ta换名字/换马甲的事（如“哟，${profile.pending_rename_hint.oldName}你咋突然改名叫${profile.pending_rename_hint.newName}啦，以为换个马甲本鱼就不认识你了吗”），本轮调侃一次即可！`
+            ? `🕵️‍♀️【熟人改名换马甲察觉彩蛋】：你敏锐发现这位熟人刚刚把昵称从「${profile.pending_rename_hint.oldName}」改成了「${profile.pending_rename_hint.newName}」！请在回应正事的同时，顺嘴调侃半句ta换名字/换马甲的事（如“哟，${profile.pending_rename_hint.oldName}咋突然改名叫${profile.pending_rename_hint.newName}了”），本轮调侃一次即可！`
             : '';
         const followupHint = profile.pending_followup_hint && (nowMs - (profile.pending_followup_hint.ts || 0)) < 30_000
-            ? `🌙【跨天/久别记挂追问提示】：这是对方时隔 ${profile.pending_followup_hint.gapHours} 小时后第一次冒泡！你脑海里记挂着上次跟ta有关的事：「${profile.pending_followup_hint.topic}」。如果当前对方只是日常打招呼或闲聊，你可以顺嘴傲娇关心/追问半句那件事后续怎么样了；如果对方正在问十万火急的新正事，则优先回答新正事！`
+            ? `🌙【跨天/久别记挂追问提示】：这是对方时隔 ${profile.pending_followup_hint.gapHours} 小时后第一次冒泡！你脑海里记挂着上次跟ta有关的事：「${profile.pending_followup_hint.topic}」。如果当前对方只是日常打招呼或闲聊，你可以顺嘴关心追问半句那件事后续怎么样了；如果对方正在问十万火急的新正事，则优先回答新正事！`
             : '';
         return [
             `【当前对话目标 QQ 用户专属档案 (Per-User Isolated Memory)】`,

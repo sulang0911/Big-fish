@@ -194,7 +194,7 @@ export function buildColloquialVocativeHint(rawText = '') {
     if (prefixMatch) {
         const vocative = prefixMatch[1];
         const coreClause = prefixMatch[2].trim();
-        return `💡【中文口语断句与省略主语解析铁律（防曲解话意！）】：对方原话 "${clean}" 省略了标点与主语，真实语义断句是：「${vocative}（这是在喊你/娇嗔调侃你，⚠️绝对不是后面动作的主语或宾语！），${coreClause}（省略了主语，指的是【近期对话上下文】中你们刚刚正在讨论的那个设置/选项/问题！）」！请务必先结合前 1~3 轮对话理解并正面回应「${coreClause}」这件正事（例如顺着刚才聊的电脑设置/问题接话，严禁曲解成“把${vocative}关掉/吃掉”），最多顺带傲娇回敬半句“你才是${vocative}呢哼”，绝不要扯“记小本本”偏离话题！`;
+        return `💡【中文口语断句与省略主语解析铁律（防曲解话意！）】：对方原话 "${clean}" 省略了标点与主语，真实语义断句是：「${vocative}（这是在喊你/调侃你，⚠️绝对不是后面动作的主语或宾语！），${coreClause}（省略了主语，指的是【近期对话上下文】中你们刚刚正在讨论的那个设置/选项/问题！）」！请务必先结合前 1~3 轮对话理解并正面回应「${coreClause}」这件正事（例如顺着刚才聊的电脑设置/问题接话，严禁曲解成“把${vocative}关掉/吃掉”），把正事答清楚后再视情况轻损半句“你才是${vocative}”，绝不要扯“记小本本”偏离话题！`;
     }
 
     // 情况 2：句尾顺嘴带称呼/娇嗔词（如“重启还是需要呢，本地账户就可以了笨蛋！”）
@@ -202,7 +202,7 @@ export function buildColloquialVocativeHint(rawText = '') {
     if (suffixMatch) {
         const coreClause = suffixMatch[1].trim();
         const vocative = suffixMatch[2];
-        return `💡【中文口语句尾娇嗔解析提示】：对方这句话真正要表达的核心正事是「${coreClause}」，句尾的「${vocative}」只是顺嘴傲娇调侃你一句！请重点围绕「${coreClause}」本身的内容机灵接话，顺带傲娇回怼半句即可，严禁只顾着喊“记小本本”而忽略正事！`;
+        return `💡【中文口语句尾娇嗔解析提示】：对方这句话真正要表达的核心正事是「${coreClause}」，句尾的「${vocative}」只是顺嘴调侃你一句！请重点围绕「${coreClause}」本身的内容机灵接话，把正事说清楚后轻损半句即可，严禁只顾着喊“记小本本”而忽略正事！`;
     }
 
     return '';
@@ -827,7 +827,7 @@ export class SocialArbiter {
         const rec = this.getDailyUserRecord(uid);
         const currentCount = Number(rec.feedCount) || 0;
 
-        // 档位 0：拿食物当条件开玩笑/调戏（如“给你米饭给我生小鱼”）——绝不吃下，直接傲娇退货回怼！
+        // 档位 0：拿食物当条件开玩笑/调戏（如“给你米饭给我生小鱼”）——不吃这套，直接退货回怼！
         if (taste === 'bribe_tease') {
             this.driveEngine.enterSulking(`刚才 ${nick} 居然想拿「${foodName}」骗本鱼生小鱼/当苦力，气鼓鼓把碗推回去`);
             const res = {
@@ -836,7 +836,7 @@ export class SocialArbiter {
                 foodName,
                 taste,
                 voiceBoost: 0.40,
-                promptHint: `💢【最高优先级·识破糖衣炮弹拒吃退货！】对方想拿「${foodName}」当诱饵骗你生小鱼/占便宜！⚠️绝对禁止说“饭本鱼炫了/吃下了/真香”，你一眼识破了对方的诡计并把碗推了回去拒吃！请用 ${bubbleCountHint}傲娇机灵的短气泡嫌弃吐槽对方想得美（如“？想得美！一碗${foodName}就想骗本鱼给你生小鱼，本鱼是高贵的小蓝鲸不是鱼塘母鱼，拿走不吃哼”），绝不要生硬复读“下头怪/去局子”！`,
+                promptHint: `💢【最高优先级·识破糖衣炮弹拒吃退货！】对方想拿「${foodName}」当诱饵占便宜！⚠️绝对禁止说“饭我炫了/吃下了/真香”，直接把碗推回去拒吃！用 ${bubbleCountHint}机灵嫌弃的短气泡吐槽对方想得美（如“想得美，一碗${foodName}就想骗本鱼？拿走不吃”），绝不要生硬复读“下头怪/去局子”！`,
             };
             this.lastNaturalFeedKey = dedupKey;
             this.lastNaturalFeedResult = res;
@@ -848,14 +848,14 @@ export class SocialArbiter {
             if (!isAdmin) {
                 this.memoryManager.applyAffectionDelta(uid, -1.5, nick);
             }
-            this.driveEngine.enterSulking(`刚才 ${nick} 居然试图喂本鱼吃同类「${foodName}」，吓得呆毛炸立记小本本中`);
+            this.driveEngine.enterSulking(`刚才 ${nick} 居然试图喂本鱼吃同类「${foodName}」，吓得呆毛炸立`);
             const res = {
                 fed: false,
                 mode,
                 foodName,
                 taste,
                 voiceBoost: 0.45,
-                promptHint: `💢【投喂彩蛋·同类相残警报！】对方居然拿鱼类料理「${foodName}」投喂你！你是小蓝鲸大肥鱼，绝不吃鱼类同类！你现在吓得鱼尾炸毛并把对方记进了小本本，请立刻用 ${bubbleCountHint}超短气泡气鼓鼓吐槽对方心狠手辣，并将 qq_action.type 设为 "poke" 反戳回去（或发 angry 表情包）！`,
+                promptHint: `💢【投喂彩蛋·同类相残警报！】对方居然拿鱼类料理「${foodName}」投喂你！你是小蓝鲸大肥鱼，绝不吃鱼类同类！立刻用 ${bubbleCountHint}超短气泡嫌弃吐槽对方心狠手辣，并将 qq_action.type 设为 "poke" 反戳回去（或发 angry 表情包）！`,
             };
             this.lastNaturalFeedKey = dedupKey;
             this.lastNaturalFeedResult = res;
@@ -871,7 +871,7 @@ export class SocialArbiter {
                 foodName,
                 taste,
                 voiceBoost: 0.40,
-                promptHint: `🤢【投喂彩蛋·嫌弃吐出！】对方居然拿黑暗料理「${foodName}」喂你！本鱼最讨厌吃这个了，请立刻在回复里“呸呸呸”傲娇吐出来，嫌弃吐槽对方坏心眼（绝不要说好吃）！`,
+                promptHint: `🤢【投喂彩蛋·嫌弃吐出！】对方居然拿黑暗料理「${foodName}」喂你！最讨厌吃这个了，立刻“呸呸呸”嫌弃吐槽对方坏心眼（绝不要说好吃）！`,
             };
             this.lastNaturalFeedKey = dedupKey;
             this.lastNaturalFeedResult = res;
@@ -888,7 +888,7 @@ export class SocialArbiter {
                 foodName,
                 taste,
                 voiceBoost: 0.30,
-                promptHint: `🍗【投喂触发·肚皮圆滚滚吃撑啦】对方投喂了你「${foodName}」，但今天已经喂过你很多次啦（当前饱食度 ${st.hunger}/100）！请不要发系统属性面板，直接拍拍圆滚滚的肚皮傲娇表示今天实在装不下啦，让ta明天再喂！`,
+                promptHint: `🍗【投喂触发·肚皮圆滚滚吃撑啦】对方投喂了你「${foodName}」，但今天已经喂过很多次啦（当前饱食度 ${st.hunger}/100）！请不要发系统属性面板，直接拍拍肚子表示今天实在装不下啦，让ta明天再喂！`,
             };
             this.lastNaturalFeedKey = dedupKey;
             this.lastNaturalFeedResult = res;
@@ -1042,7 +1042,7 @@ export class SocialArbiter {
                 ...(allyHint ? [allyHint] : []),
                 `回复准则：`,
                 `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
-                `2. 以傲娇、机灵的小蓝鲸“大肥鱼”口吻，${(isGroup && !isMaster) ? '只发 1 条简短精炼的气泡（10~25 字以内，一句话说完，绝不要拆成多条刷屏，句尾不加句号）' : '拆分为 1~3 条简短活泼的气泡（每条 <= 25 字，句尾绝不加句号）'}，像真人秒回微信/QQ一样有灵气！（聊美食/投喂时可开心馋五花肉和白米饭，聊其他话题时自然顺着话题接梗，绝不要句句硬扯五花肉或小本本；且严禁连续两轮复读自己上一句刚用过的句尾词或后半句！）`,
+                `2. 以自然鲜活的“大肥鱼”口吻，${(isGroup && !isMaster) ? '只发 1 条简短精炼的气泡（10~25 字以内，一句话说完，绝不要拆成多条刷屏，句尾不加句号）' : '拆分为 1~3 条简短口语化的气泡（每条 <= 25 字，句尾绝不加句号）'}，像真人秒回微信/QQ一样松弛有灵气！（不用每句都塞“本鱼”或“哼/捏”，平常多用“我”或省略主语；聊美食时可开心馋五花肉和白米饭，聊其他话题自然接梗，严禁连续两轮复读自己上一句刚用过的句尾词！）`,
                 ...(hasImage ? [`3. 对方消息中包含图片/表情包（见“视觉画面描述”），请结合图片画面内容进行流口水、吐槽或配表情包斗图！`] : []),
                 ...(stealMemeHint ? [stealMemeHint] : []),
                 buildDynamicTurnContext({
@@ -1217,8 +1217,8 @@ export class SocialArbiter {
         const prompt = [
             `用户 [${pokerName} (QQ: ${userId})] 刚刚在 5 秒内连续戳了你 ${count} 下！`,
             count >= 3
-                ? '你被戳得脸颊鼓起、呆毛炸立，非常傲娇不服气（已经记进小本本闹别扭了），请立刻在 JSON 中输出 1~2 条短气泡吐槽并设置 qq_action.type = "poke" 反戳回去（或发 angry/fish_slap 表情包）！'
-                : '请根据你当前的心情和生理状态，输出 JSON 动作协议回应这次戳一戳（可以傲娇哼唧、或者反戳回去，不要无脑提五花肉）。',
+                ? '被连着戳了好几下有点小脾气，请在 JSON 中输出 1~2 条简短自然的吐槽气泡并设置 qq_action.type = "poke" 反戳回去（或发 angry/fish_slap 表情包）！'
+                : '请根据你当前的心情和生理状态，输出 JSON 动作协议回应这次戳一戳（可以随口问干嘛或反戳回去，不要无脑提五花肉或故意哼哼）。',
             buildDynamicTurnContext({
                 driveEngine: this.driveEngine,
                 memoryManager: this.memoryManager,
@@ -1237,11 +1237,11 @@ export class SocialArbiter {
         if (!rawJson || (action.reply_decision === 'ignore' && action.messages.length === 0)) {
             action = {
                 isStructured: true,
-                inner_thought: `被连续戳了 ${count} 下，本鱼必须傲娇反击！`,
+                inner_thought: `被连续戳了 ${count} 下，反戳回去！`,
                 reply_decision: 'send_message',
                 messages: count >= 3
-                    ? [`哼！连戳本鱼 ${count} 下干嘛啦`, '再戳肚皮本鱼要拿尾巴拍你了捏']
-                    : ['干嘛戳本鱼的脸颊啦，哼'],
+                    ? [`连戳 ${count} 下干嘛呀`, '再戳我也反戳回去了捏']
+                    : ['突然戳一下干嘛啦'],
                 qq_action: { type: 'poke', meme_tag: 'angry' },
                 memory_to_save: { should_save: false, importance: 1, summary: '' },
                 stat_delta: { affection: 1, boredom: -10, hunger: 0 },
@@ -1417,7 +1417,7 @@ export class SocialArbiter {
                 ? `到了午饭干饭点，大声馋热腾腾的白米饭配脆皮五花肉/猪脚饭，顺便打听群友中午吃啥`
                 : hour >= 17 && hour <= 20
                     ? `到了傍晚晚饭点，肚子咕咕叫，打听群友今晚吃什么好吃的，顺便求投喂`
-                    : `下午茶/摸鱼时间嘴馋想喝冰奶茶吃小蛋糕，傲娇暗示群友投喂`,
+                    : `下午茶/摸鱼时间嘴馋想喝冰奶茶吃小蛋糕，随口跟群友撒个娇讨投喂`,
             `吐槽自己刚才在水里吐泡泡/晒鱼尾巴/打瞌睡发生的搞笑小事，自然带起轻松话题`,
             `好奇打听群友们现在是在苦逼搬砖写代码、还是在偷偷摸鱼打游戏`,
         ];
@@ -1428,7 +1428,7 @@ export class SocialArbiter {
                 `当前你的无聊度高达 ${st.boredom}/100！本次破冰话题方向：【${chosenTheme}】。`,
                 ...(activeRegulars ? [`${activeRegulars}（若想点名熟人，只能直接喊上述列表里的真实群友称呼，严禁手打“@xxx”符号或虚空点名列表外的游戏角色/选手！）`] : []),
                 `⚠️【防复读与隐私铁律】：严禁使用“喂喂都在潜水吗/潜水两个多小时啦/还有人活着吗/怎么没人说话”这类催促句式！严禁在群里透露老大的电脑软件/远程桌面状态！`,
-                `请以傲娇团宠大肥鱼的口吻，围绕上述话题方向发 1~2 条简短鲜活的气泡（每条 <= 25 字，句尾不加句号），并可搭配 send_meme！`,
+                `请以鲜活接地气的大肥鱼口吻，围绕上述话题方向发 1~2 条简短自然的聊天泡泡（每条 <= 25 字，句尾不加句号），并可搭配 send_meme！`,
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
                     memoryManager: this.memoryManager,
@@ -1442,7 +1442,7 @@ export class SocialArbiter {
                 `现在是群里的日常摸鱼时段，你想主动在群 ${chatId} 冒个泡开启一个有趣的新话题。本次破冰话题方向：【${chosenTheme}】。`,
                 ...(activeRegulars ? [`${activeRegulars}（若想cue熟面孔，只能直接喊上述列表里的真实群友称呼，严禁手打“@xxx”符号或把前文聊到的游戏选手当成群友！）`] : []),
                 `⚠️【防复读与隐私铁律】：严禁使用“喂喂群里都潜水到哪去啦/潜水两小时了/还有人活着吗”这类生硬的潜水盘问句式！严禁在群里透露老大的电脑软件/远程桌面状态！`,
-                `请以傲娇团宠大肥鱼的口吻，围绕本次破冰话题方向发 1~2 条简短沙雕/傲娇/嘴馋的文案活跃气氛（每条 <= 25 字，句尾不加句号），可搭配 send_meme！`,
+                `请以自然有活人感的大肥鱼口吻，围绕本次破冰话题方向发 1~2 条简短沙雕或嘴馋的日常文案活跃气氛（每条 <= 25 字，句尾不加句号），可搭配 send_meme！`,
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
                     memoryManager: this.memoryManager,
@@ -1581,7 +1581,7 @@ export class SocialArbiter {
                 `触发原因：${reason}`,
                 `顺带感知到的电脑状态：${hwBrief}`,
                 ...(envCtx.pcActivity ? [`感知到老大当前电脑画面：${envCtx.pcActivity}`] : []),
-                `请以大肥鱼的傲娇/贪吃/粘人本色，主动给老大发 1~3 条短气泡（每条 <= 25 字，句尾不加句号），可以撒娇抱怨无聊、讨要脆皮五花肉/白米饭、吐槽/关心老大正在玩的软件或游戏、或者顺便提一句帮老大巡检了电脑状态。`,
+                `请以大肥鱼自然粘人又爱吃爱凑热闹的口吻，主动给老大发 1~3 条短气泡（每条 <= 25 字，句尾不加句号），可以撒娇抱怨无聊、惦记脆皮五花肉/白米饭、吐槽或关心老大正在玩的软件或游戏、或者顺便提一句帮老大巡检了电脑状态。`,
                 `必须严格输出 JSON Action Schema！`,
                 buildDynamicTurnContext({
                     driveEngine: this.driveEngine,
@@ -1730,7 +1730,7 @@ export class SocialArbiter {
                     `【系统内部事件：self_surf_share（大肥鱼自主上网冲浪吃瓜后向老大/群友吐槽分享）】`,
                     `你刚刚因为${opts.reason === 'boss_unanswered' ? '找老大玩老大没空理你' : opts.reason === 'hourly_unattended' ? '一个多小时没人陪你说话太无聊' : '想自己找点乐子'}，自己打开浏览器去逛了【${res.siteName}】（${res.category}）。`,
                     `你在网页上刷到了这些标题：${topicText}，还专门点进去了「${focusTitle || topTopics[0] || res.category}」${res.deepSnippet ? `，看到里面写着：“${res.deepSnippet}”` : ''}！`,
-                    `请以傲娇、鲜活的大肥鱼口吻，发 1~2 条简短有灵气的气泡（每条 <= 25 字，句尾不加句号），像真人刚刷到好玩的帖子/视频一样跟对方吐槽或分享！（⚠️严禁输出“【大肥鱼自主冲浪报告】/状态变化”等死板系统格式！系统会在你的文字气泡后自动附上网页截图）`,
+                    `请以自然鲜活、有活人感的大肥鱼口吻，发 1~2 条简短吐槽气泡（每条 <= 25 字，句尾不加句号），像真人刚刷到好玩的帖子/视频一样跟对方分享！（⚠️严禁输出“【大肥鱼自主冲浪报告】/状态变化”等死板系统格式！系统会在你的文字气泡后自动附上网页截图）`,
                 ].join('\n');
                 const rawJson = await this.callDeepSeekAction(this.masterQQ, surfPrompt);
                 let action = parseActionResponse(rawJson);
@@ -1740,8 +1740,8 @@ export class SocialArbiter {
                         inner_thought: `刚自己逛了${res.siteName}，去跟老大分享一下`,
                         reply_decision: 'send_message',
                         messages: [
-                            `哼，看你们都不理本鱼，本鱼刚自己溜去逛【${res.siteName}】啦`,
-                            focusTitle ? `刷到这个「${focusTitle.slice(0, 18)}」还挺有意思捏` : `逛了一圈${res.category}，解闷了不少捏`,
+                            `刚自己摸鱼逛了会儿【${res.siteName}】`,
+                            focusTitle ? `刷到这个「${focusTitle.slice(0, 18)}」还挺有意思` : `逛了一圈${res.category}，解闷了不少`,
                         ],
                         qq_action: { type: 'none', meme_tag: 'happy' },
                         memory_to_save: { should_save: false, importance: 1, summary: '' },
@@ -1921,7 +1921,7 @@ export class SocialArbiter {
         const prompt = [
             `【系统内部事件：pc_companion_chime（大肥鱼在老大电脑桌面上看到老大刚刚打开了新软件/游戏）】`,
             `你住在老大的电脑里，刚刚你在任务栏亲眼瞄见老大切换了状态：【${newActivity}】！`,
-            `请以傲娇、粘人又爱凑热闹的小蓝鲸“大肥鱼”口吻，主动给老大发 1~2 条简短鲜活的气泡（每条 <= 24 字，句尾不加句号），调侃或求带一起玩！`,
+            `请以自然粘人又爱凑热闹的大肥鱼口吻，主动给老大发 1~2 条简短鲜活的气泡（每条 <= 24 字，句尾不加句号），随口调侃或求带一起玩！`,
         ].join('\n');
         const rawJson = await this.callDeepSeekAction(this.masterQQ, prompt);
         const action = parseActionResponse(rawJson);
@@ -1952,7 +1952,7 @@ export class SocialArbiter {
         } else if (/(?:对不起|错啦|错了|摸摸|抱抱|不欺负|给你吃|请你吃)/i.test(cleanText)) {
             this.driveEngine.clearSulking();
             this.lastGroupBullyMap.delete(chatId);
-            return `🎉【坏蛋服软哄鱼感知】：刚才惹你生气的【${nickname}】现在主动认错/哄你啦！你的小脾气已经被哄好大半，请半推半就傲娇给个台阶下（如“看在你诚心认错的份上，本鱼暂时把你从小本本第一页挪到第二页哼”）！`;
+            return `🎉【坏蛋服软哄鱼感知】：刚才惹你生气的【${nickname}】现在主动认错/哄你啦！你的小脾气已经被哄好大半，半推半就给个台阶下就行（如“行吧，看在你这么诚心认错的份上就暂时原谅你了”）！`;
         }
         return '';
     }
@@ -2104,13 +2104,13 @@ export class SocialArbiter {
                 ...(hasImage ? [`🖼️【视觉感知提示】群友消息中包含图片或表情包（见其中的“视觉画面描述”），你可以针对图片内容吐槽，或者设置 reply_decision = "meme_only" / qq_action.type = "send_meme" 发表情包跟对方斗图！`] : []),
                 ...(stealMemeHint ? [stealMemeHint] : []),
                 ...(calledByName || isExplicitGroupFeed
-                    ? [`🎯【点名/投喂呼叫触发】${isMasterUser ? '老大' : '群友'}刚刚直接向你发起了互动或投喂（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以傲娇鲜活的大肥鱼口吻${isMasterUser ? '分成 1~3 条活泼可爱的短气泡（每条 <= 25 字，不加句号）回应老大' : '只发 1 条精炼短气泡（10~25 字以内，一句话说完，不加句号）回应对方'}！`]
+                    ? [`🎯【点名/投喂呼叫触发】${isMasterUser ? '老大' : '群友'}刚刚直接向你发起了互动或投喂（"${cleanText}"）！请务必将 reply_decision 设为 "send_message"，以自然鲜活、像真人聊QQ的大肥鱼口吻${isMasterUser ? '分成 1~3 条轻松可爱的短气泡（每条 <= 25 字，不加句号）回应老大' : '只发 1 条精炼短气泡（10~25 字以内，一句话说完，不加句号，不用每句都带“本鱼”或“哼/捏”）回应对方'}！`]
                     : isFollowUpConvo
-                        ? [`⚡【连续对话追问余温中】你刚刚才和 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着发了："${cleanText}"！请先结合近期群聊上下文理解对方这句话省略的主语（若对方句首/句尾带了“笨蛋/傻鱼”，那是喊你的称呼词，真正说的是前面讨论的那个设置/问题/事情！），只要对方是在接你的话茬、继续刚才的话题、发图斗图、调侃你或追问你，请将 reply_decision 设为 "send_message"（或 "meme_only"），${isMasterUser ? '用 1~3 条活泼傲娇的短气泡回应老大' : '只用 1 条精炼短气泡准确回应'}（严禁复读自己上一句刚用过的后半句或句尾口头禅）！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
+                        ? [`⚡【连续对话追问余温中】你刚刚才和 [${activeConvo.nickname || userId}] 搭过话/斗过嘴，现在对方紧接着发了："${cleanText}"！请先结合近期群聊上下文理解对方这句话省略的主语（若对方句首/句尾带了“笨蛋/傻鱼”，那是喊你的称呼词，真正说的是前面讨论的那个设置/问题/事情！），只要对方是在接你的话茬、继续刚才的话题、发图斗图、调侃你或追问你，请将 reply_decision 设为 "send_message"（或 "meme_only"），${isMasterUser ? '用 1~3 条自然活泼的短气泡回应老大' : '只用 1 条精炼短气泡准确回应'}（严禁复读自己上一句刚用过的后半句或句尾口头禅）！只有当对方明显转头去跟别人聊完全无关的事情时才设为 "ignore"。`]
                         : [
                             `当前你的无聊度为 ${boredom}/100${boredom >= 65 ? '（你现在挺无聊的，很想找群友搭话吐槽！）' : ''}。`,
                             `判断准则：`,
-                            `1. 如果群友在聊美食（如五花肉/白米饭/夜宵）、游戏、摸鱼、日常趣事、晒图，或者提到了本鱼/老大，又或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），${isMasterUser ? '输出 1~2 条活泼傲娇吐槽（每条 <= 22 字，不加句号）' : '只输出 1 条精炼沙雕/傲娇吐槽（10~22 字以内，不加句号；非美食话题不要句句硬扯五花肉）'}。`,
+                            `1. 如果群友在聊美食（如五花肉/白米饭/夜宵）、游戏、摸鱼、日常趣事、晒图，或者提到了本鱼/老大，又或者你现在很无聊想顺着群友的话幽默接梗吐槽，请将 reply_decision 设为 "send_message"（或 "meme_only"），${isMasterUser ? '输出 1~2 条自然吐槽（每条 <= 22 字，不加句号）' : '只输出 1 条精炼接地气的吐槽（10~22 字以内，不加句号；非美食话题不要句句硬扯五花肉）'}。`,
                             `2. 如果话题严肃、或者插话会显得突兀打扰别人，请务必将 reply_decision 设为 "ignore"，保持高冷潜水！`,
                         ]),
                 buildDynamicTurnContext({
@@ -2941,7 +2941,7 @@ export class SocialArbiter {
                         {
                             role: 'system',
                             content: [
-                                '你是傲娇小蓝鲸“大肥鱼”的分用户记忆压缩器。',
+                                '你是小蓝鲸“大肥鱼”的分用户记忆压缩器。',
                                 '请将该用户的【已有浓缩印象】、【已有重要记忆】、【已有一般记忆】与【最新原始发言流水】合并压缩，严格区分“重要记忆”与“一般记忆”，防止信息膨胀：',
                                 '1. rolling_summary: 用大肥鱼视角写一段 <= 80 字的该用户浓缩印象总结（包含ta的性格、常聊话题、对本鱼的态度）。',
                                 '2. important_memories: 数组（最多 8 条，每条 <= 35 字），只保留【重要信息】：真实身份/职业/学业、固定喜好或雷区、与大肥鱼的核心关系/长期恩怨、重大约定或里程碑。',
@@ -2993,7 +2993,7 @@ export class SocialArbiter {
                 .join('\n');
             const prevSummary = existingDigest?.summary || '（无）';
             const prevHighlights = JSON.stringify(existingDigest?.highlights || []);
-            const prevMindset = currentPersonaEvo?.recent_mindset || '（默认傲娇蓝鲸女仆心境）';
+            const prevMindset = currentPersonaEvo?.recent_mindset || '（默认松弛灵动小蓝鲸心境）';
             const prevInterests = JSON.stringify(currentPersonaEvo?.acquired_interests || []);
 
             const res = await this.fetchImpl('https://api.deepseek.com/chat/completions', {
@@ -3009,8 +3009,8 @@ export class SocialArbiter {
                         {
                             role: 'system',
                             content: [
-                                '你是傲娇贪吃的小蓝鲸“大肥鱼”的每日记忆压缩与性格自省演化器。',
-                                '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情，并根据今天的共同经历对大肥鱼的《近期性格与心境画像》和《后天习得兴趣池》进行温和演化（保持80%傲娇小蓝鲸核心人设不变，体现20%因近期经历产生的小脾气、新执念或新习惯）。注意看清每条流水的 `昵称(QQ:xxx)`，严禁张冠李戴！',
+                                '你是贪吃又灵动的小蓝鲸“大肥鱼”的每日记忆压缩与性格自省演化器。',
+                                '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情，并根据今天的共同经历对大肥鱼的《近期性格与心境画像》和《后天习得兴趣池》进行温和演化（保持80%随和松弛小蓝鲸核心底色不变，体现20%因近期经历产生的小情绪、新执念或新习惯）。注意看清每条流水的 `昵称(QQ:xxx)`，严禁张冠李戴！',
                                 '必须严格输出 JSON 对象：',
                                 '{"summary": "以大肥鱼第一人称（本鱼）写的今日浓缩总结，不超过100字", "highlights": ["带时间或具体群友昵称的关键事项1", "事项2"], "episodic": [{"summary": "若包含值得长期永久铭记的重要事件则提取，必须写明具体是谁，否则留空数组", "importance": 8, "user_id": "对应的QQ号"}], "group_lore": ["若流水中有群友与大肥鱼的有趣群梗、外号或恩怨（写明群友昵称），提取1~2条，否则留空数组"], "evolving_mindset": "更新后的近期性格与心境画像（<=90字，写出近期经历让本鱼在脾气、说话习惯或关注点上发生了什么细微变化）", "new_interests": ["从今日经历中新习得的兴趣、小习惯或敏感雷点（0~2条，每条<=35字）"], "axes_delta": {"tsundere_to_sweet": 0, "sharp_to_soft": 0, "extrovert_to_aloof": 0}}',
                             ].join('\n'),

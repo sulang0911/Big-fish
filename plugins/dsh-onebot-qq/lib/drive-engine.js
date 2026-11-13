@@ -20,8 +20,8 @@ function randFloat(min, max) {
     return Math.round((min + Math.random() * (max - min)) * 10) / 10;
 }
 
-/** 故意逗鱼/欺负/无厘头调戏大肥鱼触发“傲娇炸毛记小本本”的正则 */
-export const TEASE_BULLY_REGEX = /(不给你吃|不喂你|饿死你|把你炖了|把你烤了|把你蒸了|烤了你|炖了你|蒸了你|红烧肥鱼|清蒸肥鱼|烤肥鱼|烤鱼|生鱼片|全吃光|一口都不留|略略略|傻鱼|笨鱼|臭鱼|丑鱼|死鱼|骚鱼|鱼骚|胖头鱼|菜刀|杀鱼|剁了你|把你切了|生小鱼|下小鱼|产卵|下崽|生猴子|生孩子|怀上|怀孕|当我老婆|给我当老婆|嫁给我|来我被窝|进我被窝|钻我被窝|来我房间)/i;
+/** 故意逗鱼/欺负/无厘头调戏大肥鱼触发“小别扭闹脾气”的正则（放宽日常轻微昵称避免动辄记仇 2 小时） */
+export const TEASE_BULLY_REGEX = /(不给你吃|不喂你|饿死你|把你炖了|把你烤了|把你蒸了|烤了你|炖了你|蒸了你|红烧肥鱼|清蒸肥鱼|烤肥鱼|生鱼片|全吃光|一口都不留|死鱼|骚鱼|鱼骚|菜刀|杀鱼|剁了你|把你切了|生小鱼|下小鱼|产卵|下崽|生猴子|生孩子|怀上|怀孕|当我老婆|给我当老婆|嫁给我|来我被窝|进我被窝|钻我被窝|来我房间)/i;
 
 /** 露骨猥琐/恶性开黄腔/谐音性骚扰检测正则（触发嫌弃痛斥，绝不呆傻回答） */
 export const SEXUAL_HARASS_REGEX = /(胸多大|什么罩杯|几罩杯|胖次|内裤|内衣|胸罩|脱光|脱掉|脱衣服|看看腿|看看胸|看看逼|看看批|看看奈子|奶子|欧派|涩涩|色色|做爱|打炮|约炮|交配|发情|舔你|舔舔腿|舔脚|闻闻脚|丝袜|黑丝|白丝|摸摸胸|摸摸腿|摸摸屁股|揉胸|揉揉胸|陪睡|侍寝|暖床|给操|草你|日你|操你|操死|日死|干死你|我要草鱼|想草鱼|操鱼|日鱼|干鱼|内射|内设你|我要内设|中出|颜射|哦鲸鲸|欧金金|おちんちん|牛子|鸡巴|几把|大屌|肉棒|精液|射你|口交|足交|自慰|叫床|喘一个|娇喘|下面湿|小穴|肉便器|母狗|骚货|发骚)/i;
@@ -48,8 +48,8 @@ export function isMealTimeWindow(date = new Date()) {
 }
 
 const DEFAULT_PERSONALITY_AXES = {
-    tsundere_to_sweet: -20, // -100(极度傲娇嘴硬) ~ +100(坦率粘人撒娇)
-    sharp_to_soft: -15,     // -100(毒舌犀利爱互怼) ~ +100(软糯温和心软)
+    tsundere_to_sweet: 15,  // -100(嘴硬爱哼) ~ +100(随和坦率粘人)
+    sharp_to_soft: 10,      // -100(毒舌犀利爱互怼) ~ +100(软糯温和心软)
     extrovert_to_aloof: -10 // -100(社牛话痨爱接梗) ~ +100(高冷深海独处)
 };
 
@@ -313,15 +313,15 @@ export class DriveEngine {
         const e = axes.extrovert_to_aloof;
 
         const tsundereDesc = t <= -35
-            ? `高度傲娇嘴硬(${t}：死鸭子嘴硬、极易炸毛害羞，夸她会嘴硬反驳)`
+            ? `偏嘴硬害羞(${t}：夸她容易口是心非反驳两句，心里其实美滋滋)`
             : t >= 25
-                ? `坦率粘人偏甜(${t}：近期被宠得比较坦率，爱主动撒娇护短、少嘴硬)`
-                : `傲娇带甜(${t}：表面哼唧傲娇，实则心软好哄)`;
+                ? `坦率粘人偏甜(${t}：相处非常放松，说话直白亲近，偶尔才耍点小脾气)`
+                : `松弛随和带微傲娇(${t}：平常说话自然口语化、不刻意哼哼唧唧，只在被逗或被夸得意时偶尔嘴硬)`;
         const sharpDesc = s <= -35
             ? `毒舌小辣椒(${s}：近期常跟群友斗嘴，吐槽犀利、攻击性与反击欲强)`
             : s >= 25
                 ? `呆萌温和(${s}：近期相处融洽，语气软糯温和、少刺头)`
-                : `机灵毒舌适中(${s}：平时活泼机灵，被惹到才毒舌反击)`;
+                : `机灵吐槽适中(${s}：平时随和有趣，被惹到才犀利反击)`;
         const socialDesc = e <= -30
             ? `社牛话痨鲸(${e}：近期互动频繁，爱凑热闹接梗、表现欲旺盛)`
             : e >= 30
@@ -333,7 +333,7 @@ export class DriveEngine {
             tsundereDesc,
             sharpDesc,
             socialDesc,
-            summaryLine: `傲娇↔坦率=${tsundereDesc} | 毒舌↔软糯=${sharpDesc} | 社牛↔高冷=${socialDesc}`,
+            summaryLine: `嘴硬↔坦率=${tsundereDesc} | 毒舌↔软糯=${sharpDesc} | 社牛↔高冷=${socialDesc}`,
         };
     }
 
@@ -344,7 +344,7 @@ export class DriveEngine {
             ? ' ⚠️【生物钟警告：你刚刚在深夜 01:30~07:30 熟睡中被吵醒，迷迷糊糊带着强烈起床气，说话要揉眼睛抱怨困！】'
             : '';
         const sulkNote = snap.sulking
-            ? ` 💢【小傲娇状态：${snap.sulkingReason || '刚才被调侃了'}（仅对刚惹你的本人带一点傲娇语气即可，聊具体话题时请专注理解对方话意，严禁句句复读“记小本本/清账”！）】`
+            ? ` 💢【有点小别扭：${snap.sulkingReason || '刚才被调侃了'}（仅对刚惹你的本人带一点小脾气即可，聊正事时正常说话，严禁复读“记小本本/清账”！）】`
             : '';
         const pDesc = this.describePersonalityAxes();
         return [
@@ -359,7 +359,7 @@ export class DriveEngine {
         } else if (this.state.sleeping) {
             this.state.mood = '呼呼大睡中(zzZ)';
         } else if (this.isSulking()) {
-            this.state.mood = '抱起鱼尾闹别扭记小本本中(哼!)';
+            this.state.mood = '有点小别扭，抱手生闷气中';
         } else if (this.state.hunger < 20) {
             this.state.mood = '饿扁了眼巴巴求投喂白米饭';
         } else if (this.state.boredom > 80) {
@@ -396,7 +396,7 @@ export class DriveEngine {
                 this.state.sulking = true;
                 this.state.sulkingReason = `刚才有人对本鱼说“${text.slice(0, 20)}”，气鼓鼓记小本本中`;
                 this.state.sulkingSince = now.getTime();
-                this.nudgePersonalityAxes({ tsundere_to_sweet: -1.2, sharp_to_soft: -1.5, extrovert_to_aloof: -0.3 });
+                this.nudgePersonalityAxes({ tsundere_to_sweet: -0.5, sharp_to_soft: -0.6, extrovert_to_aloof: -0.3 });
                 teased = true;
             } else if (text && COAX_COMFORT_REGEX.test(text) && this.isSulking(now.getTime())) {
                 this.state.sulking = false;
