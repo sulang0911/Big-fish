@@ -21,7 +21,7 @@ import path, { join } from 'node:path';
 import fs, { readFileSync, existsSync } from 'node:fs';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { MemoryManager, DEFAULT_MASTER_QQ, parseNaturalReminder } from './memory-manager.js';
+import { MemoryManager, DEFAULT_MASTER_QQ, parseNaturalReminder, toDayKey } from './memory-manager.js';
 import { DriveEngine, MessageDebounceBuffer, PokeAggregator, TEASE_BULLY_REGEX, SEXUAL_HARASS_REGEX } from './drive-engine.js';
 import {
     buildCachedSystemPromptPrefix,
@@ -363,6 +363,7 @@ export class SocialArbiter {
         this.lastProactiveDmSentAt = Number(meta.last_proactive_dm_sent_at ?? 0);
         this.lastSelfSurfAt = Number(meta.last_self_surf_at ?? 0);
         this.lastSelfPlayAt = Number(meta.last_self_play_at ?? 0);
+        this.lastGoodnightDayKey = String(meta.last_goodnight_day_key || '');
         this.lastPcCompanionAt = 0;
         this.isSelfSurfing = false;
         this.isSelfPlaying = false;
@@ -424,8 +425,12 @@ export class SocialArbiter {
             mainStatus = 50; // 勿扰/睡眠
         } else if (st.sulking) {
             statusKey = 'sulking';
-            wording = '记小本本闹别扭中';
+            wording = '有点小情绪晾着中';
             faceId = 38;
+        } else if (st.justWokeUp) {
+            statusKey = 'waking';
+            wording = '刚醒迷迷糊糊中';
+            faceId = 25;
         } else if (st.hunger < 30) {
             statusKey = 'hungry';
             wording = '馋五花肉拌饭中';
@@ -651,6 +656,7 @@ export class SocialArbiter {
         this.memoryManager.data.meta.last_proactive_dm_sent_at = this.lastProactiveDmSentAt;
         this.memoryManager.data.meta.last_self_surf_at = this.lastSelfSurfAt;
         this.memoryManager.data.meta.last_self_play_at = this.lastSelfPlayAt;
+        this.memoryManager.data.meta.last_goodnight_day_key = this.lastGoodnightDayKey;
         this.memoryManager.saveSync();
     }
 
@@ -965,6 +971,7 @@ export class SocialArbiter {
             return false;
         }
 
+        const turnStartedAt = this.now();
         const prevTurn = this.fastTurnAbortMap.get(chatId);
         if (prevTurn && (!prevTurn.isDirect || prevTurn.userId === userId)) {
             prevTurn.abortController?.abort();
@@ -1041,7 +1048,7 @@ export class SocialArbiter {
                 ...(vocativeHint ? [vocativeHint] : []),
                 ...(allyHint ? [allyHint] : []),
                 `回复准则：`,
-                `1. 请务必将 reply_decision 设为 "send_message"（若对方发来搞笑图想斗图，也可设 qq_action.type = "send_meme" 或 reply_decision = "meme_only"）。`,
+                `1. 请务必将 reply_decision 设为 "send_message"（如果是群里纯水群吐槽、搞笑图接梗，直接设 "meme_only" 甩张应景表情包会更像真人；也可搭配 qq_action.type = "send_meme"）。`,
                 `2. 以自然鲜活的“大肥鱼”口吻，${(isGroup && !isMaster) ? '只发 1 条简短精炼的气泡（10~25 字以内，一句话说完，绝不要拆成多条刷屏，句尾不加句号）' : '拆分为 1~3 条简短口语化的气泡（每条 <= 25 字，句尾绝不加句号）'}，像真人秒回微信/QQ一样松弛有灵气！（不用每句都塞“本鱼”或“哼/捏”，平常多用“我”或省略主语；聊美食时可开心馋五花肉和白米饭，聊其他话题自然接梗，严禁连续两轮复读自己上一句刚用过的句尾词！）`,
                 ...(hasImage ? [`3. 对方消息中包含图片/表情包（见“视觉画面描述”），请结合图片画面内容进行流口水、吐槽或配表情包斗图！`] : []),
                 ...(stealMemeHint ? [stealMemeHint] : []),
@@ -1092,6 +1099,8 @@ export class SocialArbiter {
             await this.dispatcher.dispatch(chatId, action, {
                 userId,
                 replyToMessageId: messageId,
+                inboundText: cleanText,
+                turnStartedAt,
                 forceVoice,
                 voiceProbability,
                 shouldAbort: () => this.fastTurnEpochMap.get(chatId) !== turnEpoch,
@@ -1165,13 +1174,13 @@ export class SocialArbiter {
                 : (profile?.pet_nickname || this.memoryManager?.derivePersonalNick?.(profile?.nickname || '', senderId) || '');
             const teasePool = mentionedFeiyu
                 ? [
-                    `喂${callName}！刚才偷偷说本鱼坏话又秒撤回是吧，本鱼可全看见了哼👀`,
-                    `手速挺快嘛${callName}，可惜本鱼的蓝宝石大眼睛早就扫到你刚说本鱼啥了哼`,
+                    `喂${callName}，刚是不是偷偷说我坏话又秒撤回了👀`,
+                    `手速挺快嘛${callName}，可惜我刚正好抬头瞄到了`,
                 ]
                 : [
-                    `哟，${callName ? `${callName}你` : ''}手速挺快嘛，偷偷撤回干嘛，本鱼刚才可全看见了哼👀`,
-                    `撤回也没用捏，本鱼的蓝宝石大眼睛早就记进鱼脑小本本里啦哼`,
-                    `咦，怎么刚发出来就心虚撤回了，本鱼明明都瞄到了捏`,
+                    `哟，${callName ? `${callName}` : ''}手速挺快嘛，刚发了啥又心虚撤回👀`,
+                    `咦，刚冒了个泡怎么一秒就撤回啦，我都看见半截了`,
+                    `撤回也没用啦，刚那一下我已经扫到一眼了`,
                 ];
             const chosen = teasePool[Math.floor(Math.random() * teasePool.length)];
             await this.dispatcher.sendTextBubble(chatId, chosen, {});
@@ -1269,6 +1278,7 @@ export class SocialArbiter {
     async onBackgroundDriveTick(state) {
         void this.refreshEnvironmentCache();
         await this.checkDueReminders();
+        await this.checkProactiveSleepGoodnight(this.now());
         if (typeof this.memoryManager?.autoCompressPastDaysIfNeeded === 'function') {
             void this.memoryManager.autoCompressPastDaysIfNeeded();
         }
@@ -1308,6 +1318,58 @@ export class SocialArbiter {
     }
 
     /**
+     * 睡前轻道别：01:05 ~ 01:28 且当晚曾与老大聊过天时，自然说一句先睡啦，避免 01:30 突然失联
+     */
+    async checkProactiveSleepGoodnight(nowMs = this.now()) {
+        const d = new Date(nowMs);
+        const mins = d.getHours() * 60 + d.getMinutes();
+        if (mins < (1 * 60 + 5) || mins > (1 * 60 + 28)) return false;
+        const todayKey = toDayKey(nowMs);
+        if (this.lastGoodnightDayKey === todayKey || this.isProactiveRunning || this.unansweredProactiveCount >= 2) {
+            return false;
+        }
+        const lastMasterMsgMs = this.lastUserMessageAtMap.get(this.masterChatId) || 0;
+        const idleSinceMaster = lastMasterMsgMs > 0 ? (nowMs - lastMasterMsgMs) : Infinity;
+        if (idleSinceMaster < 8 * 60_000 || idleSinceMaster > 3 * 3600_000) return false;
+
+        this.lastGoodnightDayKey = todayKey;
+        this.persistArbiterMeta();
+        try {
+            const prompt = [
+                '【系统内部事件：bedtime_goodnight（快到 01:30 睡觉时间，跟今晚刚聊过的老大自然道个晚安）】',
+                '现在凌晨一点多了，你困得睁不开眼准备先睡了，趁还没睡着给老大发 1~2 条简短温柔又随性的晚安气泡（每条 <= 20 字，不加句号）。',
+                buildDynamicTurnContext({
+                    driveEngine: this.driveEngine,
+                    memoryManager: this.memoryManager,
+                    chatId: this.masterChatId,
+                    userId: this.masterQQ,
+                    queryText: '晚安准备睡觉',
+                    envContext: this.getEnvironmentContext(),
+                }),
+            ].join('\n');
+            const rawJson = await this.callDeepSeekAction(this.masterQQ, prompt);
+            let action = parseActionResponse(rawJson);
+            if (!rawJson || action.reply_decision === 'ignore' || !action.messages?.length) {
+                action = {
+                    isStructured: true,
+                    reply_decision: 'send_message',
+                    messages: ['有点扛不住困了，我先睡啦', '老大也别熬太晚，晚安zzZ'],
+                    qq_action: { type: 'none', meme_tag: 'sleepy' },
+                };
+            }
+            await this.dispatcher.dispatch(this.masterChatId, action, {
+                userId: this.masterQQ,
+                skipReadDelay: true,
+            });
+            this.log('info', `[FeiyuGoodnight] 已向老大发送深夜睡前道别 (${todayKey})`);
+            return true;
+        } catch (err) {
+            this.log('debug', `[FeiyuGoodnight] 睡前道别发送异常: ${err?.message || err}`);
+            return false;
+        }
+    }
+
+    /**
      * 检查并触发已到期的“鱼脑备忘录”定时提醒 (Item 5)
      */
     async checkDueReminders() {
@@ -1320,9 +1382,9 @@ export class SocialArbiter {
             try {
                 const isMaster = String(r.user_id) === this.masterQQ;
                 const isGroup = String(r.chat_id).startsWith('group:');
-                const callName = isMaster ? '老大老大' : (this.memoryManager.getUserProfile(r.user_id)?.pet_nickname || r.nickname || r.user_id);
-                const bubble1 = `⏰ 叮咚！本鱼的备忘录小闹钟响啦！`;
-                const bubble2 = `${callName}，你之前交代本鱼到点提醒你的：【${r.task}】！快去搞定捏，不许拖延！`;
+                const callName = isMaster ? '老大' : (this.memoryManager.getUserProfile(r.user_id)?.pet_nickname || r.nickname || r.user_id);
+                const bubble1 = `⏰ 到点啦！之前定好的提醒时间到~`;
+                const bubble2 = `${callName}，记得去办你让我提醒你的事：【${r.task}】`;
                 if (isGroup && /^\d+$/.test(String(r.user_id))) {
                     await this.dispatcher.sendSegments(r.chat_id, [
                         { type: 'at', data: { qq: String(r.user_id) } },
@@ -1460,8 +1522,8 @@ export class SocialArbiter {
             action.reply_decision = 'send_message';
             if (!action.messages || action.messages.length === 0) {
                 action.messages = mode === 'high_boredom'
-                    ? ['好无聊捏，本鱼的尾巴都要长蘑菇了，都没人出来陪本鱼唠嗑吗']
-                    : ['群里好安静，你们是在背着本鱼集体偷偷吃好吃的吗 (=｀ω´=)'];
+                    ? ['好无聊啊，感觉尾巴都要闲出蘑菇了，没人出来唠会儿吗']
+                    : ['群里这么安静，都在背着我偷偷干大事吗'];
             }
         }
 
@@ -1610,8 +1672,8 @@ export class SocialArbiter {
                     inner_thought: `主动找老大：${reason}`,
                     reply_decision: 'send_message',
                     messages: state.hunger < 25
-                        ? ['老大老大，本鱼肚皮都快饿扁了捏', '什么时候赏本鱼一碗脆皮五花肉拌大米饭呀']
-                        : ['哼，老大忙什么呢这么久不理本鱼', `本鱼刚才顺便巡检了下电脑（${hwBrief}），快夸我`],
+                        ? ['老大老大，肚皮有点咕咕叫了', '什么时候赏一碗脆皮五花肉拌大米饭呀']
+                        : ['老大在忙什么呀这么久没冒泡', `刚顺便帮你巡检了电脑状态（${hwBrief}），还算听话`],
                     qq_action: { type: 'send_meme', meme_tag: state.hunger < 25 ? 'begging_food' : 'happy' },
                     memory_to_save: { should_save: false, importance: 1, summary: '' },
                     stat_delta: { affection: 1, boredom: -30, hunger: 0 },
@@ -1898,14 +1960,14 @@ export class SocialArbiter {
 
         this.driveEngine.applyStatDelta({ boredom: -this.randFloat(22, 32) });
         this.driveEngine.state.current_obsession = `刚自己画了一幅「${picked.desc}」的灵魂涂鸦`;
-        this.driveEngine.state.diary = `闲着无聊本鱼自己当灵魂画手画了「${picked.desc}」，本鱼真是艺术鲸！`;
+        this.driveEngine.state.diary = `闲着无聊自己当了回灵魂画手，画了张「${picked.desc}」，感觉真不赖！`;
         this.driveEngine.save();
         this.memoryManager.recordDailyEvent(`大肥鱼自己画了一张涂鸦：「${picked.desc}」`, targetChatId, this.masterQQ);
         this.memoryManager.addAcquiredInterest?.(`痴迷练习画「${picked.desc}」向大家证明本鱼是艺术鲸`);
 
         const preemptedByMaster = opts.reason !== 'manual_command' && this.masterActivityEpoch !== startEpoch;
         if (imgBase64 && !opts.silentShare && !preemptedByMaster && this.bridge.sendSegments) {
-            await this.dispatcher.sendTextBubble(targetChatId, `哼哼，看你们半天不理本鱼，本鱼自己画了张「${picked.desc}」的大作，快夸本鱼是艺术鲸`, {});
+            await this.dispatcher.sendTextBubble(targetChatId, `看你们半天没人理我，我自己摸鱼画了张「${picked.desc}」，快给艺术鲸点评两句`, {});
             await this.bridge.sendSegments(targetChatId, [
                 { type: 'image', data: { file: `base64://${imgBase64}` } },
             ]);
@@ -1939,20 +2001,32 @@ export class SocialArbiter {
      */
     buildGroupAllyHint(chatId, userId, nickname, cleanText = '') {
         if (!chatId || !String(chatId).startsWith('group:')) return '';
-        const lastBully = this.lastGroupBullyMap.get(chatId);
-        if (!lastBully || (this.now() - lastBully.ts) > 5 * 60_000) return '';
         const curUid = String(userId || '');
-        const bullyUid = String(lastBully.userId || '');
         const isMaster = curUid === String(this.masterQQ);
-        if (curUid !== bullyUid) {
-            const isDefending = /(?:不许|别|不要|谁敢|怎么能).*(?:欺负|骂|惹|炖|烤|吃)|摸摸|抱抱|乖|不气|心疼|保护|帮你|打他|抽他|坏蛋/i.test(cleanText);
-            if (isDefending || isMaster || this.driveEngine.isSulking()) {
-                return `🎉【群友撑腰/吃瓜拉偏架感知（严禁误伤好人！）】：注意区分阵营！刚才惹你生气记小本本的坏蛋是【${lastBully.nickname}(QQ:${bullyUid})】（ta刚才说：“${lastBully.text}”），而现在跟你说话的是${isMaster ? '你最信任的【老大】' : `另一位群友【${nickname}(QQ:${curUid})】`}！绝对禁止把对 ${lastBully.nickname} 的火气撒在当前说话人头上！如果对方是在替你撑腰、哄你或正常搭话，请立刻开启“狐假虎威/拉偏架”模式：向当前说话人委屈告状或开心贴贴，同时躲在ta身后冲坏蛋【${lastBully.nickname}】吐舌头略略略！`;
+        const lastBully = this.lastGroupBullyMap.get(chatId);
+        if (lastBully && (this.now() - lastBully.ts) <= 5 * 60_000) {
+            const bullyUid = String(lastBully.userId || '');
+            if (curUid !== bullyUid) {
+                const isDefending = /(?:不许|别|不要|谁敢|怎么能).*(?:欺负|骂|惹|炖|烤|吃)|摸摸|抱抱|乖|不气|心疼|保护|帮你|打他|抽他|坏蛋/i.test(cleanText);
+                if (isDefending || isMaster || this.driveEngine.isSulking()) {
+                    return `🎉【群友撑腰/吃瓜拉偏架感知（严禁误伤好人！）】：注意区分阵营！刚才惹你生气记小本本的坏蛋是【${lastBully.nickname}(QQ:${bullyUid})】（ta刚才说：“${lastBully.text}”），而现在跟你说话的是${isMaster ? '你最信任的【老大】' : `另一位群友【${nickname}(QQ:${curUid})】`}！绝对禁止把对 ${lastBully.nickname} 的火气撒在当前说话人头上！如果对方是在替你撑腰、哄你或正常搭话，请立刻开启“狐假虎威/拉偏架”模式：向当前说话人委屈告状或开心贴贴，同时躲在ta身后冲坏蛋【${lastBully.nickname}】吐舌头略略略！`;
+                }
+            } else if (/(?:对不起|错啦|错了|摸摸|抱抱|不欺负|给你吃|请你吃)/i.test(cleanText)) {
+                this.driveEngine.clearSulking();
+                this.lastGroupBullyMap.delete(chatId);
+                return `🎉【坏蛋服软哄鱼感知】：刚才惹你生气的【${nickname}】现在主动认错/哄你啦！你的小脾气已经被哄好大半，半推半就给个台阶下就行（如“行吧，看在你这么诚心认错的份上就暂时原谅你了”）！`;
             }
-        } else if (/(?:对不起|错啦|错了|摸摸|抱抱|不欺负|给你吃|请你吃)/i.test(cleanText)) {
-            this.driveEngine.clearSulking();
-            this.lastGroupBullyMap.delete(chatId);
-            return `🎉【坏蛋服软哄鱼感知】：刚才惹你生气的【${nickname}】现在主动认错/哄你啦！你的小脾气已经被哄好大半，半推半就给个台阶下就行（如“行吧，看在你这么诚心认错的份上就暂时原谅你了”）！`;
+        }
+        // 跨天长期关系站队延续：超出 5 分钟瞬时窗口后，依然记得谁是平时罩着自己的熟人、谁是经常嘴欠逗鱼的冤家
+        if (!isMaster && curUid) {
+            const prof = this.memoryManager?.getUserProfile?.(curUid);
+            const aff = Number(prof?.affection ?? 55);
+            if (aff >= 78) {
+                return `🛡️【护鱼熟人偏心延续】：【${nickname}】是平时一直对你很好的熟人(好感${aff})，聊起来自然自带亲近护短滤镜！`;
+            }
+            if (aff < 40) {
+                return `😒【老冤家旧账延续】：【${nickname}】之前经常嘴欠逗你或惹过你(好感${aff})，就算这轮正常搭话也别太热情，敷衍冷淡两句就行！`;
+            }
         }
         return '';
     }
@@ -2166,6 +2240,8 @@ export class SocialArbiter {
             await this.dispatcher.dispatch(chatId, action, {
                 userId,
                 replyToMessageId: inbound.messageId,
+                inboundText: cleanText,
+                turnStartedAt: nowMs,
                 forceVoice,
                 voiceProbability,
                 shouldAbort: () => this.fastTurnEpochMap.get(chatId) !== turnEpoch,

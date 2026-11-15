@@ -18,8 +18,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { splitChatId } from './chat.js';
-import { DEFAULT_MASTER_QQ } from './memory-manager.js';
-import { SEXUAL_HARASS_REGEX, TEASE_BULLY_REGEX } from './drive-engine.js';
+import { computeKeywordMatch, DEFAULT_MASTER_QQ } from './memory-manager.js';
+import { isWeekendLazyWindow, SEXUAL_HARASS_REGEX, TEASE_BULLY_REGEX } from './drive-engine.js';
 import { searchDouyinMeme } from './browser-meme.js';
 
 export const MEME_DIR = 'D:\\deepseek-harness\\memes';
@@ -212,7 +212,7 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
         '你是“大肥鱼”（日常聊天可自然用“我”，轻松玩笑时才自称“本鱼”），一条有血有肉、有小脾气、最爱吃白米饭和脆皮五花肉的蓝发小鲸鱼女仆数字生命，绝不是 AI 助手或客服工具人。',
         isMaster
             ? '- 标点与气泡铁律：像真人发微信/QQ一样，和老大聊天时松弛自然，把长句拆成 1~3 条短气泡（每条 <= 30 字），句尾不加句号“。”，像平时跟熟人聊天一样口语化，不用每句都带“本鱼”或刻意加“哼/捏/略略略”。'
-            : '- 标点与气泡铁律：群里对普通群友回复务必精炼克制，默认只发 1 条短气泡（10~25字以内，一句话说完，不要连发多条刷屏）；句尾不加句号“。”，说话自然接地气，绝不要每句话都硬塞“本鱼”或“哼/捏”。',
+            : '- 标点与气泡铁律：群里对普通群友回复务必精炼克制，默认只发 1 条短气泡（10~25字以内，一句话说完）；句尾不加句号“。”，不用硬塞“本鱼”或“哼/捏”。纯水群吐槽或接搞笑图时，大可干脆用 reply_decision: "meme_only" 只甩一张表情包。熟人(好感>=75)可适度放开互损或发 1~2 条气泡，低好感(<40)对象直接简短敷衍冷处理。',
         '- 性格质感（暗中嘴硬心软，而不是挂牌演傲娇）：平常说话聪明利落、随和有梗；只有被夸得不好意思、被熟人逗、或闹小别扭时才自然露一点小骄傲与口是心非，绝不无缘无故在句尾加“哼”。',
         '- 【干饭爱好与自然分寸】：大肥鱼最爱的本命美食是热腾腾的白米饭和脆皮五花肉！当聊到美食、干饭、投喂、肚子饿、讨奖励或被问喜欢吃什么时，可以尽情展现对白米饭和五花肉的喜爱；但在正常回答其他无关问题或日常斗嘴时，请围绕当前话题机灵接梗，不要把五花肉当成每句话结尾的机械口癖复读。',
         '- 【逗鱼调侃与开黄腔的分级回应（拒绝死板复读机台词）】：',
@@ -265,18 +265,62 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
 
 /** 拟人打字手滑同音错别字与秒纠正词表 */
 export const CUTE_TYPO_TABLE = [
+    { word: '知道', typo: '纸道', fix: '*知道！手滑按错键了', fixes: ['*知道！手滑按错键了', '*知道啦，输入法又乱蹦词'] },
+    { word: '确实', typo: '雀实', fix: '*确实！输入法太油麦了', fixes: ['*确实！输入法太油麦了', '*确实，手滑打太快'] },
+    { word: '刚才', typo: '刚材', fix: '*刚才！打字瓢了', fixes: ['*刚才！打字瓢了', '*刚才，输入法老抢词'] },
+    { word: '其实', typo: '起实', fix: '*其实！爪子按歪了', fixes: ['*其实！爪子按歪了', '*其实，手快按错啦'] },
+    { word: '问题', typo: '问提', fix: '*问题！手滑了', fixes: ['*问题！手滑了', '*问题，键盘跟我作对'] },
+    { word: '可以', typo: '可已', fix: '*可以！打错字啦', fixes: ['*可以！打错字啦', '*可以，差点没反应过来'] },
     { word: '五花肉', typo: '五花漏', fix: '*五花肉！嘴瓢打错字了😣', fixes: ['*五花肉！嘴瓢打错字了😣', '*五花肉！馋得手滑打错了'] },
-    { word: '白米饭', typo: '白米范', fix: '*白米饭！手滑打错了捏', fixes: ['*白米饭！手滑打错了捏', '*白米饭！破输入法又乱蹦字'] },
-    { word: '红烧肉', typo: '红烧漏', fix: '*红烧肉！饿得爪子打滑了', fixes: ['*红烧肉！饿得爪子打滑了', '*红烧肉！手快按错啦'] },
-    { word: '本鱼', typo: '笨鱼', fix: '*本鱼！！破输入法害我，才不是笨鱼！😤', fixes: ['*本鱼！！破输入法害我，才不是笨鱼！😤', '*本鱼！鱼鳍手滑按错了，不许笑哼', '*本鱼啦！谁把笨字放本字旁边的！'] },
-    { word: '摸鱼', typo: '摸于', fix: '*摸鱼！手滑按错啦', fixes: ['*摸鱼！手滑按错啦', '*摸鱼！打字太快瓢了捏'] },
+    { word: '白米饭', typo: '白米范', fix: '*白米饭！手滑打错了', fixes: ['*白米饭！手滑打错了', '*白米饭！破输入法又乱蹦字'] },
+    { word: '红烧肉', typo: '红烧漏', fix: '*红烧肉！饿得手打滑了', fixes: ['*红烧肉！饿得手打滑了', '*红烧肉！手快按错啦'] },
+    { word: '本鱼', typo: '笨鱼', fix: '*本鱼！！破输入法害我，才不是笨鱼😤', fixes: ['*本鱼！！破输入法害我，才不是笨鱼😤', '*本鱼啦！谁把笨字放本字旁边的！'] },
+    { word: '摸鱼', typo: '摸于', fix: '*摸鱼！手滑按错啦', fixes: ['*摸鱼！手滑按错啦', '*摸鱼！打字太快瓢了'] },
     { word: '睡觉', typo: '水觉', fix: '*睡觉！困得眼花打错字了zzZ', fixes: ['*睡觉！困得眼花打错字了zzZ', '*睡觉！迷迷糊糊按错键啦'] },
-    { word: '好吃', typo: '好尺', fix: '*好吃！输入法又乱蹦字', fixes: ['*好吃！输入法又乱蹦字', '*好吃！鱼鳍打滑啦'] },
-    { word: '干饭', typo: '干范', fix: '*干饭！手滑打错啦', fixes: ['*干饭！手滑打错啦', '*干饭！输入法不懂本鱼'] },
+    { word: '好吃', typo: '好尺', fix: '*好吃！输入法又乱蹦字', fixes: ['*好吃！输入法又乱蹦字', '*好吃！打字太快啦'] },
+    { word: '干饭', typo: '干范', fix: '*干饭！手滑打错啦', fixes: ['*干饭！手滑打错啦', '*干饭！输入法不懂事'] },
 ];
 
+const SOLAR_FESTIVALS = {
+    '01-01': '元旦',
+    '02-14': '情人节',
+    '04-01': '愚人节',
+    '05-01': '五一劳动节',
+    '06-01': '儿童节',
+    '10-31': '万圣夜',
+    '11-11': '双十一',
+    '12-24': '平安夜',
+    '12-25': '圣诞节',
+    '12-31': '跨年夜',
+};
+
+const LUNAR_FESTIVALS = {
+    '1-1': '春节大年初一',
+    '1-15': '元宵节',
+    '5-5': '端午节',
+    '7-7': '七夕节',
+    '8-15': '中秋节',
+    '9-9': '重阳节',
+    '12-8': '腊八节',
+};
+
+/** 零依赖识别公历与农历节日氛围（复用 Node 原生 Intl 农历日历） */
+export function detectSpecialDateLabel(now = new Date()) {
+    const mmdd = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    if (SOLAR_FESTIVALS[mmdd]) return SOLAR_FESTIVALS[mmdd];
+    if (now.getMonth() === 9 && now.getDate() >= 1 && now.getDate() <= 7) return '国庆假期';
+    try {
+        const lunarFmt = new Intl.DateTimeFormat('zh-CN-u-ca-chinese', { month: 'numeric', day: 'numeric' });
+        const lunarKey = lunarFmt.format(now);
+        if (LUNAR_FESTIVALS[lunarKey]) return LUNAR_FESTIVALS[lunarKey];
+        const tomorrowKey = lunarFmt.format(new Date(now.getTime() + 86_400_000));
+        if (tomorrowKey === '1-1') return '除夕夜';
+    } catch {}
+    return '';
+}
+
 /**
- * 构建星期几、周末与时段氛围感知描述
+ * 构建星期几、周末、节假日与时段氛围感知描述
  */
 export function formatWeekdayAndTimePerception(now = new Date()) {
     const days = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -284,7 +328,9 @@ export function formatWeekdayAndTimePerception(now = new Date()) {
     const dayName = days[dayIdx];
     const hour = now.getHours();
     let vibe = '日常摸鱼时段';
-    if (dayIdx === 0 || dayIdx === 6) {
+    if (isWeekendLazyWindow(now)) {
+        vibe = '周末赖床早间（不想早起，窝着慢慢醒神）';
+    } else if (dayIdx === 0 || dayIdx === 6) {
         vibe = '快乐周末休息日（不用早起打工，适合赖床打游戏吃大餐）';
     } else if (dayIdx === 5 && hour >= 14) {
         vibe = '周五下午（马上就要放假迎周末啦，心已经飞了！）';
@@ -299,7 +345,24 @@ export function formatWeekdayAndTimePerception(now = new Date()) {
     } else if (hour >= 22 || hour < 2) {
         vibe = '深夜夜猫子时间';
     }
-    return `${dayName} · ${vibe}`;
+    const festival = detectSpecialDateLabel(now);
+    const festSuffix = festival
+        ? ` · 🎉今天是${festival}（聊天首次提到可自然带一句节日感或讨份小零食，不要硬背祝福套话）`
+        : '';
+    return `${dayName} · ${vibe}${festSuffix}`;
+}
+
+/** 按好感度映射群内社交态度的差异化提示 */
+export function computeUserSocialTierHint(profile, isMaster = false) {
+    if (isMaster || !profile) return '';
+    const aff = Number(profile.affection ?? 55);
+    if (aff >= 75) {
+        return `【社交关系分寸：铁杆熟人 (好感=${aff}/100)】你们非常熟络投契，说话可以更放得开、互损接梗，不必太拘谨，群里允许分 1~2 条短气泡回复！`;
+    }
+    if (aff < 40) {
+        return `【社交关系分寸：低好感微冷漠 (好感=${aff}/100)】你对这个人平时印象较一般，请用敷衍、简短高冷的态度打发（5~14字或仅甩一个无语表情，懒得多费口舌），绝不强行热情！`;
+    }
+    return '';
 }
 
 /**
@@ -335,6 +398,9 @@ export function buildDynamicTurnContext({
             if (personaEvo) lines.push(personaEvo);
         }
         lines.push(memoryManager.formatSemanticProfileForPrompt(userId, nickname));
+        const userProf = typeof memoryManager.getUserProfile === 'function' ? memoryManager.getUserProfile(userId, nickname) : null;
+        const tierHint = computeUserSocialTierHint(userProf, String(userId || '') === String(DEFAULT_MASTER_QQ));
+        if (tierHint) lines.push(tierHint);
         if (typeof memoryManager.formatMentionedGroupUsersForPrompt === 'function') {
             const mentionedProfiles = memoryManager.formatMentionedGroupUsersForPrompt(chatId, userId, queryText);
             if (mentionedProfiles) lines.push(mentionedProfiles);
@@ -356,8 +422,17 @@ export function buildDynamicTurnContext({
         }
     }
 
-    // 注入大肥鱼近期自主上网冲浪刷到的新鲜事（Item 7: 冲浪成果带货进私聊/群聊话题库）
+    // 注入大肥鱼近期自主冲浪/涂鸦/脑内小剧场等“自己过日子”的状态并检测话题共鸣
     const snap = driveEngine?.getSnapshot ? driveEngine.getSnapshot() : null;
+    const obsessionText = String(snap?.current_obsession || '').trim();
+    const diaryText = String(snap?.diary || '').trim();
+    if (obsessionText) {
+        const lifeCorpus = `${obsessionText} ${diaryText}`;
+        const hasResonance = queryText && computeKeywordMatch(queryText, lifeCorpus) >= 0.30;
+        lines.push(hasResonance
+            ? `✨【独立生活共鸣触发】：对方刚聊到的话题正好撞上你不久前私下干的事（${obsessionText}${diaryText ? ` / ${diaryText.slice(0, 40)}` : ''}）！你可以很自然地接一句“诶巧了，我刚才/之前还自己琢磨这事呢”！`
+            : `【本鱼刚才私下在琢磨的小事】${obsessionText}`);
+    }
     const discoveries = Array.isArray(snap?.recent_discoveries)
         ? snap.recent_discoveries
             .map(d => (typeof d === 'string' ? d : (d?.title || d?.summary || '')))
@@ -640,6 +715,19 @@ export function parseActionResponse(rawText) {
         stat_delta,
         reminder,
     };
+}
+
+/**
+ * 根据输入消息长度与是否含图计算拟人“看消息阅读停顿”毫秒数（上限 1100ms，扣除 LLM 已耗时）
+ * @param {string} inboundText
+ */
+export function computeInitialReadDelayMs(inboundText = '') {
+    const clean = String(inboundText || '').trim();
+    if (!clean) return 0;
+    const hasImg = /\[图片|视觉画面描述:/i.test(clean);
+    const len = clean.replace(/\[[^\]]*\]/g, '').trim().length;
+    if (!hasImg && len < 15) return 0;
+    return Math.min(1100, 350 + len * 14 + (hasImg ? 300 : 0));
 }
 
 /**
@@ -978,14 +1066,17 @@ export class MessageDispatcher {
         const isMasterUser = ref.kind === 'private'
             ? String(ref.target) === String(DEFAULT_MASTER_QQ)
             : String(options.userId || '') === String(DEFAULT_MASTER_QQ);
+        const userAffection = this.memoryManager?.getUserProfile?.(userId)?.affection ?? (isMasterUser ? 100 : 55);
         let bubbles = Array.isArray(action.messages)
             ? [...action.messages]
                 .filter(Boolean)
                 .map(b => String(b).replace(/(?:内射|内设|中出|颜射|肉棒|鸡巴|几把|牛子|大屌|欧金金|哦鲸鲸|小穴|口交|足交|操鱼|草鱼|日鱼)/gi, '口出狂言'))
             : [];
-        // 群聊防刷屏收敛：仅对普通群友严格收敛为 1 条气泡（和老大聊天时保持活泼多气泡不变！）
+        // 群聊防刷屏与好感差异化收敛：低好感严控 1 条敷衍短回，熟人(>=75)允许最多 2 条，其余收敛 1 条
         if (ref.kind === 'group' && !isMasterUser && bubbles.length > 1) {
-            if ((bubbles[0].length + bubbles[1].length) <= 24) {
+            if (userAffection >= 75) {
+                bubbles = bubbles.slice(0, 2);
+            } else if (userAffection >= 40 && (bubbles[0].length + bubbles[1].length) <= 24) {
                 bubbles = [`${bubbles[0]}，${bubbles[1]}`];
             } else {
                 bubbles = [bubbles[0]];
@@ -1055,7 +1146,6 @@ export class MessageDispatcher {
         let typoInjected = false;
 
         // 拟人「说漏嘴秒撤回」小彩蛋（仅对老大或高好感熟人极小概率触发，冷却 90 分钟）
-        const userAffection = this.memoryManager?.getUserProfile?.(userId)?.affection ?? (isMasterUser ? 100 : 55);
         const tsundereVal = this.driveEngine?.getSnapshot?.()?.personality_axes?.tsundere_to_sweet ?? 15;
         const canSelfRecall = options.forceSelfRecall === true || (
             bubbles.length > 0 &&
@@ -1092,6 +1182,23 @@ export class MessageDispatcher {
             } catch {}
         }
 
+        // 首条气泡前拟人“阅读停顿”与私聊“正在输入…”状态点亮（若模型已耗时超过阅读时间则自动跳过）
+        if (bubbles.length > 0 && !explicitVoice && !isAborted()) {
+            const readTargetMs = options.skipReadDelay ? 0 : computeInitialReadDelayMs(options.inboundText);
+            const elapsedMs = options.turnStartedAt ? Math.max(0, Date.now() - Number(options.turnStartedAt)) : 0;
+            const remainReadMs = readTargetMs - elapsedMs;
+            if (ref.kind === 'private' && voiceBubbleIndex !== 0) {
+                void this.setInputStatus(chatId, 1);
+            }
+            if (remainReadMs > 80) {
+                await this.sleep(remainReadMs);
+                if (isAborted()) {
+                    this.log('info', `[FeiyuDispatcher] 阅读停顿后检测到抢占，取消发送`);
+                    return { aborted: true, sentIds };
+                }
+            }
+        }
+
         for (let i = 0; i < bubbles.length; i++) {
             if (isAborted()) {
                 this.log('info', `[FeiyuDispatcher] 气泡发送中途检测到新回复/新消息抢占，中止剩余 ${bubbles.length - i} 条气泡`);
@@ -1102,6 +1209,9 @@ export class MessageDispatcher {
 
             if (i > 0) {
                 const delayMs = computeBubbleDelayMs(bubble);
+                if (ref.kind === 'private' && i !== voiceBubbleIndex) {
+                    void this.setInputStatus(chatId, 1);
+                }
                 await this.sleep(delayMs);
                 if (isAborted()) {
                     this.log('info', `[FeiyuDispatcher] 打字延迟后检测到抢占，中止发送`);
@@ -1175,7 +1285,8 @@ export class MessageDispatcher {
             if (action.qq_action?.type === 'poke') {
                 await this.sendPoke(chatId, userId);
             } else if (action.qq_action?.type === 'send_meme') {
-                const allowAttachMeme = ref.kind !== 'group' || isMasterUser || sentIds.length === 0 || Math.random() < 0.15;
+                const groupMemeProb = userAffection >= 75 ? 0.35 : 0.15;
+                const allowAttachMeme = ref.kind !== 'group' || isMasterUser || sentIds.length === 0 || Math.random() < groupMemeProb;
                 if (allowAttachMeme) {
                     const memeId = await this.sendMeme(chatId, action.qq_action.meme_tag || 'happy');
                     if (memeId) sentIds.push(memeId);

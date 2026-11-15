@@ -38,6 +38,16 @@ export function isSleepWindow(date = new Date()) {
 }
 
 /**
+ * 判断某个时间是否处于周末赖床缓冲时段 (周六/周日 07:30 ~ 09:00)
+ */
+export function isWeekendLazyWindow(date = new Date()) {
+    const day = date.getDay();
+    if (day !== 0 && day !== 6) return false;
+    const minutesOfDay = date.getHours() * 60 + date.getMinutes();
+    return minutesOfDay >= (7 * 60 + 30) && minutesOfDay < (9 * 60);
+}
+
+/**
  * 判断某个时间是否处于饭点时段 (11:30~13:00 或 17:30~19:00)
  */
 export function isMealTimeWindow(date = new Date()) {
@@ -84,6 +94,7 @@ export class DriveEngine {
             mood: '元气满满摸鱼中',
             sleeping: false,
             wokenUpAt: 0,
+            wokeFromNightAt: 0,
             sulking: false,
             sulkingReason: '',
             sulkingSince: 0,
@@ -103,6 +114,7 @@ export class DriveEngine {
                 hunger: clamp(initialOverride.hunger ?? 80, 0, 100),
                 energy: clamp(initialOverride.energy ?? 85, 0, 100),
                 boredom: clamp(initialOverride.boredom ?? 25, 0, 100),
+                wokeFromNightAt: Number(initialOverride.wokeFromNightAt || 0),
                 sulking: Boolean(initialOverride.sulking ?? false),
                 sulkingReason: String(initialOverride.sulkingReason || ''),
                 sulkingSince: Number(initialOverride.sulkingSince || 0),
@@ -121,6 +133,7 @@ export class DriveEngine {
                         boredom: clamp(raw.boredom ?? 25, 0, 100),
                         sleeping: Boolean(raw.sleeping ?? isSleepWindow()),
                         wokenUpAt: Number(raw.wokenUpAt || 0),
+                        wokeFromNightAt: Number(raw.wokeFromNightAt || 0),
                         sulking: Boolean(raw.sulking ?? false),
                         sulkingReason: String(raw.sulkingReason || ''),
                         sulkingSince: Number(raw.sulkingSince || 0),
@@ -172,6 +185,13 @@ export class DriveEngine {
     isWokenUpGrumpy(nowMs = Date.now()) {
         // 如果在睡眠时段被吵醒，15 分钟内带有起床气状态
         return this.state.wokenUpAt > 0 && (nowMs - this.state.wokenUpAt) < 15 * 60_000 && isSleepWindow(new Date(nowMs));
+    }
+
+    isJustWokeUp(nowMs = this.now()) {
+        const d = new Date(nowMs);
+        if (isSleepWindow(d) || this.isWokenUpGrumpy(nowMs)) return false;
+        const wokeRecently = this.state.wokeFromNightAt > 0 && (nowMs - this.state.wokeFromNightAt) < 20 * 60_000;
+        return wokeRecently || isWeekendLazyWindow(d);
     }
 
     isSulking(nowMs = this.now()) {
@@ -227,20 +247,26 @@ export class DriveEngine {
                 this.state.mood = '呼呼大睡中(zzZ)';
             }
         } else {
-            // 白天刚睡醒时恢复元气
+            // 白天刚睡醒时温和过渡恢复元气（告别 07:31 秒变 85 的机械感）
             if (this.state.sleeping) {
                 this.state.sleeping = false;
                 this.state.wokenUpAt = 0;
-                this.state.energy = Math.max(this.state.energy, 85);
+                this.state.wokeFromNightAt = now.getTime();
+                this.state.energy = Math.max(this.state.energy, 62);
             }
             // 饭点 (12:00 / 18:00 前后) 饥饿加速下降，均带自然随机波动（保底 20，防止长期无人发 /fish feed 时永远卡死在极度饥饿状态导致每句话复读五花肉）
             const hungerDrop = mealMode ? randFloat(0.6, 1.2) : randFloat(0.1, 0.25);
             this.state.hunger = clamp(this.state.hunger - hungerDrop, 20, 100);
             // 无聊度适度上升：每分钟 +0.2 ~ +0.4（平均 +0.3/分钟，约每小时 +18 点，约 2.5~3 小时累积到高无聊度）
             this.state.boredom = clamp(this.state.boredom + randFloat(0.2, 0.4), 0, 100);
-            // 午休时段 (13:00~14:00) 打盹回精力，其余白天时段平缓消耗 (-0.05 ~ -0.1/分钟，每小时约 -4.5)
+            // 醒后 20 分钟缓冲回精力 + 午休时段 (13:00~14:00) 打盹回精力，其余白天时段平缓消耗
             const hour = now.getHours();
-            if (hour === 13 && this.state.energy < 85) {
+            const justWokeRecover = this.state.wokeFromNightAt > 0
+                && (now.getTime() - this.state.wokeFromNightAt) < 20 * 60_000
+                && this.state.energy < 85;
+            if (justWokeRecover) {
+                this.state.energy = clamp(this.state.energy + 1.2, 0, 85);
+            } else if (hour === 13 && this.state.energy < 85) {
                 this.state.energy = clamp(this.state.energy + randFloat(0.3, 0.6), 0, 100);
             } else {
                 this.state.energy = clamp(this.state.energy - randFloat(0.05, 0.1), 15, 100);
@@ -339,10 +365,16 @@ export class DriveEngine {
 
     formatStateForPrompt(opts = {}) {
         const snap = this.getSnapshot();
-        const nowStr = new Date(this.now()).toLocaleString('zh-CN', { hour12: false });
+        const nowMs = this.now();
+        const nowDate = new Date(nowMs);
+        const nowStr = nowDate.toLocaleString('zh-CN', { hour12: false });
         const wokeNote = (opts.wokeUpFromSleep || snap.wokenUpGrumpy)
             ? ' ⚠️【生物钟警告：你刚刚在深夜 01:30~07:30 熟睡中被吵醒，迷迷糊糊带着强烈起床气，说话要揉眼睛抱怨困！】'
-            : '';
+            : (snap.justWokeUp
+                ? (isWeekendLazyWindow(nowDate)
+                    ? ' 🛏️【周末赖床期：今早是周末不用早起，刚醒懒洋洋窝在被窝不想动弹，回话带点惬意慵懒感】'
+                    : ' 🥱【刚睡醒过渡期：刚醒不到 20 分钟脑子还没完全开机，语气带一点迷糊松弛感】')
+                : '');
         const sulkNote = snap.sulking
             ? ` 💢【有点小别扭：${snap.sulkingReason || '刚才被调侃了'}（仅对刚惹你的本人带一点小脾气即可，聊正事时正常说话，严禁复读“记小本本/清账”！）】`
             : '';
@@ -360,6 +392,10 @@ export class DriveEngine {
             this.state.mood = '呼呼大睡中(zzZ)';
         } else if (this.isSulking()) {
             this.state.mood = '有点小别扭，抱手生闷气中';
+        } else if (this.isJustWokeUp()) {
+            this.state.mood = isWeekendLazyWindow(new Date(this.now()))
+                ? '周末赖床滚来滚去中'
+                : '刚睡醒迷迷糊糊揉眼睛中';
         } else if (this.state.hunger < 20) {
             this.state.mood = '饿扁了眼巴巴求投喂白米饭';
         } else if (this.state.boredom > 80) {
@@ -460,14 +496,17 @@ export class DriveEngine {
     }
 
     getSnapshot() {
-        const sulking = this.isSulking();
+        const nowMs = this.now();
+        const sulking = this.isSulking(nowMs);
+        const grumpy = this.isWokenUpGrumpy(nowMs);
         return {
             hunger: this.state.hunger,
             energy: this.state.energy,
             boredom: this.state.boredom,
             mood: this.state.mood,
-            sleeping: isSleepWindow() && !this.isWokenUpGrumpy(),
-            wokenUpGrumpy: this.isWokenUpGrumpy(),
+            sleeping: isSleepWindow(new Date(nowMs)) && !grumpy,
+            wokenUpGrumpy: grumpy,
+            justWokeUp: this.isJustWokeUp(nowMs),
             sulking,
             sulkingReason: sulking ? (this.state.sulkingReason || '') : '',
             sulkingSince: sulking ? (this.state.sulkingSince || 0) : 0,

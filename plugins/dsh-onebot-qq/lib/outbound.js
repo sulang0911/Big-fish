@@ -97,6 +97,7 @@ export class OutboundPipeline {
                 return feiyu.dispatcher.dispatch(chatId, cleanCandidate, {
                     userId: options.userId ?? lastUserMsg?.userId,
                     replyToMessageId: options.replyTo ?? lastUserMsg?.messageId,
+                    inboundText: lastUserMsg?.text,
                 }).then(res => res.sentIds ?? []);
             }
         }
