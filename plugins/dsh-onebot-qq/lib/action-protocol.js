@@ -350,6 +350,10 @@ export function buildDynamicTurnContext({
         const retrieved = memoryManager.retrieveEpisodicMemories(queryText, 3, userId);
         const epText = memoryManager.formatEpisodicMemoriesForPrompt(retrieved);
         if (epText) lines.push(epText);
+        if (typeof memoryManager.retrieveLongTermHistoryForPrompt === 'function') {
+            const deepRecall = memoryManager.retrieveLongTermHistoryForPrompt(chatId, userId, queryText, 5);
+            if (deepRecall) lines.push(deepRecall);
+        }
     }
 
     // 注入大肥鱼近期自主上网冲浪刷到的新鲜事（Item 7: 冲浪成果带货进私聊/群聊话题库）

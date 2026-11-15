@@ -24,7 +24,7 @@ export const DEFAULT_MASTER_QQ = '2536218596';
 const DEFAULT_STORAGE_DIR = join(homedir(), '.dsh', 'storages', 'dsh-persona-dafeiyu');
 const MEMORY_STORE_PATH = join(DEFAULT_STORAGE_DIR, 'feiyu_memory.json');
 const MEMORY_DB_PATH = join(DEFAULT_STORAGE_DIR, 'feiyu_memory.db');
-const WORKING_MEMORY_CAP = 20;
+const WORKING_MEMORY_CAP = 36;
 const EPISODIC_MAX_PER_USER = 120;
 const INTRADAY_COMPRESS_THRESHOLD = 24;
 const USER_COMPRESS_LOG_THRESHOLD = 10;
@@ -32,6 +32,7 @@ const USER_COMPRESS_CHAR_THRESHOLD = 450;
 const USER_IMPORTANT_CAP = 15;
 const USER_NORMAL_CAP = 8;
 const ACQUIRED_INTERESTS_CAP = 6;
+const RAW_LOG_RETENTION_DAYS = 30;
 
 const DEFAULT_PERSONA_EVOLUTION = {
     recent_mindset: '最近被老大吐槽涂鸦后暗暗较劲想证明自己是艺术鲸；群友常拿大卡车体重逗本鱼，对身材话题格外敏感易炸毛，但跟大家混熟后愈发活泼护短',
@@ -209,6 +210,35 @@ export function computeKeywordMatch(queryText, summaryText) {
     return Math.min(1, hits / Math.max(1, Math.min(qSet.size, 6)));
 }
 
+const QUERY_STOPWORDS = new Set([
+    '之前', '上次', '以前', '那天', '前天', '昨天', '今天', '明天', '刚刚', '刚才',
+    '什么', '怎么', '怎样', '为啥', '为什么', '是不是', '有没有', '能不能', '可以',
+    '一下', '这个', '那个', '这样', '那样', '记得', '说过', '提过', '聊过', '时候',
+    '大肥鱼', '肥鱼', '本鱼', '小蓝鲸', '老大', '我们', '你们', '他们', '自己', '目前',
+]);
+
+/** 提取可用于历史原话检索的核心关键词（ASCII 词 + 中文词/双字切片，过滤高频虚词） */
+export function extractQueryKeywords(queryText = '') {
+    const clean = String(queryText || '').replace(/\[图片:[^\]]*\]/g, ' ').trim();
+    if (!clean) return [];
+    const tokens = [];
+    const seen = new Set();
+    const push = t => {
+        const key = String(t || '').toLowerCase();
+        if (!key || key.length < 2 || seen.has(key) || QUERY_STOPWORDS.has(key)) return;
+        seen.add(key);
+        tokens.push(key);
+    };
+    for (const w of clean.match(/[A-Za-z0-9_.-]{2,}/g) || []) push(w);
+    for (const chunk of clean.match(/[\u4e00-\u9fa5]{2,}/g) || []) {
+        if (chunk.length <= 6) push(chunk);
+        for (let i = 0; i <= chunk.length - 2 && tokens.length < 14; i++) {
+            push(chunk.slice(i, i + 2));
+        }
+    }
+    return tokens.slice(0, 12);
+}
+
 export class MemoryManager {
     constructor(options = {}) {
         this.storePath = options.storePath || options.filePath || MEMORY_STORE_PATH;
@@ -338,6 +368,7 @@ export class MemoryManager {
             try { this.db.exec("ALTER TABLE user_profiles ADD COLUMN normal_memories_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
             try { this.db.exec("ALTER TABLE raw_interaction_logs ADD COLUMN user_compressed INTEGER NOT NULL DEFAULT 0"); } catch {}
             try { this.db.exec("CREATE INDEX IF NOT EXISTS idx_raw_logs_user_comp ON raw_interaction_logs(user_id, user_compressed, ts ASC)"); } catch {}
+            try { this.db.exec("CREATE INDEX IF NOT EXISTS idx_raw_logs_chat_ts ON raw_interaction_logs(chat_id, ts DESC)"); } catch {}
 
             // 首次启动时将旧版 JSON 中的 users 与 episodic 平滑同步至 SQLite，并从 SQLite 加载最新状态
             this._syncStateWithSqliteOnBoot();
@@ -543,15 +574,13 @@ export class MemoryManager {
             }));
         }
 
-        // 4. 加载 recentWorkingMemory（重启后依然保留今天最近几条会话工作记忆）
-        const todayKey = toDayKey(this.now());
+        // 4. 加载 recentWorkingMemory（跨天加载各会话最近记录，避免跨零点重启或单群刷屏挤掉其他群记忆）
         const recentRows = this.db.prepare(`
             SELECT chat_id, user_id, nickname, time_str, role, content, ts
             FROM raw_interaction_logs
-            WHERE day_key = ?
             ORDER BY ts DESC
-            LIMIT 30
-        `).all(todayKey).reverse();
+            LIMIT 180
+        `).all().reverse();
         for (const r of recentRows) {
             const list = this.working.get(r.chat_id) || [];
             list.push({
@@ -618,7 +647,7 @@ export class MemoryManager {
         return { version: 3, users: {}, episodic: [], lastReflectionAt: 0 };
     }
 
-    save() {
+    save(syncUserTarget = null) {
         try {
             mkdirSync(dirname(this.storePath), { recursive: true });
             const tmp = `${this.storePath}.${process.pid}.tmp`;
@@ -627,50 +656,55 @@ export class MemoryManager {
         } catch (err) {
             console.warn('[MemoryManager] 保存 JSON 记忆快照失败:', err.message);
         }
-        this._syncMemoryStateToSqlite();
+        this._syncMemoryStateToSqlite(syncUserTarget);
     }
 
-    _syncMemoryStateToSqlite() {
+    _syncMemoryStateToSqlite(syncUserTarget = null) {
         if (!this.db) return;
         try {
-            const upsertUser = this.db.prepare(`
-                INSERT INTO user_profiles (user_id, nickname, pet_nickname, attitude_mode, affection, relationship_tag, known_facts_json, rolling_summary, important_memories_json, normal_memories_json, last_interaction_time, last_interaction_ts, last_late_night_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    nickname = excluded.nickname,
-                    pet_nickname = excluded.pet_nickname,
-                    attitude_mode = excluded.attitude_mode,
-                    affection = excluded.affection,
-                    relationship_tag = excluded.relationship_tag,
-                    known_facts_json = excluded.known_facts_json,
-                    rolling_summary = excluded.rolling_summary,
-                    important_memories_json = excluded.important_memories_json,
-                    normal_memories_json = excluded.normal_memories_json,
-                    last_interaction_time = excluded.last_interaction_time,
-                    last_interaction_ts = excluded.last_interaction_ts,
-                    last_late_night_ts = excluded.last_late_night_ts
-            `);
-            for (const [uid, u] of Object.entries(this.state.users || {})) {
-                if (!u || typeof u !== 'object') continue;
-                const impList = Array.isArray(u.important_memories) && u.important_memories.length > 0
-                    ? u.important_memories
-                    : (Array.isArray(u.known_facts) ? u.known_facts : []);
-                const normList = Array.isArray(u.normal_memories) ? u.normal_memories : [];
-                upsertUser.run(
-                    String(uid),
-                    String(u.nickname || uid),
-                    String(u.pet_nickname || ''),
-                    String(u.attitude_mode || ''),
-                    Number(u.affection ?? 55),
-                    String(u.relationship_tag || '群友/饭票候选'),
-                    JSON.stringify(impList),
-                    String(u.rolling_summary || ''),
-                    JSON.stringify(impList),
-                    JSON.stringify(normList),
-                    String(u.last_interaction_time || new Date().toISOString()),
-                    Number(u.last_interaction_ts || Date.now()),
-                    Number(u.last_late_night_ts || 0),
-                );
+            if (syncUserTarget !== false) {
+                const upsertUser = this.db.prepare(`
+                    INSERT INTO user_profiles (user_id, nickname, pet_nickname, attitude_mode, affection, relationship_tag, known_facts_json, rolling_summary, important_memories_json, normal_memories_json, last_interaction_time, last_interaction_ts, last_late_night_ts)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        nickname = excluded.nickname,
+                        pet_nickname = excluded.pet_nickname,
+                        attitude_mode = excluded.attitude_mode,
+                        affection = excluded.affection,
+                        relationship_tag = excluded.relationship_tag,
+                        known_facts_json = excluded.known_facts_json,
+                        rolling_summary = excluded.rolling_summary,
+                        important_memories_json = excluded.important_memories_json,
+                        normal_memories_json = excluded.normal_memories_json,
+                        last_interaction_time = excluded.last_interaction_time,
+                        last_interaction_ts = excluded.last_interaction_ts,
+                        last_late_night_ts = excluded.last_late_night_ts
+                `);
+                const entries = (typeof syncUserTarget === 'string' && syncUserTarget)
+                    ? (this.state.users?.[syncUserTarget] ? [[syncUserTarget, this.state.users[syncUserTarget]]] : [])
+                    : Object.entries(this.state.users || {});
+                for (const [uid, u] of entries) {
+                    if (!u || typeof u !== 'object') continue;
+                    const impList = Array.isArray(u.important_memories) && u.important_memories.length > 0
+                        ? u.important_memories
+                        : (Array.isArray(u.known_facts) ? u.known_facts : []);
+                    const normList = Array.isArray(u.normal_memories) ? u.normal_memories : [];
+                    upsertUser.run(
+                        String(uid),
+                        String(u.nickname || uid),
+                        String(u.pet_nickname || ''),
+                        String(u.attitude_mode || ''),
+                        Number(u.affection ?? 55),
+                        String(u.relationship_tag || '群友/饭票候选'),
+                        JSON.stringify(impList),
+                        String(u.rolling_summary || ''),
+                        JSON.stringify(impList),
+                        JSON.stringify(normList),
+                        String(u.last_interaction_time || new Date().toISOString()),
+                        Number(u.last_interaction_ts || Date.now()),
+                        Number(u.last_late_night_ts || 0),
+                    );
+                }
             }
             if (this.state.personaEvolution) {
                 this.db.prepare(`
@@ -706,7 +740,7 @@ export class MemoryManager {
     // ── 1. Working Memory & Raw Interaction Logs (会话工作记忆 + 每日原始流水落盘) ──
     addWorkingMemory(chatId, entry) {
         if (!chatId || !entry) return;
-        const cleanText = String(entry.text || '').replace(/\r?\n/g, ' ').trim().slice(0, 220);
+        const cleanText = String(entry.text || '').replace(/\r?\n/g, ' ').trim().slice(0, 320);
         if (!cleanText) return;
         const list = this.working.get(chatId) || [];
         const now = entry.ts || this.now();
@@ -778,7 +812,7 @@ export class MemoryManager {
         });
     }
 
-    getWorkingMemory(chatId, limit = 15) {
+    getWorkingMemory(chatId, limit = 24) {
         const list = this.working.get(chatId) || [];
         return list.slice(-limit);
     }
@@ -927,9 +961,9 @@ export class MemoryManager {
             // 同步执行“每日性格自省与后天兴趣池”演化 (Persona Evolution)
             this.evolvePersonaFromDigest(dayKey, summary, highlights, rawLogs, llmPersonaEvolution);
 
-            // 自动清理 7 天前已压缩的原始流水，保持 SQLite 轻量高效
-            const sevenDaysAgoMs = nowMs - 7 * 24 * 3600_000;
-            this.db.prepare('DELETE FROM raw_interaction_logs WHERE compressed = 1 AND ts < ?').run(sevenDaysAgoMs);
+            // 自动清理 30 天前已压缩的原始流水，保留一个月长期原话供按需追溯同时控制 SQLite 体积
+            const retentionAgoMs = nowMs - RAW_LOG_RETENTION_DAYS * 24 * 3600_000;
+            this.db.prepare('DELETE FROM raw_interaction_logs WHERE compressed = 1 AND ts < ?').run(retentionAgoMs);
 
             return {
                 day_key: dayKey,
@@ -1043,12 +1077,20 @@ export class MemoryManager {
         const prevHighlights = Array.isArray(existingDigest?.highlights) ? existingDigest.highlights : [];
         const eventItems = [];
         const userTopics = [];
+        const seenTopics = new Set();
 
         for (const r of rawLogs) {
             if (r.role === 'event') {
                 eventItems.push(`${r.time_str} ${r.content}`);
-            } else if (r.role === 'user' && r.content.length >= 2) {
-                userTopics.push(`${r.time_str} ${r.nickname}: "${r.content.slice(0, 28)}"`);
+            } else if (r.role === 'user') {
+                const cleaned = String(r.content || '')
+                    .replace(/\[(?:图片|语音|视频)(?::[^\]]*)?\]/g, '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                if (cleaned.length >= 3 && !seenTopics.has(cleaned.slice(0, 18))) {
+                    seenTopics.add(cleaned.slice(0, 18));
+                    userTopics.push(`${r.time_str} ${r.nickname}: "${cleaned.slice(0, 28)}"`);
+                }
             }
         }
 
@@ -1109,7 +1151,7 @@ export class MemoryManager {
         };
     }
 
-    getRecentDailyDigests(limit = 4) {
+    getRecentDailyDigests(limit = 5) {
         if (!this.db) return [];
         const rows = this.db.prepare('SELECT * FROM daily_digests ORDER BY day_key DESC LIMIT ?').all(limit);
         return rows.map(row => {
@@ -1126,26 +1168,26 @@ export class MemoryManager {
     }
 
     /**
-     * 格式化“近期每日摘要 + 今日暂时记忆”供每轮 Prompt 注入，让大肥鱼清楚记得今天和前几天主要干了什么
+     * 格式化“近期每日摘要 + 近期会话流水”供每轮 Prompt 注入，让大肥鱼清楚记得今天和前几天主要干了什么
      */
     formatTemporaryAndDailyMemoryForPrompt(chatId = '') {
         if (!this.db) return '';
         const todayKey = toDayKey(this.now());
-        const digests = this.getRecentDailyDigests(4);
+        const digests = this.getRecentDailyDigests(5);
         const todayDigest = digests.find(d => d.day_key === todayKey);
-        const pastDigests = digests.filter(d => d.day_key !== todayKey).slice(0, 3);
+        const pastDigests = digests.filter(d => d.day_key !== todayKey).slice(0, 4);
 
-        // 提取今天尚未压缩的最近 6 条交互流水作为实时暂时记忆（严格限定当前会话 chat_id，标注说话人 QQ 号防串台）
+        // 提取当前会话最近 12 条跨天连续流水（不再强限制必须当天，避免零点前后或重启失忆）
         const recentUncompressed = chatId
             ? this.db.prepare(`
-                SELECT time_str, user_id, nickname, role, content FROM raw_interaction_logs
-                WHERE day_key = ? AND chat_id = ?
-                ORDER BY ts DESC LIMIT 6
-            `).all(todayKey, String(chatId)).reverse()
+                SELECT day_key, time_str, user_id, nickname, role, content FROM raw_interaction_logs
+                WHERE chat_id = ?
+                ORDER BY ts DESC LIMIT 12
+            `).all(String(chatId)).reverse()
             : this.db.prepare(`
-                SELECT time_str, user_id, nickname, role, content FROM raw_interaction_logs
+                SELECT day_key, time_str, user_id, nickname, role, content FROM raw_interaction_logs
                 WHERE day_key = ?
-                ORDER BY ts DESC LIMIT 6
+                ORDER BY ts DESC LIMIT 12
             `).all(todayKey).reverse();
 
         const lines = [];
@@ -1167,11 +1209,12 @@ export class MemoryManager {
             }
             if (recentUncompressed.length > 0) {
                 const rawLines = recentUncompressed.map(r => {
-                    if (r.role === 'event') return `[${r.time_str} 事件] ${r.content}`;
-                    if (r.role === 'assistant') return `[${r.time_str} 大肥鱼(我)] ${r.content}`;
-                    return `[${r.time_str} ${r.nickname}(QQ:${r.user_id})] ${r.content}`;
+                    const dayPrefix = r.day_key && r.day_key !== todayKey ? `${String(r.day_key).slice(5)} ` : '';
+                    if (r.role === 'event') return `[${dayPrefix}${r.time_str} 事件] ${r.content}`;
+                    if (r.role === 'assistant') return `[${dayPrefix}${r.time_str} 大肥鱼(我)] ${r.content}`;
+                    return `[${dayPrefix}${r.time_str} ${r.nickname}(QQ:${r.user_id})] ${r.content}`;
                 });
-                lines.push(`  - 本会话刚刚的实时流水:\n    ${rawLines.join('\n    ')}`);
+                lines.push(`  - 本会话近期实时流水:\n    ${rawLines.join('\n    ')}`);
             }
         }
 
@@ -1440,7 +1483,7 @@ export class MemoryManager {
         if (hour < 5 || (hour === 23 && min >= 30)) {
             profile.last_late_night_ts = now;
         }
-        this.save();
+        this.save(uid);
         return profile;
     }
 
@@ -1469,7 +1512,7 @@ export class MemoryManager {
         } else {
             profile.relationship_tag = '普通路人';
         }
-        this.save();
+        this.save(profile.user_id || userId);
         return profile.affection;
     }
 
@@ -1523,7 +1566,7 @@ export class MemoryManager {
             } catch {}
         }
 
-        this.save();
+        this.save(uid);
 
         // 若该用户的「一般记忆」条数超过上限 (8 条) 或总字数过大，自动触发该用户的记忆压缩
         const normChars = (profile.normal_memories || []).join('').length;
@@ -1944,7 +1987,9 @@ export class MemoryManager {
             const recencyScore = Math.exp(-0.05 * deltaHours);
             const importanceScore = Math.min(10, Math.max(1, mem.importance || 6)) / 10;
             const kwScore = computeKeywordMatch(queryText, mem.summary);
-            const score = 0.4 * recencyScore + 0.4 * importanceScore + 0.2 * kwScore;
+            const score = kwScore > 0
+                ? (0.25 * recencyScore + 0.30 * importanceScore + 0.45 * kwScore)
+                : (0.4 * recencyScore + 0.4 * importanceScore);
             return { mem, score, isDigest: false };
         });
 
@@ -1992,15 +2037,15 @@ export class MemoryManager {
                 }
             }
 
-            const digests = this.getRecentDailyDigests(14);
+            const digests = this.getRecentDailyDigests(30);
             for (const d of digests) {
                 if (matchedDayKeys.has(d.day_key)) continue;
                 const combinedText = `${d.day_key} ${d.summary} ${(d.highlights || []).join(' ')}`;
                 const kwScore = computeKeywordMatch(queryText, combinedText);
-                if (kwScore >= 0.25) {
+                if (kwScore >= 0.22) {
                     const deltaHours = Math.max(0, (now - (d.updated_at || now)) / 3_600_000);
                     const recencyScore = Math.exp(-0.03 * deltaHours);
-                    const score = 0.35 * recencyScore + 0.35 * 0.8 + 0.3 * kwScore;
+                    const score = 0.28 * recencyScore + 0.27 * 0.8 + 0.45 * kwScore;
                     scored.push({
                         mem: {
                             id: `digest_${d.day_key}`,
@@ -2021,17 +2066,19 @@ export class MemoryManager {
         const top = scored.slice(0, topK);
         if (touchOnHit && top.length > 0) {
             const isoNow = new Date(now).toISOString();
+            let touchedEpisodic = false;
             for (const item of top) {
                 if (!item.isDigest) {
                     item.mem.last_accessed_at = isoNow;
                     item.mem.last_accessed_at_ms = now;
+                    touchedEpisodic = true;
                     if (this.db && item.mem.id) {
                         this.db.prepare('UPDATE episodic_memories SET last_accessed_at = ?, last_accessed_at_ms = ? WHERE id = ?')
                             .run(isoNow, now, item.mem.id);
                     }
                 }
             }
-            this.save();
+            if (touchedEpisodic) this.save(false);
         }
         return top.map(item => ({
             ...item.mem,
@@ -2150,7 +2197,7 @@ export class MemoryManager {
 
     saveDriveState(driveState) {
         this.state.driveState = { ...driveState };
-        this.save();
+        this.save(false);
     }
 
     getSemanticProfile(userId, fallbackNickname = '') {
@@ -2170,6 +2217,102 @@ export class MemoryManager {
         if (!Array.isArray(memories) || memories.length === 0) return '';
         const lines = memories.map((m, i) => `  ${i + 1}. [重要度:${m.importance}/10] ${m.summary}`);
         return `【唤醒的长期情景记忆 (Top-${memories.length} Episodic Memories)】\n${lines.join('\n')}`;
+    }
+
+    /**
+     * 按需深度回溯长期原始对话流水与深层用户记忆：
+     * 弥补日常快聊窗口仅看最近十来条的局限，自动剔除当前工作记忆已包含的近期发言。
+     */
+    retrieveLongTermHistoryForPrompt(chatId, userId, queryText = '', limit = 5) {
+        if (!this.db || !queryText) return '';
+        const cleanQuery = String(queryText || '').trim();
+        if (!cleanQuery || cleanQuery.startsWith('/')) return '';
+
+        const hasRecallCue = /(?:之前|上次|以前|记得|说过|提过|聊过|那天|前几天|原本|当时|好像|那个)/.test(cleanQuery);
+        const keywords = extractQueryKeywords(cleanQuery);
+        if (!hasRecallCue && keywords.length === 0) return '';
+
+        const workingTexts = new Set(this.getWorkingMemory(chatId, 20).map(m => m.text));
+        const recentRawRows = chatId
+            ? this.db.prepare('SELECT id FROM raw_interaction_logs WHERE chat_id = ? ORDER BY ts DESC LIMIT 12').all(String(chatId))
+            : [];
+        const minRecentId = recentRawRows.length > 0 ? Math.min(...recentRawRows.map(r => Number(r.id) || 0)) : Number.MAX_SAFE_INTEGER;
+
+        const rawHits = [];
+        const seenRowIds = new Set();
+        const uid = String(userId || '').replace(/^(private|group):/i, '').trim();
+
+        for (const kw of keywords.slice(0, 6)) {
+            const pat = `%${kw}%`;
+            const rows = chatId
+                ? this.db.prepare(`
+                    SELECT id, day_key, time_str, nickname, role, content, ts
+                    FROM raw_interaction_logs
+                    WHERE chat_id = ? AND id < ? AND content LIKE ?
+                    ORDER BY ts DESC LIMIT 6
+                `).all(String(chatId), minRecentId, pat)
+                : this.db.prepare(`
+                    SELECT id, day_key, time_str, nickname, role, content, ts
+                    FROM raw_interaction_logs
+                    WHERE user_id = ? AND id < ? AND content LIKE ?
+                    ORDER BY ts DESC LIMIT 6
+                `).all(uid, minRecentId, pat);
+            for (const r of rows) {
+                if (seenRowIds.has(r.id) || workingTexts.has(r.content)) continue;
+                seenRowIds.add(r.id);
+                rawHits.push(r);
+            }
+        }
+
+        // 若有“之前/上次”等明确回溯词但未命中具体关键词，退回拉取当前说话人较早之前的几条核心发言
+        if (rawHits.length === 0 && hasRecallCue && uid) {
+            const olderRows = this.db.prepare(`
+                SELECT id, day_key, time_str, nickname, role, content, ts
+                FROM raw_interaction_logs
+                WHERE user_id = ? AND role = 'user' AND id < ?
+                ORDER BY ts DESC LIMIT ?
+            `).all(uid, minRecentId, limit);
+            for (const r of olderRows) {
+                if (!workingTexts.has(r.content)) rawHits.push(r);
+            }
+        }
+
+        const sections = [];
+        if (rawHits.length > 0) {
+            const scoredHits = rawHits
+                .map(r => ({ ...r, matchScore: computeKeywordMatch(cleanQuery, r.content) }))
+                .sort((a, b) => (b.matchScore - a.matchScore) || (b.ts - a.ts))
+                .slice(0, limit)
+                .sort((a, b) => a.ts - b.ts);
+            const lines = scoredHits.map(r => {
+                const who = r.role === 'assistant' ? '大肥鱼(我)' : (r.role === 'event' ? '事件' : r.nickname);
+                return `  - [${String(r.day_key || '').slice(5)} ${r.time_str} ${who}] ${String(r.content || '').slice(0, 110)}`;
+            });
+            sections.push(`【按需回溯的更早历史对话原话 (Long-Term Raw Recall)】\n${lines.join('\n')}`);
+        }
+
+        if (uid && keywords.length > 0) {
+            const memHits = [];
+            const seenMem = new Set();
+            for (const kw of keywords.slice(0, 4)) {
+                const rows = this.db.prepare(`
+                    SELECT content FROM user_memories
+                    WHERE user_id = ? AND content LIKE ?
+                    ORDER BY importance DESC, updated_at_ms DESC LIMIT 3
+                `).all(uid, `%${kw}%`);
+                for (const row of rows) {
+                    if (row.content && !seenMem.has(row.content)) {
+                        seenMem.add(row.content);
+                        memHits.push(row.content);
+                    }
+                }
+            }
+            if (memHits.length > 0) {
+                sections.push(`【关联的用户历史要点】\n  - ${memHits.slice(0, 4).join('\n  - ')}`);
+            }
+        }
+
+        return sections.join('\n');
     }
 
     formatStaticUserProfilePrompt(userId, nickname = '') {

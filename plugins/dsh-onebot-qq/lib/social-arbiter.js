@@ -975,7 +975,7 @@ export class SocialArbiter {
         this.fastTurnAbortMap.set(chatId, { abortController, userId, isDirect: true, epoch: turnEpoch });
 
         try {
-            const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
+            const recentMsgs = this.memoryManager.getWorkingMemory(chatId, 24).slice(-20);
             const historyBlock = recentMsgs
                 .map(m => `[${m.time || ''} ${m.nickname || m.userId}(QQ:${m.userId})]: ${m.text}`)
                 .join('\n');
@@ -2081,7 +2081,7 @@ export class SocialArbiter {
         const abortController = new AbortController();
         this.fastTurnAbortMap.set(chatId, { abortController, userId, isDirect: isDirectGroupTurn, epoch: turnEpoch });
         try {
-            const recentMsgs = this.memoryManager.getWorkingMemory(chatId).slice(-10);
+            const recentMsgs = this.memoryManager.getWorkingMemory(chatId, 24).slice(-20);
             const historyBlock = recentMsgs
                 .map(m => `[${m.time || ''} ${m.nickname || m.userId}(QQ:${m.userId})]: ${m.text}`)
                 .join('\n');
