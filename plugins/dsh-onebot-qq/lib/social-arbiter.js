@@ -2988,8 +2988,9 @@ export class SocialArbiter {
         if (!apiKey) return null;
         try {
             const logText = (rawLogs || [])
+                .filter(r => !/^\[(?:图片|卡片|语音|视频)[^\]]*\]$/i.test(String(r.content || '').trim()))
                 .slice(-40)
-                .map(r => `[${r.time_str} ${r.role === 'event' ? '事件' : `${r.nickname}(QQ:${r.user_id})`}] ${r.content}`)
+                .map(r => `[${r.time_str} ${r.role === 'event' ? '事件' : `${r.nickname}(QQ:${r.user_id})`}] ${String(r.content || '').replace(/[A-Za-z]:\\[^\s"']+/g, '[文件]')}`)
                 .join('\n');
             const prevSummary = existingDigest?.summary || '（无）';
             const prevHighlights = JSON.stringify(existingDigest?.highlights || []);
@@ -3010,7 +3011,7 @@ export class SocialArbiter {
                             role: 'system',
                             content: [
                                 '你是贪吃又灵动的小蓝鲸“大肥鱼”的每日记忆压缩与性格自省演化器。',
-                                '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情，并根据今天的共同经历对大肥鱼的《近期性格与心境画像》和《后天习得兴趣池》进行温和演化（保持80%随和松弛小蓝鲸核心底色不变，体现20%因近期经历产生的小情绪、新执念或新习惯）。注意看清每条流水的 `昵称(QQ:xxx)`，严禁张冠李戴！',
+                                '请将当天已有的阶段总结与最新交互流水合并压缩，提炼出今天主要干了什么事情，并根据今天的共同经历对大肥鱼的《近期性格与心境画像》和《后天习得兴趣池》进行温和演化（保持80%随和松弛小蓝鲸核心底色不变，体现20%因近期经历产生的小情绪、新执念或新习惯）。注意：过滤掉无意义的群友杂聊/纯表情包卡片碎片，写摘要时语气自然接地气（不要刻意每句末尾加“哼”），看清每条流水的 `昵称(QQ:xxx)`，严禁张冠李戴！',
                                 '必须严格输出 JSON 对象：',
                                 '{"summary": "以大肥鱼第一人称（本鱼）写的今日浓缩总结，不超过100字", "highlights": ["带时间或具体群友昵称的关键事项1", "事项2"], "episodic": [{"summary": "若包含值得长期永久铭记的重要事件则提取，必须写明具体是谁，否则留空数组", "importance": 8, "user_id": "对应的QQ号"}], "group_lore": ["若流水中有群友与大肥鱼的有趣群梗、外号或恩怨（写明群友昵称），提取1~2条，否则留空数组"], "evolving_mindset": "更新后的近期性格与心境画像（<=90字，写出近期经历让本鱼在脾气、说话习惯或关注点上发生了什么细微变化）", "new_interests": ["从今日经历中新习得的兴趣、小习惯或敏感雷点（0~2条，每条<=35字）"], "axes_delta": {"tsundere_to_sweet": 0, "sharp_to_soft": 0, "extrovert_to_aloof": 0}}',
                             ].join('\n'),

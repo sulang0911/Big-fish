@@ -250,8 +250,8 @@ export function buildCachedSystemPromptPrefix(memoryManager, userId = DEFAULT_MA
         '  },',
         '  "memory_to_save": {',
         '    "should_save": false,',
-        '    "importance": 5,',
-        '    "summary": "关于当前说话人的记忆（按人独立存档）：若为日常互动/聊到的话题设 should_save=true 且 importance=4~6（归入【一般记忆】，多了自动压缩）；若为对方的身份特征/长期喜好/重要约定或恩怨设 importance=7~10（归入【重要记忆】永久保留）"',
+        '    "importance": 6,',
+        '    "summary": "关于当前说话人或本轮值得长期记住的事实（遇到个人喜好/职业身份/承诺计划/排查解决的问题/有趣群梗/新习惯时，设 should_save=true 且 importance=6~9；仅纯水群拟声词如‘哈哈/嗯嗯’才设 false）"',
         '  },',
         '  "stat_delta": {',
         '    "affection": 1,',
@@ -920,7 +920,7 @@ export class MessageDispatcher {
                         chatId,
                     });
                 }
-                if (imp >= 7) {
+                if (imp >= 6) {
                     this.memoryManager.addEpisodicMemory({
                         summary: action.memory_to_save.summary,
                         importance: imp,

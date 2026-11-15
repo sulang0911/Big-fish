@@ -198,16 +198,55 @@ function extractBigrams(text) {
     return set;
 }
 
+const SEMANTIC_CONCEPT_CLUSTERS = [
+    ['性能', '卡顿', '掉帧', '帧率', 'fps', '显卡', 'gpu', '显存', '驱动', '温度', '优化', '5070', '4090', '4060', 'pubg'],
+    ['唱歌', '翻唱', '听歌', '点歌', '歌单', '唱了', '唱啥', '歌曲', '副歌', '音高', '高音', '破音', '走音', '跑调', '伴奏', '人声', 'rvc', 'rmvpe', 'sovits', '半音'],
+    ['音色', '声线', '配音', '语音', 'tts', '可莉', '八重', '神子', '芭芭拉', '芙宁娜', '胡桃', '雷电', '绫华', '迪奥娜', '纳西妲'],
+    ['代码', 'bug', '报错', '异常', '崩溃', 'dll', 'ocr', '配置', '环境', '脚本', '开源', '模型', 'llama', 'qwen', 'deepseek', 'gguf'],
+    ['干饭', '吃饭', '吃啥', '吃点', '晚饭', '午饭', '外卖', '投喂', '饿了', '美食', '夜宵', '宵夜', '白米饭', '五花肉', '红烧肉', '猪脚饭', '奶茶', '西瓜', '零食'],
+    ['熬夜', '通宵', '失眠', '睡眠', '困了', '打瞌睡', '起床气', '早睡', '睡觉', '休息', '半夜'],
+    ['生图', '画画', '画图', '自画像', '自拍', '壁纸', '三视图', '表情包', '斗图', '身材', '大卡车', '体重'],
+    ['密码', '账户', '账号', '登录', '设置', '权限', '安全', '拦截', '防火墙'],
+];
+
+function extractConceptMatches(lowerText) {
+    const matched = [];
+    for (let i = 0; i < SEMANTIC_CONCEPT_CLUSTERS.length; i++) {
+        const cluster = SEMANTIC_CONCEPT_CLUSTERS[i];
+        if (cluster.some(term => lowerText.includes(term))) {
+            matched.push(i);
+        }
+    }
+    return matched;
+}
+
 export function computeKeywordMatch(queryText, summaryText) {
     if (!queryText || !summaryText) return 0;
     const qSet = extractBigrams(queryText);
     const sSet = extractBigrams(summaryText);
-    if (qSet.size === 0 || sSet.size === 0) return 0;
-    let hits = 0;
-    for (const token of qSet) {
-        if (sSet.has(token)) hits += 1;
+    let surfaceScore = 0;
+    if (qSet.size > 0 && sSet.size > 0) {
+        let hits = 0;
+        for (const token of qSet) {
+            if (sSet.has(token)) hits += 1;
+        }
+        surfaceScore = Math.min(1, hits / Math.max(1, Math.min(qSet.size, 6)));
     }
-    return Math.min(1, hits / Math.max(1, Math.min(qSet.size, 6)));
+    const qLower = String(queryText).toLowerCase();
+    const sLower = String(summaryText).toLowerCase();
+    const qConcepts = extractConceptMatches(qLower);
+    let conceptScore = 0;
+    if (qConcepts.length > 0) {
+        const sConceptSet = new Set(extractConceptMatches(sLower));
+        let cHits = 0;
+        for (const cIdx of qConcepts) {
+            if (sConceptSet.has(cIdx)) cHits += 1;
+        }
+        if (cHits > 0) {
+            conceptScore = Math.min(0.75, 0.45 + 0.15 * (cHits - 1));
+        }
+    }
+    return Math.max(surfaceScore, conceptScore);
 }
 
 const QUERY_STOPWORDS = new Set([
@@ -217,7 +256,7 @@ const QUERY_STOPWORDS = new Set([
     '大肥鱼', '肥鱼', '本鱼', '小蓝鲸', '老大', '我们', '你们', '他们', '自己', '目前',
 ]);
 
-/** 提取可用于历史原话检索的核心关键词（ASCII 词 + 中文词/双字切片，过滤高频虚词） */
+/** 提取可用于历史原话检索的核心关键词（ASCII 词 + 中文词/双字切片 + 同义概念扩展） */
 export function extractQueryKeywords(queryText = '') {
     const clean = String(queryText || '').replace(/\[图片:[^\]]*\]/g, ' ').trim();
     if (!clean) return [];
@@ -232,11 +271,19 @@ export function extractQueryKeywords(queryText = '') {
     for (const w of clean.match(/[A-Za-z0-9_.-]{2,}/g) || []) push(w);
     for (const chunk of clean.match(/[\u4e00-\u9fa5]{2,}/g) || []) {
         if (chunk.length <= 6) push(chunk);
-        for (let i = 0; i <= chunk.length - 2 && tokens.length < 14; i++) {
+        for (let i = 0; i <= chunk.length - 2 && tokens.length < 7; i++) {
             push(chunk.slice(i, i + 2));
         }
     }
-    return tokens.slice(0, 12);
+    // 语义概念扩展：若命中同义概念簇，补充高信息量核心关联词以突破字面错配
+    const lower = clean.toLowerCase();
+    for (const cIdx of extractConceptMatches(lower)) {
+        for (const term of SEMANTIC_CONCEPT_CLUSTERS[cIdx]) {
+            if (tokens.length >= 16) break;
+            if (!lower.includes(term)) push(term);
+        }
+    }
+    return tokens.slice(0, 14);
 }
 
 export class MemoryManager {
@@ -936,7 +983,7 @@ export class MemoryManager {
                         content: `[${dayKey}] ${ep.summary}`,
                         importance: imp,
                     });
-                    if (imp >= 7) {
+                    if (imp >= 6) {
                         this.addEpisodicMemory({
                             userId: targetUid,
                             summary: `[${dayKey}] ${ep.summary}`,
@@ -1084,7 +1131,9 @@ export class MemoryManager {
                 eventItems.push(`${r.time_str} ${r.content}`);
             } else if (r.role === 'user') {
                 const cleaned = String(r.content || '')
-                    .replace(/\[(?:图片|语音|视频)(?::[^\]]*)?\]/g, '')
+                    .replace(/\[(?:图片|语音|视频|卡片|文件)(?::[^\]]*)?\]/g, '')
+                    .replace(/\[(?:图片|语音|视频|卡片|文件):[^\]]*$/g, '')
+                    .replace(/[A-Za-z]:\\[^\s"'\]]*/g, '')
                     .replace(/\s+/g, ' ')
                     .trim();
                 if (cleaned.length >= 3 && !seenTopics.has(cleaned.slice(0, 18))) {
@@ -2242,7 +2291,7 @@ export class MemoryManager {
         const seenRowIds = new Set();
         const uid = String(userId || '').replace(/^(private|group):/i, '').trim();
 
-        for (const kw of keywords.slice(0, 6)) {
+        for (const kw of keywords.slice(0, 12)) {
             const pat = `%${kw}%`;
             const rows = chatId
                 ? this.db.prepare(`
